@@ -117,6 +117,17 @@ jobs:
         make install
         cp importer/importer.h /usr/local/include/lsmash_importer.h
       working-directory: lsmash
+    - name: Debug ffms2 detection
+      run: |
+        echo "=== Checking ffms2.pc location ==="
+        ls -la /clang64/lib/pkgconfig/ | grep -i ffms
+        echo "=== Testing pkg-config ==="
+        export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
+        pkg-config --exists ffms2 && echo "ffms2 found by pkg-config" || echo "ffms2 NOT found by pkg-config"
+        pkg-config --cflags ffms2 2>&1 || true
+        pkg-config --libs ffms2 2>&1 || true
+        echo "=== Checking ffms.h ==="
+        ls -la /clang64/include/ | grep -i ffms
     - name: Setup build dir
       run: mkdir -p build/8b build/10b build/all
     - name: Compile x264 8bit only
