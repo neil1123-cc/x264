@@ -98,11 +98,11 @@ jobs:
       run: |
         mkdir build
         cd build
-        cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_POLICY_DEFAULT_CMP0069=NEW -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DMI_BUILD_SHARED=OFF -DMI_BUILD_STATIC=ON -DMI_BUILD_OBJECT=OFF -DMI_BUILD_TESTS=OFF -DMI_USE_CXX=ON
-        make -j`nproc`
+        cmake -GNinja .. -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DMI_BUILD_SHARED=OFF -DMI_BUILD_STATIC=ON -DMI_BUILD_OBJECT=OFF -DMI_BUILD_TESTS=OFF -DMI_USE_CXX=ON
+        ninja
       working-directory: mimalloc
     - name: Install mimalloc
-      run: make install
+      run: ninja install
       working-directory: mimalloc/build
     - name: Compile L-SMASH
       run: |
