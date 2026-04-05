@@ -1313,7 +1313,7 @@ if [ "$lavf" = "auto" ] ; then
     fi
     if [ -z "$LAVF_LIBS" ] && cc_check '' -lavformat ; then
         LAVF_LIBS="-lavformat"
-        for lib in -lavcodec -lavresample -lswresample -lavutil -lbz2 -lz $libpthread -lole32 -luser32 -lws2_32 -lsecur32 ; do
+        for lib in -lavcodec -lswresample -lavutil -lbz2 -lz $libpthread -lole32 -luser32 -lws2_32 -lsecur32 ; do
             cc_check "" $lib && LAVF_LIBS="$LAVF_LIBS $lib"
         done
     fi
@@ -1334,19 +1334,19 @@ fi
 if [ "$lavr" = "auto" ] ; then
     lavr="no"
     if [ "$lavf" = "yes" ] ; then
-        if ${cross_prefix}pkg-config --exists libavresample 2>/dev/null; then
-            LAVR_LIBS="$LAVR_LIBS $(${cross_prefix}pkg-config --libs libavresample)"
-            LAVR_CFLAGS="$LAVR_CFLAGS $(${cross_prefix}pkg-config --cflags libavresample)"
+        if ${cross_prefix}pkg-config --exists libswresample 2>/dev/null; then
+            LAVR_LIBS="$LAVR_LIBS $(${cross_prefix}pkg-config --libs libswresample)"
+            LAVR_CFLAGS="$LAVR_CFLAGS $(${cross_prefix}pkg-config --cflags libswresample)"
         fi
         if [ -z "$LAVR_LIBS" -a -z "$LAVR_CFLAGS" ]; then
-            LAVR_LIBS="-lavresample"
-            for lib in -lpostproc -lavformat -lavcodec -lavcore -lswscale -lavutil -lm -lz -lbz2 $libpthread -lavifil32; do
+            LAVR_LIBS="-lswresample"
+            for lib in -lavformat -lavcodec -lavutil -lm -lz -lbz2 $libpthread; do
                 cc_check "" $lib && LAVR_LIBS="$LAVR_LIBS $lib"
             done
         fi
-        if cc_check libavresample/avresample.h "$LAVR_CFLAGS $LAVR_LIBS" "avresample_open(0);" ; then
+        if cc_check libswresample/swresample.h "$LAVR_CFLAGS $LAVR_LIBS" "swr_init(0);" ; then
             lavr="yes"
-            LAVF_LIBS="-lavresample $LAVF_LIBS"
+            LAVF_LIBS="-lswresample $LAVF_LIBS"
         fi
     fi
 fi

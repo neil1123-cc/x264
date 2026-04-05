@@ -3,7 +3,7 @@
 #undef DECLARE_ALIGNED
 #include "libavcodec/avcodec.h"
 #include "libavutil/opt.h"
-#include "libavresample/avresample.h"
+#include "libswresample/swresample.h"
 #include "libavutil/channel_layout.h"
 
 #include <assert.h>
@@ -21,7 +21,7 @@ typedef struct enc_lavc_t
     AVCodecContext         *ctx;
     enum AVSampleFormat     smpfmt;
     AVFrame                *frame;
-    AVAudioResampleContext *avr;
+    SwrContext             *avr;
 } enc_lavc_t;
 
 static int is_encoder_available( const char *name, void **priv )
@@ -86,7 +86,7 @@ static int get_linesize( int nb_channels, int nb_samples, enum AVSampleFormat sa
     return linesize;
 }
 
-static int resample_audio( AVAudioResampleContext *avr, AVFrame *frame, audio_packet_t *pkt )
+static int resample_audio( SwrContext *avr, AVFrame *frame, audio_packet_t *pkt )
 {
     int channels = av_get_channel_layout_nb_channels( frame->channel_layout );
         if( channels == 0 )
@@ -95,8 +95,8 @@ static int resample_audio( AVAudioResampleContext *avr, AVFrame *frame, audio_pa
         }
     int out_linesize = get_linesize( channels, frame->nb_samples, frame->format );
     int in_linesize  = get_linesize( pkt->channels, pkt->samplecount, AV_SAMPLE_FMT_FLTP );
-    if( avresample_convert( avr, (uint8_t **)((void **)frame->data), out_linesize, frame->nb_samples,
-                                 (uint8_t **)((void **)pkt->samples), in_linesize, pkt->samplecount ) < 0 )
+    if( swr_convert( avr, frame->data, frame->nb_samples,
+                     (const uint8_t **)pkt->samples, pkt->samplecount ) < 0 )
         return -1;
 
     int planes = av_sample_fmt_is_planar( frame->format ) ? channels : 1;
@@ -260,23 +260,21 @@ if( h->info.chanlayout == 0 )
     }
 
     /* Set up resampler. */
-    h->avr = avresample_alloc_context();
+    h->avr = swr_alloc();
     if( !h->avr )
     {
-        x264_cli_log( "lavc", X264_LOG_ERROR, "avresample_alloc_context failed!\n" );
+        x264_cli_log( "lavc", X264_LOG_ERROR, "swr_alloc failed!\n" );
         goto error;
     }
 
     av_opt_set_int( h->avr, "in_channel_layout",  h->info.chanlayout,       0 );
-    av_opt_set_int( h->avr, "in_sample_fmt",      AV_SAMPLE_FMT_FLTP,       0 );
+    av_opt_set_sample_fmt( h->avr, "in_sample_fmt",   AV_SAMPLE_FMT_FLTP,   0 );
     av_opt_set_int( h->avr, "in_sample_rate",     h->info.samplerate,       0 );
     av_opt_set_int( h->avr, "out_channel_layout", h->frame->channel_layout, 0 );
-    av_opt_set_int( h->avr, "out_sample_fmt",     h->frame->format,         0 );
+    av_opt_set_sample_fmt( h->avr, "out_sample_fmt",  h->frame->format,     0 );
     av_opt_set_int( h->avr, "out_sample_rate",    h->frame->sample_rate,    0 );
 
-    av_opt_set_int( h->avr, "internal_sample_fmt", AV_SAMPLE_FMT_FLTP, 0 );
-
-    if( avresample_open( h->avr ) < 0 )
+    if( swr_init( h->avr ) < 0 )
     {
         x264_cli_log( "lavc", X264_LOG_ERROR, "could not open resampler\n" );
         goto error;
@@ -311,7 +309,7 @@ error:
     if( h->frame )
         av_free( h->frame );
     if( h->avr )
-        avresample_free( &h->avr );
+        swr_free( &h->avr );
     free( h );
     return NULL;
 }
@@ -454,7 +452,7 @@ static void lavc_close( hnd_t handle )
     avcodec_close( h->ctx );
     av_free( h->ctx );
     av_free( h->frame );
-    avresample_free( &h->avr );
+    swr_free( &h->avr );
     free( h );
 }
 
