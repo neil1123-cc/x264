@@ -1,11 +1,13 @@
-#include "audio/encoders.h"
-#include "filters/audio/internal.h"
 #undef DECLARE_ALIGNED
 #include "libavformat/avformat.h"
 #include "libavcodec/avcodec.h"
+#include "libavcodec/bsf.h"
 #include <assert.h>
 #include <stdio.h>
 #include <inttypes.h>
+
+#include "audio/encoders.h"
+#include "filters/audio/internal.h"
 
 typedef struct lavf_source_t
 {

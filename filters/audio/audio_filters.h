@@ -7,10 +7,11 @@
 #include "x264cli.h"
 #include "filters/filters.h"
 
-// Ripped from ffmpeg's audioconvert.h
-// These are defined for internal use when FFmpeg headers are not included
-// Use #undef first to avoid macro redefinition warnings with FFmpeg 8.x
-#ifdef AV_CH_FRONT_LEFT
+// Channel layout constants
+// FFmpeg 8.x defines these in libavutil/channel_layout.h with different values:
+//   (1ULL << AV_CHAN_*) vs our simple hex values.
+// The numeric values are compatible, so we undef FFmpeg's and use our own
+// to avoid "macro redefined" warnings when both headers are included.
 #undef AV_CH_FRONT_LEFT
 #undef AV_CH_FRONT_RIGHT
 #undef AV_CH_FRONT_CENTER
@@ -31,7 +32,6 @@
 #undef AV_CH_TOP_BACK_RIGHT
 #undef AV_CH_STEREO_LEFT
 #undef AV_CH_STEREO_RIGHT
-#endif
 
 #define AV_CH_FRONT_LEFT             0x00000001
 #define AV_CH_FRONT_RIGHT            0x00000002
@@ -51,8 +51,8 @@
 #define AV_CH_TOP_BACK_LEFT          0x00008000
 #define AV_CH_TOP_BACK_CENTER        0x00010000
 #define AV_CH_TOP_BACK_RIGHT         0x00020000
-#define AV_CH_STEREO_LEFT            0x20000000  ///< Stereo downmix.
-#define AV_CH_STEREO_RIGHT           0x40000000  ///< See AV_CH_STEREO_LEFT.
+#define AV_CH_STEREO_LEFT            0x20000000
+#define AV_CH_STEREO_RIGHT           0x40000000
 
 enum AudioFlags
 {
