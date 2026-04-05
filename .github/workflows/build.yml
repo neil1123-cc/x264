@@ -122,7 +122,7 @@ jobs:
     - name: Compile x264 8bit
       run: |
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
-        CC=cc ../../x264/configure --prefix=/usr/local --enable-lto --enable-static --extra-cflags="-I/usr/local/include -I../../ffmpeg" --extra-ldflags="-L/usr/local/lib"
+        CC=cc ASFLAGS="-f win64" ../../x264/configure --prefix=/usr/local --enable-lto --enable-static --extra-cflags="-I/usr/local/include -I../../ffmpeg" --extra-ldflags="-L/usr/local/lib"
         make -j`nproc`
         strip -s x264.exe
       working-directory: build/8b
@@ -131,14 +131,14 @@ jobs:
       run: |
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
         pushd 10b
-        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=10 --enable-lto --enable-static --extra-cflags="-I/usr/local/include -I../../ffmpeg" --extra-ldflags="-L/usr/local/lib"
+        CC=cc ASFLAGS="-f win64" ../../x264/configure --prefix=/usr/local --bit-depth=10 --enable-lto --enable-static --extra-cflags="-I/usr/local/include -I../../ffmpeg" --extra-ldflags="-L/usr/local/lib"
         make -j`nproc`
         strip -s x264.exe
         popd
         # Build profiling version from scratch (not copying 10b)
         mkdir -p 10bprof
         pushd 10bprof
-        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=10 --enable-static --extra-cflags="-fprofile-instr-generate -fprofile-update=atomic -I/usr/local/include -I../../ffmpeg" --extra-ldflags="-fprofile-instr-generate -L/usr/local/lib"
+        CC=cc ASFLAGS="-f win64" ../../x264/configure --prefix=/usr/local --bit-depth=10 --enable-static --extra-cflags="-fprofile-instr-generate -fprofile-update=atomic -I/usr/local/include -I../../ffmpeg" --extra-ldflags="-fprofile-instr-generate -L/usr/local/lib"
         make -j`nproc`
         strip -s x264.exe
         mv x264.exe x264-profiling.exe
