@@ -71,7 +71,7 @@ static int handle_jpeg( int csp, int *fullrange )
 
 static AVCodecContext *codec_from_stream( AVStream *stream )
 {
-    AVCodec *codec = avcodec_find_decoder( stream->codecpar->codec_id );
+    const AVCodec *codec = avcodec_find_decoder( stream->codecpar->codec_id );
     if( !codec )
         return NULL;
 
@@ -201,7 +201,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     }
 
     /* specify the input format. this is helpful when lavf fails to guess */
-    AVInputFormat *format = NULL;
+    const AVInputFormat *format = NULL;
     if( opt->format )
         FAIL_IF_ERROR( !(format = av_find_input_format( opt->format )), "unknown file format: %s\n", opt->format );
 
@@ -242,7 +242,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     if( opt->demuxer_threads > 1 )
         h->lavc->thread_count = opt->demuxer_threads;
 
-    AVCodec *p;
+    const AVCodec *p;
     if( opt->lavf_decoder )
         p = avcodec_find_decoder_by_name(opt->lavf_decoder);
     else
