@@ -856,8 +856,8 @@ case $host_cpu in
         elif [ "$SYS" = WINDOWS -o "$SYS" = CYGWIN ]; then
             ASFLAGS="$ASFLAGS -f win64"
             if [ $compiler = GNU ]; then
-                # only the GNU toolchain is inconsistent in prefixing function names with _
-                cc_check "" "-S" && grep -q "_main:" conftest && ASFLAGS="$ASFLAGS -DPREFIX"
+                # Modern Windows x64 toolchains (MinGW-w64, Clang) don't use underscore prefix
+                # The old PREFIX detection was unstable when CFLAGS contained profiling flags
                 cc_check "" "-Wl,--high-entropy-va" && LDFLAGS="$LDFLAGS -Wl,--high-entropy-va"
                 LDFLAGS="$LDFLAGS -Wl,--dynamicbase,--nxcompat,--tsaware"
                 LDFLAGSCLI="$LDFLAGSCLI -Wl,--image-base,0x140000000"
