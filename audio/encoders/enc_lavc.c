@@ -89,12 +89,9 @@ static int get_linesize( int nb_channels, int nb_samples, enum AVSampleFormat sa
 static int resample_audio( SwrContext *avr, AVFrame *frame, audio_packet_t *pkt )
 {
     int channels = av_get_channel_layout_nb_channels( frame->channel_layout );
-        if( channels == 0 )
-        {
-            int channels = 2;
-        }
+    if( channels == 0 )
+        channels = 2;
     int out_linesize = get_linesize( channels, frame->nb_samples, frame->format );
-    int in_linesize  = get_linesize( pkt->channels, pkt->samplecount, AV_SAMPLE_FMT_FLTP );
     if( swr_convert( avr, frame->data, frame->nb_samples,
                      (const uint8_t **)pkt->samples, pkt->samplecount ) < 0 )
         return -1;
