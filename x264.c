@@ -208,7 +208,7 @@ const char * const x264_demuxer_names[] =
 
 const char * const x264_muxer_names[] =
 {
-    "auto", "raw", "mkv", "flv",
+    "auto", "raw", "mkv", "flv", "gop",
 #if HAVE_GPAC || HAVE_LSMASH
     "mp4",
 #endif
@@ -1655,6 +1655,12 @@ static int select_output( const char *muxer, char *filename, x264_param_t *param
         x264_cli_log( "x264", X264_LOG_ERROR, "not compiled with AVI output support\n" );
         return -1;
 #endif
+    }
+    else if( !strcasecmp( ext, "gop" ) )
+    {
+        cli_output = gop_output;
+        param->b_annexb = 0;
+        param->b_repeat_headers = 0;
     }
     else
         cli_output = raw_output;

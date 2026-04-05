@@ -137,6 +137,8 @@ ifneq ($(findstring HAVE_AVI_OUTPUT 1, $(CONFIG)),)
 SRCCLI += output/avi.c
 endif
 
+SRCCLI += output/gop.c
+
 ifneq ($(AS),)
 
 # MMX/SSE optims
