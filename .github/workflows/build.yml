@@ -121,19 +121,32 @@ jobs:
       run: |
         echo "=== Checking ffms2.pc location ==="
         ls -la /clang64/lib/pkgconfig/ | grep -i ffms
+        echo "=== ffms2.pc content ==="
+        cat /clang64/lib/pkgconfig/ffms2.pc
         echo "=== Testing pkg-config ==="
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
         pkg-config --exists ffms2 && echo "ffms2 found by pkg-config" || echo "ffms2 NOT found by pkg-config"
+        echo "pkg-config --cflags ffms2:"
         pkg-config --cflags ffms2 2>&1 || true
+        echo "pkg-config --libs ffms2:"
         pkg-config --libs ffms2 2>&1 || true
+        echo "pkg-config --variable=includedir ffms2:"
+        pkg-config --variable=includedir ffms2 2>&1 || true
         echo "=== Checking ffms.h ==="
         ls -la /clang64/include/ | grep -i ffms
+        echo "=== Test compile with ffms.h ==="
+        echo '#include <ffms.h>' > /tmp/test.c
+        echo 'int main() { return 0; }' >> /tmp/test.c
+        cc -I/clang64/include -c /tmp/test.c -o /tmp/test.o && echo "ffms.h compile OK" || echo "ffms.h compile FAILED"
     - name: Setup build dir
       run: mkdir -p build/8b build/10b build/all
     - name: Compile x264 8bit only
       run: |
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
         CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=8 --enable-lto --enable-static --extra-cflags="-I/usr/local/include -I/clang64/include -I../../ffmpeg" --extra-ldflags="-L/usr/local/lib -L/clang64/lib"
+        echo "=== config.log ffms section ==="
+        grep -A20 "checking for packages: ffms2" config.log || true
+        grep -A10 "checking for ffms.h" config.log || true
         make -j`nproc`
         strip -s x264.exe
       working-directory: build/8b
