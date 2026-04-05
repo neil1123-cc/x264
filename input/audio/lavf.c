@@ -13,7 +13,7 @@ typedef struct lavf_source_t
     AVFormatContext *lavf;
     AVCodecContext *ctx;
     AVCodec *codec;
-    AVBitStreamFilterContext *bsfs;
+    AVBSFContext *bsfs;
 
     int samplefmt;
     unsigned track;
@@ -224,11 +224,14 @@ static hnd_t copy_init( hnd_t filter_chain, const char *opts )
 
         if( ( h->ctx->codec->id == AV_CODEC_ID_AAC ) && !h->ctx->extradata )
         {
-            if( !( h->bsfs = av_bitstream_filter_init( "aac_adtstoasc" ) ) )
+            const AVBitStreamFilter *bsf = av_bsf_get_by_name( "aac_adtstoasc" );
+            if( !bsf || av_bsf_alloc( bsf, &h->bsfs ) < 0 )
             {
                 fprintf( stderr, "lavf [error]: failed to init aac_adtstoasc bitstream filter!\n" );
                 return NULL;
             }
+            avcodec_parameters_from_context( h->bsfs->par_in, h->ctx );
+            av_bsf_init( h->bsfs );
             h->out = convert_to_audio_packet( h, h->pkt );
             h->info.extradata = h->ctx->extradata;
             h->info.extradata_size = h->ctx->extradata_size;
@@ -278,13 +281,36 @@ static audio_packet_t *convert_to_audio_packet( hnd_t handle, AVPacket *pkt )
 
     if( h->bsfs )
     {
-        uint8_t *buf;
-        int size;
-        av_bitstream_filter_filter( h->bsfs, h->ctx, NULL, &buf, &size, pkt->data, pkt->size, 0 );
-        out->samplecount = size * h->info.samplesize;
-        out->size = size;
-        out->data = malloc( out->size );
-        memcpy( out->data, buf, size );
+        AVPacket *in_pkt = av_packet_alloc();
+        AVPacket *out_pkt = av_packet_alloc();
+        if( !in_pkt || !out_pkt )
+        {
+            if( in_pkt ) av_packet_free( &in_pkt );
+            if( out_pkt ) av_packet_free( &out_pkt );
+            free_avpacket( pkt );
+            free( out );
+            return NULL;
+        }
+        in_pkt->data = pkt->data;
+        in_pkt->size = pkt->size;
+        int ret = av_bsf_send_packet( h->bsfs, in_pkt );
+        if( ret >= 0 )
+            ret = av_bsf_receive_packet( h->bsfs, out_pkt );
+        av_packet_free( &in_pkt );
+        if( ret >= 0 )
+        {
+            out->samplecount = out_pkt->size * h->info.samplesize;
+            out->size = out_pkt->size;
+            out->data = malloc( out->size );
+            memcpy( out->data, out_pkt->data, out_pkt->size );
+        }
+        else
+        {
+            out->samplecount = 0;
+            out->size = 0;
+            out->data = NULL;
+        }
+        av_packet_free( &out_pkt );
     }
     else
     {
@@ -579,7 +605,7 @@ static void lavf_close( hnd_t handle )
     avcodec_close( h->ctx );
     avformat_close_input( &h->lavf );
     if( h->bsfs )
-        av_bitstream_filter_close( h->bsfs );
+        av_bsf_free( &h->bsfs );
     free( h );
 }
 

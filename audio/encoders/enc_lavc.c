@@ -105,24 +105,32 @@ static int resample_audio( SwrContext *avr, AVFrame *frame, audio_packet_t *pkt 
 
 static int encode_audio( AVCodecContext *ctx, audio_packet_t *out, AVFrame *frame )
 {
-    AVPacket avpkt;
-    av_init_packet( &avpkt );
-    avpkt.data = NULL;
-    avpkt.size = 0;
-
-    int got_packet = 0;
-
-    if( avcodec_encode_audio2( ctx, &avpkt, frame, &got_packet ) < 0 )
+    AVPacket *avpkt = av_packet_alloc();
+    if( !avpkt )
         return -1;
 
-    if( got_packet )
+    int ret = avcodec_send_frame( ctx, frame );
+    if( ret < 0 )
     {
-        out->size = avpkt.size;
-        memcpy( out->data, avpkt.data, avpkt.size );
+        av_packet_free( &avpkt );
+        return -1;
     }
-    else
-        out->size = 0;
 
+    ret = avcodec_receive_packet( ctx, avpkt );
+    if( ret == 0 )
+    {
+        out->size = avpkt->size;
+        memcpy( out->data, avpkt->data, avpkt->size );
+    }
+    else if( ret == AVERROR( EAGAIN ) || ret == AVERROR_EOF )
+        out->size = 0;
+    else
+    {
+        av_packet_free( &avpkt );
+        return -1;
+    }
+
+    av_packet_free( &avpkt );
     return 0;
 }
 

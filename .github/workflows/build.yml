@@ -113,7 +113,9 @@ jobs:
         make -j`nproc`
       working-directory: lsmash
     - name: Install L-SMASH
-      run: make install
+      run: |
+        make install
+        cp importer/importer.h /usr/local/include/lsmash_importer.h
       working-directory: lsmash
     - name: Setup build dir
       run: mkdir -p build/8b build/10b
