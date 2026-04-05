@@ -118,27 +118,34 @@ jobs:
         cp importer/importer.h /usr/local/include/lsmash_importer.h
       working-directory: lsmash
     - name: Setup build dir
-      run: mkdir -p build/8b build/10b
-    - name: Compile x264 8bit
+      run: mkdir -p build/8b build/10b build/all
+    - name: Compile x264 8bit only
       run: |
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
-        CC=cc ../../x264/configure --prefix=/usr/local --enable-lto --enable-static --extra-cflags="-I/usr/local/include -I../../ffmpeg" --extra-ldflags="-L/usr/local/lib"
+        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=8 --enable-lto --enable-static --extra-cflags="-I/usr/local/include -I../../ffmpeg" --extra-ldflags="-L/usr/local/lib"
         make -j`nproc`
         strip -s x264.exe
       working-directory: build/8b
-    - name: Compile x264 10bit
-      working-directory: build
+    - name: Compile x264 10bit only
       run: |
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
-        pushd 10b
         CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=10 --enable-lto --enable-static --extra-cflags="-I/usr/local/include -I../../ffmpeg" --extra-ldflags="-L/usr/local/lib"
         make -j`nproc`
         strip -s x264.exe
+      working-directory: build/10b
+    - name: Compile x264 8bit+10bit (all) and profiling
+      working-directory: build
+      run: |
+        export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+        pushd all
+        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=all --enable-lto --enable-static --extra-cflags="-I/usr/local/include -I../../ffmpeg" --extra-ldflags="-L/usr/local/lib"
+        make -j`nproc`
+        strip -s x264.exe
         popd
-        # Build profiling version from scratch (not copying 10b)
-        mkdir -p 10bprof
-        pushd 10bprof
-        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=10 --enable-static --extra-cflags="-fprofile-instr-generate -fprofile-update=atomic -I/usr/local/include -I../../ffmpeg" --extra-ldflags="-fprofile-instr-generate -L/usr/local/lib"
+        # Build profiling version from scratch (bit-depth=all)
+        mkdir -p allprof
+        pushd allprof
+        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=all --enable-static --extra-cflags="-fprofile-instr-generate -fprofile-update=atomic -I/usr/local/include -I../../ffmpeg" --extra-ldflags="-fprofile-instr-generate -L/usr/local/lib"
         make -j`nproc`
         strip -s x264.exe
         mv x264.exe x264-profiling.exe
@@ -148,7 +155,8 @@ jobs:
         mkdir dist
         cp build/8b/x264.exe dist/x264-8bit.exe
         cp build/10b/x264.exe dist/x264-10bit.exe
-        cp build/10bprof/x264-profiling.exe dist/
+        cp build/all/x264.exe dist/x264.exe
+        cp build/allprof/x264-profiling.exe dist/
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
@@ -160,7 +168,7 @@ jobs:
       run: |
         cd dist
         # do not release profiling binary
-        7za a -t7z -mx=7 ../x264-win64-${{matrix.target_cpu}}-${{matrix.toolchain}}.${{ github.event.inputs.tag }}.7z x264-8bit.exe x264-10bit.exe
+        7za a -t7z -mx=7 ../x264-win64-${{matrix.target_cpu}}-${{matrix.toolchain}}.${{ github.event.inputs.tag }}.7z x264-8bit.exe x264-10bit.exe x264.exe
 
     - name: Release
       uses: softprops/action-gh-release@v2
