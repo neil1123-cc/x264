@@ -92,8 +92,8 @@ jobs:
         make -j`nproc`
       working-directory: ffmpeg
       if: steps.cache-ff.outputs.cache-hit != 'true'
-    - name: Get rid of .dll.a
-      run: find /*64/ /usr/ -type f -name "*.dll.a" -print -delete
+    - name: Get rid of .dll.a (keep ffms2)
+      run: find /*64/ /usr/ -type f -name "*.dll.a" ! -name "libffms2.dll.a" -print -delete
     - name: Install FFmpeg
       run: make install
       working-directory: ffmpeg
