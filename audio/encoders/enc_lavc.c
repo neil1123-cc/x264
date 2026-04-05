@@ -1,5 +1,3 @@
-#include "audio/encoders.h"
-#include "filters/audio/internal.h"
 #undef DECLARE_ALIGNED
 #include "libavcodec/avcodec.h"
 #include "libavutil/opt.h"
@@ -7,6 +5,9 @@
 #include "libavutil/channel_layout.h"
 
 #include <assert.h>
+
+#include "audio/encoders.h"
+#include "filters/audio/internal.h"
 
 typedef struct enc_lavc_t
 {

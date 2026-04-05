@@ -149,7 +149,7 @@ static int init( hnd_t *handle, const char *opt_str )
     int64_t chanlayout = 0;
     if( h->ctx->ch_layout.order == AV_CHANNEL_ORDER_NATIVE )
         chanlayout = h->ctx->ch_layout.u.mask;
-    else if( h->ctx->ch_layout.order == AV_CHANNEL_ORDER_DEFAULT )
+    else if( h->ctx->ch_layout.order == AV_CHANNEL_ORDER_UNSPEC )
         chanlayout = av_channel_layout_subset( &h->ctx->ch_layout, UINT64_MAX );
 
     h->info = (audio_info_t)

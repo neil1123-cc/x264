@@ -45,16 +45,8 @@
 #include <signal.h>
 #include <getopt.h>
 #include <time.h>
-#include "audio/encoders.h"
-#include "input/input.h"
-#include "output/output.h"
-#include "filters/filters.h"
 
-#define QP_MAX_SPEC (51+6*2)
-#define QP_MAX (QP_MAX_SPEC+18)
-
-#define FAIL_IF_ERROR( cond, ... ) FAIL_IF_ERR( cond, "x264", __VA_ARGS__ )
-
+/* Include FFmpeg headers first to avoid macro redefinition warnings */
 #if HAVE_LAVF
 #undef DECLARE_ALIGNED
 #include <libavformat/avformat.h>
@@ -66,6 +58,16 @@
 #undef DECLARE_ALIGNED
 #include <libswscale/swscale.h>
 #endif
+
+#include "audio/encoders.h"
+#include "input/input.h"
+#include "output/output.h"
+#include "filters/filters.h"
+
+#define QP_MAX_SPEC (51+6*2)
+#define QP_MAX (QP_MAX_SPEC+18)
+
+#define FAIL_IF_ERROR( cond, ... ) FAIL_IF_ERR( cond, "x264", __VA_ARGS__ )
 
 #if HAVE_FFMS
 #include <ffms.h>
