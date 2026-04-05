@@ -121,14 +121,14 @@ jobs:
       run: mkdir -p build/8b build/10b build/all
     - name: Compile x264 8bit only
       run: |
-        export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+        export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
         CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=8 --enable-lto --enable-static --extra-cflags="-I/usr/local/include -I../../ffmpeg" --extra-ldflags="-L/usr/local/lib"
         make -j`nproc`
         strip -s x264.exe
       working-directory: build/8b
     - name: Compile x264 10bit only
       run: |
-        export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+        export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
         CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=10 --enable-lto --enable-static --extra-cflags="-I/usr/local/include -I../../ffmpeg" --extra-ldflags="-L/usr/local/lib"
         make -j`nproc`
         strip -s x264.exe
@@ -136,7 +136,7 @@ jobs:
     - name: Compile x264 8bit+10bit (all) and profiling
       working-directory: build
       run: |
-        export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+        export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
         pushd all
         CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=all --enable-lto --enable-static --extra-cflags="-I/usr/local/include -I../../ffmpeg" --extra-ldflags="-L/usr/local/lib"
         make -j`nproc`
