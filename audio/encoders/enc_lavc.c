@@ -26,13 +26,13 @@ typedef struct enc_lavc_t
 
 static int is_encoder_available( const char *name, void **priv )
 {
-    avcodec_register_all();
-    AVCodec *enc = NULL;
+    // avcodec_register_all() removed in FFmpeg 8.x
+    const AVCodec *enc = NULL;
 
     if( (enc = avcodec_find_encoder_by_name( name )) )
     {
         if( priv )
-            *priv = enc;
+            *priv = (void *)enc;
         return 0;
     }
 
@@ -88,7 +88,8 @@ static int get_linesize( int nb_channels, int nb_samples, enum AVSampleFormat sa
 
 static int resample_audio( SwrContext *avr, AVFrame *frame, audio_packet_t *pkt )
 {
-    int channels = av_get_channel_layout_nb_channels( frame->channel_layout );
+    // FFmpeg 8.x: Get channels from ch_layout
+    int channels = frame->ch_layout.nb_channels;
     if( channels == 0 )
         channels = 2;
     int out_linesize = get_linesize( channels, frame->nb_samples, frame->format );
@@ -136,6 +137,28 @@ static int encode_audio( AVCodecContext *ctx, audio_packet_t *out, AVFrame *fram
 
 #define ISCODEC( name ) (!strcmp( h->info.codec_name, #name ))
 
+// FFmpeg 8.x: Helper function to get sample formats from codec
+static int get_codec_sample_fmts( const AVCodec *codec, enum AVSampleFormat *fmts, int max_fmts )
+{
+    // FFmpeg 8.x: Use avcodec_get_supported_config
+    const enum AVSampleFormat *sample_fmts = NULL;
+    int num_fmts = 0;
+
+    if( avcodec_get_supported_config( NULL, codec, AV_CODEC_CONFIG_SAMPLE_FORMAT,
+                                       0, (const void **)&sample_fmts, &num_fmts ) >= 0 && sample_fmts )
+    {
+        int count = (num_fmts < max_fmts - 1) ? num_fmts : max_fmts - 1;
+        for( int i = 0; i < count && sample_fmts[i] != AV_SAMPLE_FMT_NONE; i++ )
+            fmts[i] = sample_fmts[i];
+        fmts[count] = AV_SAMPLE_FMT_NONE;
+        return count;
+    }
+
+    // No sample formats available
+    fmts[0] = AV_SAMPLE_FMT_NONE;
+    return 0;
+}
+
 static hnd_t init( hnd_t filter_chain, const char *opt_str )
 {
     assert( filter_chain );
@@ -143,7 +166,7 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     audio_hnd_t *chain = h->filter_chain = filter_chain;
     h->preinfo = h->info = chain->info;
 
-	static const char * const optlist[] = { AUDIO_CODEC_COMMON_OPTIONS, "profile", "cutoff", NULL };
+    static const char * const optlist[] = { AUDIO_CODEC_COMMON_OPTIONS, "profile", "cutoff", NULL };
     char **opts = x264_split_options( opt_str, optlist );
     if( !opts )
     {
@@ -154,9 +177,9 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     const char *codecname = x264_get_option( "codec", opts );
     RETURN_IF_ERR( !codecname, "lavc", NULL, "codec not specified" );
 
-    avcodec_register_all();
+    // avcodec_register_all() removed in FFmpeg 8.x
 
-    AVCodec *codec = NULL;
+    const AVCodec *codec = NULL;
     RETURN_IF_ERR( is_encoder_available( codecname, (void **)&codec ),
                    "lavc", NULL, "codec %s not supported or compiled in\n", codecname );
 
@@ -172,27 +195,43 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     }
     RETURN_IF_ERR( !h->info.codec_name, "lavc", NULL, "failed to set codec name for muxer\n" );
 
-    for( j = 0; codec->sample_fmts[j] != -1; j++ )
+    // FFmpeg 8.x: Get sample formats using helper function
+    enum AVSampleFormat sample_fmts[64];
+    int num_fmts = get_codec_sample_fmts( codec, sample_fmts, 64 );
+
+    for( j = 0; j < num_fmts && sample_fmts[j] != AV_SAMPLE_FMT_NONE; j++ )
     {
         // Prefer floats...
-        if( codec->sample_fmts[j] == AV_SAMPLE_FMT_FLT )
+        if( sample_fmts[j] == AV_SAMPLE_FMT_FLT )
         {
             h->smpfmt = AV_SAMPLE_FMT_FLT;
             break;
         }
-        else if( h->smpfmt < codec->sample_fmts[j] ) // or the best possible sample format (is this really The Right Thing?)
-            h->smpfmt = codec->sample_fmts[j];
+        else if( h->smpfmt < sample_fmts[j] ) // or the best possible sample format (is this really The Right Thing?)
+            h->smpfmt = sample_fmts[j];
     }
-if( h->info.chanlayout == 0 )
-{
-        h->info.chanlayout = av_get_default_channel_layout( h->info.channels );
-}
+
+    // FFmpeg 8.x: Handle channel layout - set default if not provided
+    if( h->info.chanlayout == 0 )
+    {
+        // Will set default channel layout after context allocation
+    }
 
     h->ctx                  = avcodec_alloc_context3( NULL );
+    if( !h->ctx )
+    {
+        free( h );
+        return NULL;
+    }
     h->ctx->sample_fmt      = h->smpfmt;
     h->ctx->sample_rate     = h->info.samplerate;
-    h->ctx->channels        = h->info.channels;
-    h->ctx->channel_layout  = h->info.chanlayout;
+
+    // FFmpeg 8.x: Use ch_layout instead of channels/channel_layout
+    if( h->info.chanlayout != 0 )
+        av_channel_layout_from_mask( &h->ctx->ch_layout, h->info.chanlayout );
+    else
+        av_channel_layout_default( &h->ctx->ch_layout, h->info.channels );
+
     h->ctx->time_base       = (AVRational){ 1, h->ctx->sample_rate };
 
     AVDictionary *avopts = NULL;
@@ -225,7 +264,7 @@ if( h->info.chanlayout == 0 )
     RETURN_IF_ERR( ( ( !(ffcodecs[i].mode & MODE_BITRATE) && !is_vbr ) || ( !(ffcodecs[i].mode & MODE_VBR) && is_vbr ) ) && ( strcmp(codecname, "libfdk_aac") ),
                    "lavc", NULL, "libavcodec's %s encoder doesn't allow %s mode.\n", codecname, is_vbr ? "VBR" : "bitrate" );
 
-    float default_brval = is_vbr ? ffcodecs[i].default_brval : ffcodecs[i].default_brval * h->ctx->channels;
+    float default_brval = is_vbr ? ffcodecs[i].default_brval : ffcodecs[i].default_brval * h->ctx->ch_layout.nb_channels;
     float brval = x264_otof( x264_get_option( "bitrate", opts ), default_brval );
 
     h->ctx->compression_level = x264_otof( x264_get_option( "quality", opts ), FF_COMPRESSION_DEFAULT );
@@ -255,7 +294,8 @@ if( h->info.chanlayout == 0 )
         h->ctx->frame_size = 1; /* arbitrary */
 
     h->frame->format         = h->ctx->sample_fmt;
-    h->frame->channel_layout = h->ctx->channel_layout;
+    // FFmpeg 8.x: Use ch_layout instead of channel_layout
+    av_channel_layout_copy( &h->frame->ch_layout, &h->ctx->ch_layout );
     h->frame->nb_samples     = h->ctx->frame_size;
 
     if( avcodec_default_get_buffer2( h->ctx, h->frame, 0 ) < 0 )
@@ -272,10 +312,15 @@ if( h->info.chanlayout == 0 )
         goto error;
     }
 
+    // FFmpeg 8.x: Use AVChannelLayout for resampler
+    AVChannelLayout in_ch_layout, out_ch_layout;
+    av_channel_layout_from_mask( &in_ch_layout, h->info.chanlayout );
+    av_channel_layout_copy( &out_ch_layout, &h->frame->ch_layout );
+
     av_opt_set_int( h->avr, "in_channel_layout",  h->info.chanlayout,       0 );
     av_opt_set_sample_fmt( h->avr, "in_sample_fmt",   AV_SAMPLE_FMT_FLTP,   0 );
     av_opt_set_int( h->avr, "in_sample_rate",     h->info.samplerate,       0 );
-    av_opt_set_int( h->avr, "out_channel_layout", h->frame->channel_layout, 0 );
+    av_opt_set_int( h->avr, "out_channel_layout", h->info.chanlayout,       0 );
     av_opt_set_sample_fmt( h->avr, "out_sample_fmt",  h->frame->format,     0 );
     av_opt_set_int( h->avr, "out_sample_rate",    h->frame->sample_rate,    0 );
 
@@ -292,10 +337,10 @@ if( h->info.chanlayout == 0 )
     h->info.chansize        = IS_LPCM_CODEC_ID( h->ctx->codec->id )
                             ? h->info.depth / 8
                             : av_get_bytes_per_sample( h->ctx->sample_fmt );
-    h->info.samplesize      = h->info.chansize * h->info.channels;
+    h->info.samplesize      = h->info.chansize * h->ctx->ch_layout.nb_channels;
     h->info.framesize       = h->info.framelen * h->info.samplesize;
 
-    h->buf_size = av_samples_get_buffer_size( NULL, h->ctx->channels, h->ctx->frame_size, h->ctx->sample_fmt, 0 ) * 3 / 2;
+    h->buf_size = av_samples_get_buffer_size( NULL, h->ctx->ch_layout.nb_channels, h->ctx->frame_size, h->ctx->sample_fmt, 0 ) * 3 / 2;
     h->last_dts = INVALID_DTS;
 
     h->info.extradata       = h->ctx->extradata;
@@ -308,11 +353,10 @@ if( h->info.chanlayout == 0 )
 error:
     if( h->ctx )
     {
-        avcodec_close( h->ctx );
-        av_free( h->ctx );
+        avcodec_free_context( &h->ctx );
     }
     if( h->frame )
-        av_free( h->frame );
+        av_frame_free( &h->frame );
     if( h->avr )
         swr_free( &h->avr );
     free( h );
@@ -454,10 +498,13 @@ static void lavc_close( hnd_t handle )
 {
     enc_lavc_t *h = handle;
 
-    avcodec_close( h->ctx );
-    av_free( h->ctx );
-    av_free( h->frame );
-    swr_free( &h->avr );
+    // FFmpeg 8.x: Use avcodec_free_context instead of avcodec_close + av_free
+    if( h->ctx )
+        avcodec_free_context( &h->ctx );
+    if( h->frame )
+        av_frame_free( &h->frame );
+    if( h->avr )
+        swr_free( &h->avr );
     free( h );
 }
 
@@ -506,7 +553,7 @@ static void lavc_help_amrnb( const char * const encoder_name )
 
 static void lavc_help( const char * const encoder_name )
 {
-    AVCodec *enc = NULL;
+    const AVCodec *enc = NULL;
 
     if( is_encoder_available( encoder_name, (void **)&enc ) )
         return;
