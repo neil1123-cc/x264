@@ -84,6 +84,7 @@ jobs:
           mingw-w64-${{matrix.toolchain}}-x86_64-toolchain
           mingw-w64-${{matrix.toolchain}}-x86_64-cmake
           mingw-w64-${{matrix.toolchain}}-x86_64-ninja
+          mingw-w64-${{matrix.toolchain}}-x86_64-ffms2
     - name: Compile FFmpeg
       run: |
         ./configure --prefix=/usr/local --enable-gpl --enable-version3 --disable-runtime-cpudetect --disable-all --disable-autodetect --enable-avformat --enable-avcodec --enable-swresample --disable-everything --disable-network --enable-demuxer=mpegts,mov,matroska,h264,hevc,rawvideo,y4m --enable-decoder=h264,hevc,ffv1,ffvhuff,huffyuv,rawvideo,aac,ac3,mp3 --enable-encoder=aac,ac3,mp2,pcm_s16le,pcm_s24le,pcm_s32le --enable-protocol=file,pipe --cc=cc --cxx=c++ --cpu=${{matrix.target_cpu}}
@@ -118,7 +119,7 @@ jobs:
     - name: Compile x264 8bit
       run: |
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
-        CC=cc ${{github.workspace}}/x264/configure --prefix=/usr/local --enable-lto --enable-lavf --enable-lsmash --enable-static --extra-cflags="-I${{github.workspace}}/ffmpeg" --extra-ldflags="-L/usr/local/lib"
+        CC=cc ../../x264/configure --prefix=/usr/local --enable-lto --enable-lavf --enable-lsmash --enable-static --extra-cflags="-I../../ffmpeg" --extra-ldflags="-L/usr/local/lib"
         make -j`nproc`
         strip -s x264.exe
       working-directory: build/8b
@@ -128,12 +129,12 @@ jobs:
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
         cp -a 10b 10bprof
         pushd 10b
-        CC=cc ${{github.workspace}}/x264/configure --prefix=/usr/local --bit-depth=10 --enable-lto --enable-lavf --enable-lsmash --enable-static --extra-cflags="-I${{github.workspace}}/ffmpeg" --extra-ldflags="-L/usr/local/lib"
+        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=10 --enable-lto --enable-lavf --enable-lsmash --enable-static --extra-cflags="-I../../ffmpeg" --extra-ldflags="-L/usr/local/lib"
         make -j`nproc`
         strip -s x264.exe
         popd
         pushd 10bprof
-        CC=cc ${{github.workspace}}/x264/configure --prefix=/usr/local --bit-depth=10 --enable-lto --enable-lavf --enable-lsmash --enable-static --extra-cflags="-fprofile-instr-generate -fprofile-update=atomic -I${{github.workspace}}/ffmpeg" --extra-ldflags="-L/usr/local/lib"
+        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=10 --enable-lto --enable-lavf --enable-lsmash --enable-static --extra-cflags="-fprofile-instr-generate -fprofile-update=atomic -I../../ffmpeg" --extra-ldflags="-L/usr/local/lib"
         make -j`nproc`
         strip -s x264.exe
         mv x264.exe x264-profiling.exe
