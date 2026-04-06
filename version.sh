@@ -52,12 +52,13 @@ if [ $LOCAL_VER \> 1 ] ; then
     if git status | grep -q "modified:" ; then
         VER="${VER}M"
     fi
-    VER="$VER $(git rev-list HEAD -n 1 | cut -c 1-7) $GIT_HEAD [${BIT_DEPTH}-bit@${CHROMA_FORMATS} ${BUILD_ARCH}]"
     echo "#define X264_VERSION \" r$VER\""
 else
     echo "#define X264_VERSION \"\""
-    VER="${BUILD_DATE} ${GIT_HASH} @ADE [${BIT_DEPTH}-bit@${CHROMA_FORMATS} ${ARCH_INFO}]"
 fi
+
+# Unified version format for both branches
+VER="${BUILD_DATE} ${GIT_HASH} @ADE [${BIT_DEPTH}-bit@${CHROMA_FORMATS} ${ARCH_INFO}]"
 rm -f config.git-hash
 API=`grep '#define X264_BUILD' < "$(dirname "$0")"/x264.h | sed -e 's/.* \([1-9][0-9]*\).*/\1/'`
 echo "#define X264_POINTVER \"0.$API.$VER\""
