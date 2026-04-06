@@ -91,13 +91,13 @@ jobs:
           mingw-w64-${{matrix.toolchain}}-x86_64-ninja
     - name: Compile FFmpeg
       run: |
-        # PGO 构建需要 avfilter 支持（用于 lavfi 生成测试视频）
+        # PGO 构建需要 avfilter 和 ffmpeg 程序（用于 lavfi 生成测试视频）
         if [ "${{ github.event.inputs.enable_pgo }}" == "true" ]; then
-          AVFILTER_OPT="--enable-avfilter --enable-filter=testsrc,testsrc2,smptebars,nullsrc,geq,gradients,tinterlace"
+          PGO_OPT="--enable-avfilter --enable-filter=testsrc,testsrc2,smptebars,nullsrc,geq,gradients,tinterlace --enable-ffmpeg"
         else
-          AVFILTER_OPT=""
+          PGO_OPT=""
         fi
-        ./configure --prefix=/usr/local --enable-gpl --enable-version3 --disable-runtime-cpudetect --disable-all --disable-autodetect --enable-avformat --enable-avcodec --enable-swscale --enable-swresample --disable-everything --disable-network $AVFILTER_OPT --enable-demuxer=mpegts,mov,matroska,h264,hevc,rawvideo,y4m --enable-decoder=h264,hevc,ffv1,ffvhuff,huffyuv,rawvideo,aac,ac3,mp3 --enable-encoder=aac,ac3,mp2,pcm_s16le,pcm_s24le,pcm_s32le --enable-protocol=file,pipe --cc=cc --cxx=c++ --cpu=${{matrix.target_cpu}}
+        ./configure --prefix=/usr/local --enable-gpl --enable-version3 --disable-runtime-cpudetect --disable-all --disable-autodetect --enable-avformat --enable-avcodec --enable-swscale --enable-swresample --disable-everything --disable-network $PGO_OPT --enable-demuxer=mpegts,mov,matroska,h264,hevc,rawvideo,y4m --enable-decoder=h264,hevc,ffv1,ffvhuff,huffyuv,rawvideo,aac,ac3,mp3 --enable-encoder=aac,ac3,mp2,pcm_s16le,pcm_s24le,pcm_s32le --enable-protocol=file,pipe --cc=cc --cxx=c++ --cpu=${{matrix.target_cpu}}
         make -j`nproc`
       working-directory: ffmpeg
       if: steps.cache-ff.outputs.cache-hit != 'true'
