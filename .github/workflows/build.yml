@@ -49,7 +49,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ffmpeg
-        key: ffmpeg-n8.1-swscale-v1-${{matrix.target_cpu}}-${{matrix.toolchain}}
+        key: ffmpeg-n8.1-swscale${{ github.event.inputs.enable_pgo == 'true' && '-avfilter' || '' }}-v1-${{matrix.target_cpu}}-${{matrix.toolchain}}
     - name: Checkout FFmpeg
       uses: actions/checkout@v4
       with:
@@ -91,7 +91,13 @@ jobs:
           mingw-w64-${{matrix.toolchain}}-x86_64-ninja
     - name: Compile FFmpeg
       run: |
-        ./configure --prefix=/usr/local --enable-gpl --enable-version3 --disable-runtime-cpudetect --disable-all --disable-autodetect --enable-avformat --enable-avcodec --enable-swscale --enable-swresample --disable-everything --disable-network --enable-demuxer=mpegts,mov,matroska,h264,hevc,rawvideo,y4m --enable-decoder=h264,hevc,ffv1,ffvhuff,huffyuv,rawvideo,aac,ac3,mp3 --enable-encoder=aac,ac3,mp2,pcm_s16le,pcm_s24le,pcm_s32le --enable-protocol=file,pipe --cc=cc --cxx=c++ --cpu=${{matrix.target_cpu}}
+        # PGO 构建需要 avfilter 支持（用于 lavfi 生成测试视频）
+        if [ "${{ github.event.inputs.enable_pgo }}" == "true" ]; then
+          AVFILTER_OPT="--enable-avfilter --enable-filter=testsrc,testsrc2,smptebars,nullsrc,geq,gradients,tinterlace"
+        else
+          AVFILTER_OPT=""
+        fi
+        ./configure --prefix=/usr/local --enable-gpl --enable-version3 --disable-runtime-cpudetect --disable-all --disable-autodetect --enable-avformat --enable-avcodec --enable-swscale --enable-swresample --disable-everything --disable-network $AVFILTER_OPT --enable-demuxer=mpegts,mov,matroska,h264,hevc,rawvideo,y4m --enable-decoder=h264,hevc,ffv1,ffvhuff,huffyuv,rawvideo,aac,ac3,mp3 --enable-encoder=aac,ac3,mp2,pcm_s16le,pcm_s24le,pcm_s32le --enable-protocol=file,pipe --cc=cc --cxx=c++ --cpu=${{matrix.target_cpu}}
         make -j`nproc`
       working-directory: ffmpeg
       if: steps.cache-ff.outputs.cache-hit != 'true'
