@@ -106,6 +106,7 @@ jobs:
         repository: FFMS/ffms2
     - name: Compile ffms2 (static)
       run: |
+        export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH
         ./autogen.sh
         ./configure --prefix=/usr/local --enable-static --disable-shared
         make -j`nproc`
