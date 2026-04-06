@@ -85,15 +85,30 @@ jobs:
           mingw-w64-${{matrix.toolchain}}-x86_64-toolchain
           mingw-w64-${{matrix.toolchain}}-x86_64-cmake
           mingw-w64-${{matrix.toolchain}}-x86_64-ninja
-          mingw-w64-${{matrix.toolchain}}-x86_64-ffms2
+    - name: Checkout ffms2
+      uses: actions/checkout@v4
+      with:
+        path: ffms2
+        repository: FFMS/ffms2
+        ref: 5.0
+    - name: Compile ffms2 (static)
+      run: |
+        mkdir build
+        cd build
+        cmake -GNinja .. -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
+        ninja
+      working-directory: ffms2
+    - name: Install ffms2
+      run: ninja install
+      working-directory: ffms2/build
     - name: Compile FFmpeg
       run: |
         ./configure --prefix=/usr/local --enable-gpl --enable-version3 --disable-runtime-cpudetect --disable-all --disable-autodetect --enable-avformat --enable-avcodec --enable-swscale --enable-swresample --disable-everything --disable-network --enable-demuxer=mpegts,mov,matroska,h264,hevc,rawvideo,y4m --enable-decoder=h264,hevc,ffv1,ffvhuff,huffyuv,rawvideo,aac,ac3,mp3 --enable-encoder=aac,ac3,mp2,pcm_s16le,pcm_s24le,pcm_s32le --enable-protocol=file,pipe --cc=cc --cxx=c++ --cpu=${{matrix.target_cpu}}
         make -j`nproc`
       working-directory: ffmpeg
       if: steps.cache-ff.outputs.cache-hit != 'true'
-    - name: Get rid of .dll.a (keep ffms2)
-      run: find /*64/ /usr/ -type f -name "*.dll.a" ! -name "libffms2.dll.a" -print -delete
+    - name: Get rid of .dll.a
+      run: find /*64/ /usr/ -type f -name "*.dll.a" -print -delete
     - name: Install FFmpeg
       run: make install
       working-directory: ffmpeg
@@ -181,8 +196,6 @@ jobs:
         cp build/10b/x264.exe dist/x264-10bit.exe
         cp build/all/x264.exe dist/x264.exe
         cp build/allprof/x264-profiling.exe dist/
-        # Include ffms2.dll for ffms2 support
-        cp /clang64/bin/ffms2.dll dist/
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
@@ -194,7 +207,7 @@ jobs:
       run: |
         cd dist
         # do not release profiling binary
-        7za a -t7z -mx=7 ../x264-win64-${{matrix.target_cpu}}-${{matrix.toolchain}}.${{ github.event.inputs.tag }}.7z x264-8bit.exe x264-10bit.exe x264.exe ffms2.dll
+        7za a -t7z -mx=7 ../x264-win64-${{matrix.target_cpu}}-${{matrix.toolchain}}.${{ github.event.inputs.tag }}.7z x264-8bit.exe x264-10bit.exe x264.exe
 
     - name: Release
       uses: softprops/action-gh-release@v2
