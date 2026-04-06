@@ -1629,20 +1629,12 @@ fi
 if [ "$debug" = "yes" ]; then
     CFLAGS="-O1 -g $CFLAGS"
     RCFLAGS="$RCFLAGS -DDEBUG"
-elif cc_check '' -Ofast ; then
-    CFLAGS="-Ofast -ffast-math $CFLAGS"
-    if [ "$lto" = "auto" ] && [ $compiler = GNU ] && cc_check "" "-flto" ; then
-        lto="yes"
-        CFLAGS="$CFLAGS -flto"
-        LDFLAGS="$LDFLAGS -Ofast -flto"
-		LDFLAGSCLI="$LDFLAGSCLI -fwhole-program"
-    fi
 else
     CFLAGS="-O3 -ffast-math $CFLAGS"
     if [ "$lto" = "auto" ] && [ $compiler = GNU ] && cc_check "" "-flto" ; then
         lto="yes"
         CFLAGS="$CFLAGS -flto"
-        LDFLAGS="$LDFLAGS -O3 -flto"
+        LDFLAGS="$LDFLAGS -flto"
 		LDFLAGSCLI="$LDFLAGSCLI -fwhole-program"
     fi
 fi
