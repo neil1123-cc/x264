@@ -49,7 +49,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ffmpeg
-        key: ffmpeg-n8.1-swscale${{ github.event.inputs.enable_pgo == 'true' && '-avfilter' || '' }}-v1-${{matrix.target_cpu}}-${{matrix.toolchain}}
+        key: ffmpeg-n8.1-swscale${{ github.event.inputs.enable_pgo == 'true' && '-pgo' || '' }}-v2-${{matrix.target_cpu}}-${{matrix.toolchain}}
     - name: Checkout FFmpeg
       uses: actions/checkout@v4
       with:
