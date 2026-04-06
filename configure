@@ -1356,8 +1356,8 @@ if [ "$ffms" = "auto" ] ; then
     ffms="no"
 
     if pkg_check ffms2 ; then
-        FFMS2_LIBS="$FFMS2_LIBS $($PKGCONFIG --libs ffms2)"
-        FFMS2_CFLAGS="$FFMS2_CFLAGS $($PKGCONFIG --cflags ffms2)"
+        FFMS2_LIBS="$FFMS2_LIBS $($PKGCONFIG --libs --static ffms2)"
+        FFMS2_CFLAGS="$FFMS2_CFLAGS $($PKGCONFIG --cflags --static ffms2)"
         # Get library path from pkg-config if available
         FFMS2_LIBDIR="$($PKGCONFIG --variable=libdir ffms2 2>/dev/null)"
         if [ -n "$FFMS2_LIBDIR" ]; then
