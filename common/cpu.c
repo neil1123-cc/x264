@@ -110,6 +110,7 @@ const x264_cpu_name_t x264_cpu_names[] =
     {"", 0},
 };
 
+#if HAVE_ALTIVEC || HAVE_ARMV6 || HAVE_AARCH64 || ARCH_RISCV64 || ARCH_LOONGARCH
 static unsigned long x264_getauxval( unsigned long type )
 {
 #if HAVE_GETAUXVAL
@@ -122,6 +123,7 @@ static unsigned long x264_getauxval( unsigned long type )
     return 0;
 #endif
 }
+#endif
 
 #if ((HAVE_ALTIVEC && SYS_LINUX) || (HAVE_ARMV6 && !HAVE_NEON)) && !(HAVE_GETAUXVAL || HAVE_ELF_AUX_INFO)
 #include <signal.h>

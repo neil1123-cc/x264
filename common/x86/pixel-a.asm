@@ -5896,7 +5896,7 @@ cglobal pixel_noise_%1x%2, 2,3
     mov       r2, r0
 %else
 cglobal pixel_noise_%1x%2, 2,2
-pixel_noise_%1x%2 %+ .skip_prologue
+pixel_noise_%1x%2 %+ .skip_prologue:
 %endif
     pxor      m7, m7
     pxor      m6, m6

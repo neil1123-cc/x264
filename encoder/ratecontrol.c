@@ -274,8 +274,8 @@ static NOINLINE uint32_t ac_energy_mb( x264_t *h, int mb_x, int mb_y, x264_frame
          * simply try both and pick the lower of the two. */
         uint32_t var_interlaced_y  = ac_energy_plane( h, mb_x, mb_y, frame, 0, 0, 1, 1 );
         uint32_t var_progressive_y = ac_energy_plane( h, mb_x, mb_y, frame, 0, 0, 0, 0 );
-        uint32_t var_interlaced_uv;
-        uint32_t var_progressive_uv;
+        uint32_t var_interlaced_uv = 0;
+        uint32_t var_progressive_uv = 0;
         if( CHROMA444 )
         {
             var_interlaced_uv   = ac_energy_plane( h, mb_x, mb_y, frame, 1, 0, 1, 1 );
@@ -3235,7 +3235,6 @@ static int vbv_pass2( x264_t *h, double all_available_bits )
     int t0, t1;
     double qscale_min = qp2qscale( h->param.rc.i_qp_min[h->sh.i_type] );
     double qscale_max = qp2qscale( h->param.rc.i_qp_max[h->sh.i_type] );
-    int iterations = 0;
     int adj_min, adj_max;
     CHECKED_MALLOC( fills, (rcc->num_entries+1)*sizeof(double) );
 
@@ -3244,7 +3243,6 @@ static int vbv_pass2( x264_t *h, double all_available_bits )
     /* adjust overall stream size */
     do
     {
-        iterations++;
         prev_bits = expected_bits;
 
         if( expected_bits )

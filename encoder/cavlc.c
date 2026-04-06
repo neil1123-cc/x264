@@ -143,6 +143,7 @@ static int cavlc_block_residual_internal( x264_t *h, int ctx_block_cat, dctcoef 
            | ((runlevel.level[1] >> 31) & 2)
            | ((runlevel.level[0] >> 31) & 4);
     i_sign >>= 3-i_trailing;
+    (void)i_sign;  /* silence warning when bs_write is redefined in rdo.c */
 
     /* total/trailing */
     bs_write_vlc( s, x264_coeff_token[nC][i_total-1][i_trailing] );

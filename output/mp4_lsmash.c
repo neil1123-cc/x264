@@ -240,21 +240,21 @@ static int set_channel_layout( mp4_audio_hnd_t *p_audio )
     {
         /* Channel order is unknown, so we guess it from ffmpeg's channel layout flags. */
         static const lsmash_qt_audio_channel_layout_t channel_table[] = {
-            { AV_CH_LAYOUT_MONO,           QT_CHANNEL_LAYOUT_MONO },
-            { AV_CH_LAYOUT_STEREO,         QT_CHANNEL_LAYOUT_STEREO },
-            { AV_CH_LAYOUT_STEREO_DOWNMIX, QT_CHANNEL_LAYOUT_STEREO },
-            { AV_CH_LAYOUT_2_1,            QT_CHANNEL_LAYOUT_AAC_3_0 },
-            { AV_CH_LAYOUT_SURROUND,       QT_CHANNEL_LAYOUT_AAC_3_0 },
-            { AV_CH_LAYOUT_4POINT0,        QT_CHANNEL_LAYOUT_AAC_4_0 },
-            { AV_CH_LAYOUT_2_2,            QT_CHANNEL_LAYOUT_AAC_QUADRAPHONIC },
-            { AV_CH_LAYOUT_QUAD,           QT_CHANNEL_LAYOUT_AAC_QUADRAPHONIC },
-            { AV_CH_LAYOUT_5POINT0,        QT_CHANNEL_LAYOUT_AAC_5_0 },
-            { AV_CH_LAYOUT_5POINT0_BACK,   QT_CHANNEL_LAYOUT_AAC_5_0 },
-            { AV_CH_LAYOUT_5POINT1,        QT_CHANNEL_LAYOUT_AAC_5_1 },
-            { AV_CH_LAYOUT_5POINT1_BACK,   QT_CHANNEL_LAYOUT_AAC_5_1 },
-            { AV_CH_LAYOUT_7POINT0,        QT_CHANNEL_LAYOUT_AAC_7_0 },
-            { AV_CH_LAYOUT_7POINT1,        QT_CHANNEL_LAYOUT_AAC_7_1 },
-            { AV_CH_LAYOUT_7POINT1_WIDE,   QT_CHANNEL_LAYOUT_AAC_7_1 }
+            { (lsmash_channel_bitmap)AV_CH_LAYOUT_MONO,           QT_CHANNEL_LAYOUT_MONO },
+            { (lsmash_channel_bitmap)AV_CH_LAYOUT_STEREO,         QT_CHANNEL_LAYOUT_STEREO },
+            { (lsmash_channel_bitmap)AV_CH_LAYOUT_STEREO_DOWNMIX, QT_CHANNEL_LAYOUT_STEREO },
+            { (lsmash_channel_bitmap)AV_CH_LAYOUT_2_1,            QT_CHANNEL_LAYOUT_AAC_3_0 },
+            { (lsmash_channel_bitmap)AV_CH_LAYOUT_SURROUND,       QT_CHANNEL_LAYOUT_AAC_3_0 },
+            { (lsmash_channel_bitmap)AV_CH_LAYOUT_4POINT0,        QT_CHANNEL_LAYOUT_AAC_4_0 },
+            { (lsmash_channel_bitmap)AV_CH_LAYOUT_2_2,            QT_CHANNEL_LAYOUT_AAC_QUADRAPHONIC },
+            { (lsmash_channel_bitmap)AV_CH_LAYOUT_QUAD,           QT_CHANNEL_LAYOUT_AAC_QUADRAPHONIC },
+            { (lsmash_channel_bitmap)AV_CH_LAYOUT_5POINT0,        QT_CHANNEL_LAYOUT_AAC_5_0 },
+            { (lsmash_channel_bitmap)AV_CH_LAYOUT_5POINT0_BACK,   QT_CHANNEL_LAYOUT_AAC_5_0 },
+            { (lsmash_channel_bitmap)AV_CH_LAYOUT_5POINT1,        QT_CHANNEL_LAYOUT_AAC_5_1 },
+            { (lsmash_channel_bitmap)AV_CH_LAYOUT_5POINT1_BACK,   QT_CHANNEL_LAYOUT_AAC_5_1 },
+            { (lsmash_channel_bitmap)AV_CH_LAYOUT_7POINT0,        QT_CHANNEL_LAYOUT_AAC_7_0 },
+            { (lsmash_channel_bitmap)AV_CH_LAYOUT_7POINT1,        QT_CHANNEL_LAYOUT_AAC_7_1 },
+            { (lsmash_channel_bitmap)AV_CH_LAYOUT_7POINT1_WIDE,   QT_CHANNEL_LAYOUT_AAC_7_1 }
         };
         for( int i = 0; i < sizeof(channel_table) / sizeof(lsmash_qt_audio_channel_layout_t); i++ )
             if( p_audio->info->chanlayout == channel_table[i].channelBitmap )
