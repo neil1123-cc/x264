@@ -46,9 +46,9 @@ if [ $LOCAL_VER \> 1 ] ; then
 else
     echo "#define X264_VERSION \"\""
     if [ -n "$TARGET_CPU" ]; then
-        VER="${BUILD_DATE}_${TARGET_CPU} [${BIT_DEPTH}-bit@${CHROMA_FORMATS} ${BUILD_ARCH}]"
+        VER="${BUILD_DATE}_${TARGET_CPU}@ADE [${BIT_DEPTH}-bit@${CHROMA_FORMATS} ${BUILD_ARCH}]"
     else
-        VER="${BUILD_DATE} [${BIT_DEPTH}-bit@${CHROMA_FORMATS} ${BUILD_ARCH}]"
+        VER="${BUILD_DATE}@ADE [${BIT_DEPTH}-bit@${CHROMA_FORMATS} ${BUILD_ARCH}]"
     fi
 fi
 rm -f config.git-hash
