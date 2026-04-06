@@ -85,21 +85,6 @@ jobs:
           mingw-w64-${{matrix.toolchain}}-x86_64-toolchain
           mingw-w64-${{matrix.toolchain}}-x86_64-cmake
           mingw-w64-${{matrix.toolchain}}-x86_64-ninja
-    - name: Checkout ffms2
-      uses: actions/checkout@v4
-      with:
-        path: ffms2
-        repository: FFMS/ffms2
-    - name: Compile ffms2 (static)
-      run: |
-        mkdir build
-        cd build
-        cmake -GNinja .. -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
-        ninja
-      working-directory: ffms2
-    - name: Install ffms2
-      run: ninja install
-      working-directory: ffms2/build
     - name: Compile FFmpeg
       run: |
         ./configure --prefix=/usr/local --enable-gpl --enable-version3 --disable-runtime-cpudetect --disable-all --disable-autodetect --enable-avformat --enable-avcodec --enable-swscale --enable-swresample --disable-everything --disable-network --enable-demuxer=mpegts,mov,matroska,h264,hevc,rawvideo,y4m --enable-decoder=h264,hevc,ffv1,ffvhuff,huffyuv,rawvideo,aac,ac3,mp3 --enable-encoder=aac,ac3,mp2,pcm_s16le,pcm_s24le,pcm_s32le --enable-protocol=file,pipe --cc=cc --cxx=c++ --cpu=${{matrix.target_cpu}}
@@ -111,6 +96,20 @@ jobs:
     - name: Install FFmpeg
       run: make install
       working-directory: ffmpeg
+    - name: Checkout ffms2
+      uses: actions/checkout@v4
+      with:
+        path: ffms2
+        repository: FFMS/ffms2
+    - name: Compile ffms2 (static)
+      run: |
+        ./autogen.sh
+        ./configure --prefix=/usr/local --enable-static --disable-shared
+        make -j`nproc`
+      working-directory: ffms2
+    - name: Install ffms2
+      run: make install
+      working-directory: ffms2
     - name: Compile mimalloc
       run: |
         mkdir build
