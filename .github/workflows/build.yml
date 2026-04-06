@@ -67,6 +67,11 @@ jobs:
         path: mimalloc
         repository: microsoft/mimalloc
         ref: v3.2.8
+    - name: Checkout obuparse
+      uses: actions/checkout@v4
+      with:
+        path: obuparse
+        repository: dwbuiten/obuparse
     - name: Checkout L-SMASH
       uses: actions/checkout@v4
       with:
@@ -124,9 +129,20 @@ jobs:
     - name: Install mimalloc
       run: ninja install
       working-directory: mimalloc/build
+    - name: Compile obuparse
+      run: |
+        make libobuparse.a
+      working-directory: obuparse
+    - name: Install obuparse
+      run: |
+        install -d /usr/local/include
+        install -d /usr/local/lib
+        install -v obuparse.h /usr/local/include
+        install -v libobuparse.a /usr/local/lib
+      working-directory: obuparse
     - name: Compile L-SMASH
       run: |
-        ./configure --prefix=/usr/local --cc=cc
+        ./configure --prefix=/usr/local --cc=cc --extra-cflags="-I/usr/local/include" --extra-ldflags="-L/usr/local/lib" --extra-libs="-lobuparse"
         make -j`nproc`
       working-directory: lsmash
     - name: Install L-SMASH
