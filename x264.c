@@ -443,6 +443,8 @@ static void print_version_info( void )
     printf( "gcc: " __VERSION__ "\n" );
 #elif defined(_MSC_FULL_VER)
     printf( "msvc: %.2f (%u)\n", _MSC_VER / 100.f, _MSC_FULL_VER );
+#elif defined(__clang__)
+    /* clang version already printed above */
 #else
     printf( "using an unknown compiler\n" );
 #endif
