@@ -131,7 +131,7 @@ jobs:
       working-directory: mimalloc/build
     - name: Compile obuparse
       run: |
-        make libobuparse.a
+        make CC=cc libobuparse.a
       working-directory: obuparse
     - name: Install obuparse
       run: |
