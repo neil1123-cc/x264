@@ -1917,8 +1917,8 @@ static int parse( int argc, char **argv, x264_param_t *param, cli_opt_t *opt )
     const char *audio_demuxer = "auto";
     int audio_track      = TRACK_ANY;
     float audio_bitrate  = -1;
-    float audio_quality  = NAN;
-    float acodec_quality = NAN;
+    float audio_quality  = -1.0f;
+    float acodec_quality = -1.0f;
     int audio_samplerate = -1;
     int audio_enable     = 1;
     hnd_t haud           = NULL;
@@ -2323,10 +2323,10 @@ generic_option:
     {
         if( audio_bitrate > 0 )
             len += snprintf( &arg[len], MAX_ARGS, "is_vbr=0,bitrate=%f", audio_bitrate );
-        else if( isfinite( audio_quality ) )
+        else if( audio_quality >= 0 )
             len += snprintf( &arg[len], MAX_ARGS, "is_vbr=1,bitrate=%f", audio_quality );
 
-        if( isfinite( acodec_quality ) )
+        if( acodec_quality >= 0 )
             len += snprintf( &arg[len], MAX_ARGS - len, "%squality=%f", len ? "," : "", acodec_quality );
 
         if( audio_samplerate > 0 )
@@ -2673,6 +2673,7 @@ static int encode( x264_param_t *param, cli_opt_t *opt )
     double  duration;
     double  pulldown_pts = 0;
     int     retval = 0;
+    time_t  tm1 = 0;
 
     opt->b_progress &= param->i_log_level < X264_LOG_DEBUG;
 
@@ -2715,7 +2716,7 @@ static int encode( x264_param_t *param, cli_opt_t *opt )
     if( opt->tcfile_out )
         fprintf( opt->tcfile_out, "# timecode format v2\n" );
 
-    time_t tm1 = time(NULL);
+    tm1 = time(NULL);
     x264_cli_log( "x264", X264_LOG_INFO, "started at %s", ctime(&tm1) );
 
     if( opt->b_progress && param->b_stylish )
