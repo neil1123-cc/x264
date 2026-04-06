@@ -7,6 +7,10 @@ on:
       tag:
         description: 'which tag to upload to'
         default: ''
+      enable_pgo:
+        description: 'Enable PGO (Profile-Guided Optimization)'
+        type: boolean
+        default: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -178,16 +182,213 @@ jobs:
         pushd allprof
         CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=all --enable-static --extra-cflags="-fprofile-instr-generate -fprofile-update=atomic -I/usr/local/include -I/clang64/include -I../../ffmpeg" --extra-ldflags="-fprofile-instr-generate -L/usr/local/lib -L/clang64/lib"
         make -j`nproc`
-        strip -s x264.exe
         mv x264.exe x264-profiling.exe
         popd
+
+    - name: Generate test videos for PGO
+      if: github.event.inputs.enable_pgo == 'true'
+      working-directory: build
+      run: |
+        mkdir -p test-videos
+        #
+        # === 基础测试视频 ===
+        #
+        # 1080p 30fps - 主力测试视频（覆盖最常用路径）
+        ffmpeg -f lavfi -i "testsrc=duration=8:size=1920x1080:rate=30" \
+          -c:v rawvideo -pix_fmt yuv420p test-videos/1080p_30fps.y4m
+
+        # 720p 24fps - 电影帧率
+        ffmpeg -f lavfi -i "testsrc2=duration=6:size=1280x720:rate=24" \
+          -c:v rawvideo -pix_fmt yuv420p test-videos/720p_24fps.y4m
+
+        # 480p - 低分辨率快速测试
+        ffmpeg -f lavfi -i "smptebars=duration=4:size=854x480:rate=30" \
+          -c:v rawvideo -pix_fmt yuv420p test-videos/480p_smpte.y4m
+
+        #
+        # === 4K 分辨率 ===
+        #
+        ffmpeg -f lavfi -i "testsrc=duration=3:size=3840x2160:rate=30" \
+          -c:v rawvideo -pix_fmt yuv420p test-videos/4k_30fps.y4m
+
+        #
+        # === 隔行扫描视频（覆盖 --tff/--bff 路径）===
+        #
+        # 1080i 隔行 - 顶场优先
+        ffmpeg -f lavfi -i "testsrc=duration=4:size=1920x1080:rate=30" \
+          -vf "tinterlace=4" -c:v rawvideo -pix_fmt yuv420p test-videos/1080i_tff.y4m
+
+        #
+        # === 复杂纹理/噪声（覆盖高复杂度场景）===
+        #
+        ffmpeg -f lavfi -i "nullsrc=s=640x480:r=30,geq=random(1)*255:128:128" \
+          -t 3 -c:v rawvideo -pix_fmt yuv420p test-videos/noise_480p.y4m
+
+        # 渐变+细节（覆盖 psy-rd, aq 等高级选项）
+        ffmpeg -f lavfi -i "gradients=s=1280x720:c0=000000:c1=ffffff" \
+          -t 3 -c:v rawvideo -pix_fmt yuv420p test-videos/gradient_720p.y4m
+
+        echo "=== Generated test videos ==="
+        ls -la test-videos/
+
+    - name: Run PGO profiling workload
+      if: github.event.inputs.enable_pgo == 'true'
+      working-directory: build/allprof
+      run: |
+        #
+        # === 8-bit 编码选项 ===
+        #
+        # 快速 preset（覆盖 dia/hex 运动估计）
+        OPT8_FAST="--crf 23 --preset ultrafast --threads 4"
+        OPT8_FASTER="--crf 23 --preset faster --threads 4"
+        OPT8_FAST2="--crf 26 --preset fast --me hex --threads 2"
+
+        # 中等 preset（主力测试，覆盖最多代码路径）
+        OPT8_MEDIUM="--crf 20 --preset medium --threads 4"
+        OPT8_MEDIUM2="--crf 23 --preset medium --aq-mode 2 --threads 4"
+        OPT8_SLOW="--crf 18 --preset slow --me umh --threads 4"
+
+        # 慢速 preset（覆盖 esa/tesa 运动估计）
+        OPT8_SLOWER="--crf 20 --preset slower --me esa --threads 2"
+        OPT8_VERYSLOW="--crf 18 --preset veryslow --me tesa --threads 2"
+
+        # 高级选项组合
+        OPT8_PSY="--crf 20 --preset medium --psy-rd 1.0:0.15 --aq-mode 3 --threads 4"
+        OPT8_PLACEBO="--crf 16 --preset placebo --me tesa --threads 2"
+
+        # 隔行编码（覆盖 tff/bff 路径）
+        OPT8_TFF="--crf 22 --preset medium --tff --threads 4"
+
+        #
+        # === 10-bit 编码选项 ===
+        #
+        OPT10_FAST="--output-depth 10 --crf 23 --preset fast --threads 4"
+        OPT10_MEDIUM="--output-depth 10 --crf 20 --preset medium --aq-mode 2 --threads 4"
+        OPT10_SLOW="--output-depth 10 --crf 18 --preset slow --me umh --threads 4"
+        OPT10_PSY="--output-depth 10 --crf 20 --preset medium --psy-rd 1.0:0.15 --aq-mode 3 --threads 4"
+        OPT10_PLACEBO="--output-depth 10 --crf 16 --preset placebo --me tesa --threads 2"
+
+        # 10-bit 隔行
+        OPT10_TFF="--output-depth 10 --crf 22 --preset medium --tff --threads 4"
+
+        # ========================================
+        # 第一轮：8-bit 主力测试（使用 1080p/720p/4K）
+        # ========================================
+        echo "=== 8-bit Primary Tests ==="
+        for opt in "$OPT8_MEDIUM" "$OPT8_MEDIUM2" "$OPT8_SLOW" "$OPT8_PSY"; do
+          echo "Option: $opt"
+          ./x264-profiling.exe $opt ../test-videos/1080p_30fps.y4m -o /dev/null 2>/dev/null || true
+          ./x264-profiling.exe $opt ../test-videos/720p_24fps.y4m -o /dev/null 2>/dev/null || true
+        done
+
+        # 4K 测试（只跑关键选项，节省时间）
+        for opt in "$OPT8_MEDIUM" "$OPT8_SLOW"; do
+          echo "4K Option: $opt"
+          ./x264-profiling.exe $opt ../test-videos/4k_30fps.y4m -o /dev/null 2>/dev/null || true
+        done
+
+        # ========================================
+        # 第二轮：8-bit preset 覆盖（使用短视频）
+        # ========================================
+        echo "=== 8-bit Preset Coverage ==="
+        for opt in "$OPT8_FAST" "$OPT8_FASTER" "$OPT8_FAST2" "$OPT8_SLOWER" "$OPT8_VERYSLOW" "$OPT8_PLACEBO"; do
+          echo "Option: $opt"
+          ./x264-profiling.exe $opt ../test-videos/480p_smpte.y4m -o /dev/null 2>/dev/null || true
+          ./x264-profiling.exe $opt ../test-videos/noise_480p.y4m -o /dev/null 2>/dev/null || true
+        done
+
+        # ========================================
+        # 第三轮：8-bit 隔行测试
+        # ========================================
+        echo "=== 8-bit Interlaced ==="
+        ./x264-profiling.exe $OPT8_TFF ../test-videos/1080i_tff.y4m -o /dev/null 2>/dev/null || true
+
+        # ========================================
+        # 第四轮：10-bit 测试
+        # ========================================
+        echo "=== 10-bit Primary Tests ==="
+        for opt in "$OPT10_MEDIUM" "$OPT10_SLOW" "$OPT10_PSY"; do
+          echo "Option: $opt"
+          ./x264-profiling.exe $opt ../test-videos/1080p_30fps.y4m -o /dev/null 2>/dev/null || true
+          ./x264-profiling.exe $opt ../test-videos/720p_24fps.y4m -o /dev/null 2>/dev/null || true
+        done
+
+        echo "=== 10-bit Preset Coverage ==="
+        for opt in "$OPT10_FAST" "$OPT10_PLACEBO"; do
+          echo "Option: $opt"
+          ./x264-profiling.exe $opt ../test-videos/480p_smpte.y4m -o /dev/null 2>/dev/null || true
+        done
+
+        echo "=== 10-bit Interlaced ==="
+        ./x264-profiling.exe $OPT10_TFF ../test-videos/1080i_tff.y4m -o /dev/null 2>/dev/null || true
+
+        # ========================================
+        # 合并 profile 数据
+        # ========================================
+        llvm-profdata merge -output=default.profdata *.profraw
+        echo "=== Profile data generated ==="
+        ls -la *.profdata
+
+    - name: Build PGO-optimized x264 (all bit-depths)
+      if: github.event.inputs.enable_pgo == 'true'
+      working-directory: build
+      run: |
+        export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
+        export X264_TARGET_CPU=${{matrix.target_cpu}}
+
+        # 复制合并的 profile 数据
+        cp allprof/default.profdata ./
+
+        # 编译 8bit PGO 版本
+        mkdir -p pgo-8bit
+        cd pgo-8bit
+        cp ../default.profdata ./
+        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=8 --enable-lto --enable-static \
+          --extra-cflags="-fprofile-instr-use=default.profdata -O3 -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
+          --extra-ldflags="-fprofile-instr-use=default.profdata -L/usr/local/lib -L/clang64/lib"
+        make -j`nproc`
+        strip -s x264.exe
+        cd ..
+
+        # 编译 10bit PGO 版本
+        mkdir -p pgo-10bit
+        cd pgo-10bit
+        cp ../default.profdata ./
+        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=10 --enable-lto --enable-static \
+          --extra-cflags="-fprofile-instr-use=default.profdata -O3 -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
+          --extra-ldflags="-fprofile-instr-use=default.profdata -L/usr/local/lib -L/clang64/lib"
+        make -j`nproc`
+        strip -s x264.exe
+        cd ..
+
+        # 编译 all bit-depth PGO 版本
+        mkdir -p pgo-all
+        cd pgo-all
+        cp ../default.profdata ./
+        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=all --enable-lto --enable-static \
+          --extra-cflags="-fprofile-instr-use=default.profdata -O3 -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
+          --extra-ldflags="-fprofile-instr-use=default.profdata -L/usr/local/lib -L/clang64/lib"
+        make -j`nproc`
+        strip -s x264.exe
+        cd ..
+
+        echo "=== Built all PGO versions ==="
+        ls -la pgo-8bit/x264.exe pgo-10bit/x264.exe pgo-all/x264.exe
     - name: Package
       run: |
         mkdir dist
         cp build/8b/x264.exe dist/x264-8bit.exe
         cp build/10b/x264.exe dist/x264-10bit.exe
         cp build/all/x264.exe dist/x264.exe
-        cp build/allprof/x264-profiling.exe dist/
+        if [ -f build/allprof/x264-profiling.exe ]; then
+          cp build/allprof/x264-profiling.exe dist/
+        fi
+        if [ -f build/pgo-8bit/x264.exe ]; then
+          cp build/pgo-8bit/x264.exe dist/x264-8bit-pgo.exe
+          cp build/pgo-10bit/x264.exe dist/x264-10bit-pgo.exe
+          cp build/pgo-all/x264.exe dist/x264-pgo.exe
+          cp build/default.profdata dist/x264.profdata
+        fi
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
@@ -198,15 +399,23 @@ jobs:
       if: github.event_name == 'workflow_dispatch' && github.event.inputs.tag != ''
       run: |
         cd dist
-        # do not release profiling binary
-        7za a -t7z -mx=7 ../x264-win64-${{matrix.target_cpu}}-${{matrix.toolchain}}.${{ github.event.inputs.tag }}.7z x264-8bit.exe x264-10bit.exe x264.exe
+        if [ -f x264-pgo.exe ] && [ "${{ github.event.inputs.enable_pgo }}" == "true" ]; then
+          # Release PGO optimized versions
+          7za a -t7z -mx=7 ../x264-win64-${{matrix.target_cpu}}-${{matrix.toolchain}}-pgo.${{ github.event.inputs.tag }}.7z \
+            x264-8bit-pgo.exe x264-10bit-pgo.exe x264-pgo.exe
+        else
+          # Standard release
+          7za a -t7z -mx=7 ../x264-win64-${{matrix.target_cpu}}-${{matrix.toolchain}}.${{ github.event.inputs.tag }}.7z \
+            x264-8bit.exe x264-10bit.exe x264.exe
+        fi
 
     - name: Release
       uses: softprops/action-gh-release@v2
       if: github.event_name == 'workflow_dispatch' && github.event.inputs.tag != ''
       with:
         tag_name: ${{ github.event.inputs.tag }}
-        files: x264-win64-${{matrix.target_cpu}}-${{matrix.toolchain}}.${{ github.event.inputs.tag }}.7z
+        files: |
+          x264-win64-${{matrix.target_cpu}}-${{matrix.toolchain}}*.${{ github.event.inputs.tag }}.7z
         fail_on_unmatched_files: true
         generate_release_notes: false
         prerelease: true
