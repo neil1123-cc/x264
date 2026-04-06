@@ -35,14 +35,6 @@ jobs:
           - clang
           #- ucrt
     steps:
-    - name: Parse matrix
-      run: |
-        if ("${{matrix.toolchain}}" -eq "clang") {
-          echo "MSYSTEM=CLANG64" >> $env:GITHUB_ENV
-        } else {
-          echo "MSYSTEM=UCRT64" >> $env:GITHUB_ENV
-        }
-      shell: pwsh
     - name: Checkout x264
       uses: actions/checkout@v4
       with:
