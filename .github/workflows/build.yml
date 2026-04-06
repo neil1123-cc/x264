@@ -49,7 +49,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ffmpeg
-        key: ffmpeg-n8.1-swscale${{ github.event.inputs.enable_pgo == 'true' && '-pgo' || '' }}-v7-${{matrix.toolchain}}
+        key: ffmpeg-n8.1-swscale${{ github.event.inputs.enable_pgo == 'true' && '-pgo' || '' }}-v8-${{matrix.toolchain}}
     - name: Checkout FFmpeg
       uses: actions/checkout@v4
       with:
@@ -95,7 +95,7 @@ jobs:
         if [ "${{ github.event.inputs.enable_pgo }}" == "true" ]; then
           PGO_OPT="--enable-avdevice --enable-avfilter --enable-ffmpeg --enable-indev=lavfi"
           # 逐个启用需要的滤镜（避免引号解析问题）
-          for f in testsrc testsrc2 smptebars nullsrc geq gradients tinterlace format; do
+          for f in testsrc testsrc2 smptebars nullsrc geq gradients format; do
             PGO_OPT="$PGO_OPT --enable-filter=$f"
           done
         else
@@ -222,13 +222,6 @@ jobs:
           -c:v rawvideo -pix_fmt yuv420p test-videos/4k_30fps.y4m
 
         #
-        # === 隔行扫描视频（覆盖 --tff/--bff 路径）===
-        #
-        # 1080i 隔行 - 顶场优先
-        ffmpeg -f lavfi -i "testsrc=duration=4:size=1920x1080:rate=30" \
-          -vf "tinterlace=4" -c:v rawvideo -pix_fmt yuv420p test-videos/1080i_tff.y4m
-
-        #
         # === 复杂纹理/噪声（覆盖高复杂度场景）===
         #
         ffmpeg -f lavfi -i "nullsrc=s=640x480:r=30,geq=random(1)*255:128:128" \
@@ -266,9 +259,6 @@ jobs:
         OPT8_PSY="--crf 20 --preset medium --psy-rd 1.0:0.15 --aq-mode 3 --threads 4"
         OPT8_PLACEBO="--crf 16 --preset placebo --me tesa --threads 2"
 
-        # 隔行编码（覆盖 tff/bff 路径）
-        OPT8_TFF="--crf 22 --preset medium --tff --threads 4"
-
         #
         # === 10-bit 编码选项 ===
         #
@@ -277,9 +267,6 @@ jobs:
         OPT10_SLOW="--output-depth 10 --crf 18 --preset slow --me umh --threads 4"
         OPT10_PSY="--output-depth 10 --crf 20 --preset medium --psy-rd 1.0:0.15 --aq-mode 3 --threads 4"
         OPT10_PLACEBO="--output-depth 10 --crf 16 --preset placebo --me tesa --threads 2"
-
-        # 10-bit 隔行
-        OPT10_TFF="--output-depth 10 --crf 22 --preset medium --tff --threads 4"
 
         # ========================================
         # 第一轮：8-bit 主力测试（使用 1080p/720p/4K）
@@ -308,13 +295,7 @@ jobs:
         done
 
         # ========================================
-        # 第三轮：8-bit 隔行测试
-        # ========================================
-        echo "=== 8-bit Interlaced ==="
-        ./x264-profiling.exe $OPT8_TFF ../test-videos/1080i_tff.y4m -o /dev/null 2>/dev/null || true
-
-        # ========================================
-        # 第四轮：10-bit 测试
+        # 第三轮：10-bit 测试
         # ========================================
         echo "=== 10-bit Primary Tests ==="
         for opt in "$OPT10_MEDIUM" "$OPT10_SLOW" "$OPT10_PSY"; do
@@ -328,9 +309,6 @@ jobs:
           echo "Option: $opt"
           ./x264-profiling.exe $opt ../test-videos/480p_smpte.y4m -o /dev/null 2>/dev/null || true
         done
-
-        echo "=== 10-bit Interlaced ==="
-        ./x264-profiling.exe $OPT10_TFF ../test-videos/1080i_tff.y4m -o /dev/null 2>/dev/null || true
 
         # ========================================
         # 合并 profile 数据
