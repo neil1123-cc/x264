@@ -7,7 +7,7 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
+  actions: write
 
 jobs:
   update-deps:
@@ -16,10 +16,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ============================================
+      # Get latest versions
+      # ============================================
+
       - name: Get latest FFmpeg release
         id: ffmpeg
         run: |
-          # Get all tags and filter release versions (nX.Y format)
           TAG=$(curl -s "https://api.github.com/repos/FFmpeg/FFmpeg/tags?per_page=100" | \
             jq -r '.[].name' | \
             grep -E '^n[0-9]+\.[0-9]+$' | \
@@ -31,48 +34,184 @@ jobs:
       - name: Get latest mimalloc release
         id: mimalloc
         run: |
-          # Get latest release tag
           TAG=$(curl -s "https://api.github.com/repos/microsoft/mimalloc/releases/latest" | \
             jq -r '.tag_name')
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "mimalloc latest release: $TAG"
 
+      - name: Get latest ffms2 commit
+        id: ffms2
+        run: |
+          SHA=$(curl -s "https://api.github.com/repos/FFMS/ffms2/commits?per_page=1" | \
+            jq -r '.[0].sha')
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
+          echo "ffms2 latest commit: $SHA"
+
+      - name: Get latest lsmash commit
+        id: lsmash
+        run: |
+          SHA=$(curl -s "https://api.github.com/repos/vimeo/l-smash/commits?per_page=1" | \
+            jq -r '.[0].sha')
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
+          echo "lsmash latest commit: $SHA"
+
+      - name: Get latest obuparse commit
+        id: obuparse
+        run: |
+          SHA=$(curl -s "https://api.github.com/repos/dwbuiten/obuparse/commits?per_page=1" | \
+            jq -r '.[0].sha')
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
+          echo "obuparse latest commit: $SHA"
+
+      # ============================================
+      # Get current versions from build.yml or cache
+      # ============================================
+
       - name: Get current versions
         id: current
         run: |
+          # FFmpeg and mimalloc from build.yml
           FFMPEG=$(grep -oP 'ref: n[0-9]+\.[0-9]+' .github/workflows/build.yml | head -1 | grep -oP 'n[0-9]+\.[0-9]+')
           MIMALLOC=$(grep -oP 'ref: v[0-9]+\.[0-9]+\.[0-9]+' .github/workflows/build.yml | head -1 | grep -oP 'v[0-9]+\.[0-9]+\.[0-9]+')
           echo "ffmpeg=$FFMPEG" >> $GITHUB_OUTPUT
           echo "mimalloc=$MIMALLOC" >> $GITHUB_OUTPUT
-          echo "Current FFmpeg: $FFMPEG"
-          echo "Current mimalloc: $MIMALLOC"
+
+          # ffms2, lsmash, obuparse from cache file (if exists)
+          if [ -f .github/deps-cache.json ]; then
+            FFMS2_SHA=$(jq -r '.ffms2 // ""' .github/deps-cache.json)
+            LSMASH_SHA=$(jq -r '.lsmash // ""' .github/deps-cache.json)
+            OBUPARSE_SHA=$(jq -r '.obuparse // ""' .github/deps-cache.json)
+          else
+            FFMS2_SHA=""
+            LSMASH_SHA=""
+            OBUPARSE_SHA=""
+          fi
+          echo "ffms2_sha=$FFMS2_SHA" >> $GITHUB_OUTPUT
+          echo "lsmash_sha=$LSMASH_SHA" >> $GITHUB_OUTPUT
+          echo "obuparse_sha=$OBUPARSE_SHA" >> $GITHUB_OUTPUT
+
+          echo "=== Current versions ==="
+          echo "FFmpeg: $FFMPEG"
+          echo "mimalloc: $MIMALLOC"
+          echo "ffms2: $FFMS2_SHA"
+          echo "lsmash: $LSMASH_SHA"
+          echo "obuparse: $OBUPARSE_SHA"
+
+      # ============================================
+      # Check for changes
+      # ============================================
+
+      - name: Check for changes
+        id: check
+        run: |
+          CHANGES=""
+          NEED_BUILD="false"
+
+          # Check FFmpeg
+          if [ "${{ steps.ffmpeg.outputs.tag }}" != "${{ steps.current.outputs.ffmpeg }}" ]; then
+            CHANGES="${CHANGES}FFmpeg ${{ steps.current.outputs.ffmpeg }} -> ${{ steps.ffmpeg.outputs.tag }}, "
+            NEED_BUILD="true"
+            echo "ffmpeg_changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "ffmpeg_changed=false" >> $GITHUB_OUTPUT
+          fi
+
+          # Check mimalloc
+          if [ "${{ steps.mimalloc.outputs.tag }}" != "${{ steps.current.outputs.mimalloc }}" ]; then
+            CHANGES="${CHANGES}mimalloc ${{ steps.current.outputs.mimalloc }} -> ${{ steps.mimalloc.outputs.tag }}, "
+            NEED_BUILD="true"
+            echo "mimalloc_changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "mimalloc_changed=false" >> $GITHUB_OUTPUT
+          fi
+
+          # Check ffms2 (only if we have a previous SHA to compare)
+          if [ -n "${{ steps.current.outputs.ffms2_sha }}" ] && [ "${{ steps.ffms2.outputs.sha }}" != "${{ steps.current.outputs.ffms2_sha }}" ]; then
+            CHANGES="${CHANGES}ffms2 new commit, "
+            NEED_BUILD="true"
+            echo "ffms2_changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "ffms2_changed=false" >> $GITHUB_OUTPUT
+          fi
+
+          # Check lsmash
+          if [ -n "${{ steps.current.outputs.lsmash_sha }}" ] && [ "${{ steps.lsmash.outputs.sha }}" != "${{ steps.current.outputs.lsmash_sha }}" ]; then
+            CHANGES="${CHANGES}lsmash new commit, "
+            NEED_BUILD="true"
+            echo "lsmash_changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "lsmash_changed=false" >> $GITHUB_OUTPUT
+          fi
+
+          # Check obuparse
+          if [ -n "${{ steps.current.outputs.obuparse_sha }}" ] && [ "${{ steps.obuparse.outputs.sha }}" != "${{ steps.current.outputs.obuparse_sha }}" ]; then
+            CHANGES="${CHANGES}obuparse new commit, "
+            NEED_BUILD="true"
+            echo "obuparse_changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "obuparse_changed=false" >> $GITHUB_OUTPUT
+          fi
+
+          # First run - no cache file, trigger build to populate cache
+          if [ ! -f .github/deps-cache.json ]; then
+            NEED_BUILD="true"
+            CHANGES="${CHANGES}first run (initializing cache), "
+            echo "first_run=true" >> $GITHUB_OUTPUT
+          else
+            echo "first_run=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "changes=${CHANGES%,*}" >> $GITHUB_OUTPUT
+          echo "need_build=$NEED_BUILD" >> $GITHUB_OUTPUT
+
+          if [ "$NEED_BUILD" = "true" ]; then
+            echo "=== Changes detected: ${CHANGES%,*} ==="
+          else
+            echo "=== No changes detected ==="
+          fi
+
+      # ============================================
+      # Update files
+      # ============================================
 
       - name: Update build.yml
+        if: steps.check.outputs.ffmpeg_changed == 'true' || steps.check.outputs.mimalloc_changed == 'true'
         run: |
-          # Update FFmpeg ref
+          # Update FFmpeg ref and cache key
           sed -i "s/ref: n[0-9]\+\.[0-9]\+/ref: ${{ steps.ffmpeg.outputs.tag }}/" .github/workflows/build.yml
-          # Update FFmpeg cache key
           sed -i "s/key: ffmpeg-n[0-9]\+\.[0-9]\+/key: ffmpeg-${{ steps.ffmpeg.outputs.tag }}/" .github/workflows/build.yml
           # Update mimalloc ref
           sed -i "s/ref: v[0-9]\+\.[0-9]\+\.[0-9]\+/ref: ${{ steps.mimalloc.outputs.tag }}/" .github/workflows/build.yml
 
-      - name: Check for changes
-        id: changes
+      - name: Update deps cache
         run: |
-          if git diff --quiet .github/workflows/build.yml; then
-            echo "changed=false" >> $GITHUB_OUTPUT
-            echo "No changes detected"
-          else
-            echo "changed=true" >> $GITHUB_OUTPUT
-            echo "Changes detected"
-            git diff .github/workflows/build.yml
-          fi
+          mkdir -p .github
+          cat > .github/deps-cache.json << EOF
+          {
+            "ffms2": "${{ steps.ffms2.outputs.sha }}",
+            "lsmash": "${{ steps.lsmash.outputs.sha }}",
+            "obuparse": "${{ steps.obuparse.outputs.sha }}",
+            "updated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          cat .github/deps-cache.json
 
       - name: Commit and push changes
-        if: steps.changes.outputs.changed == 'true'
+        if: steps.check.outputs.need_build == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .github/workflows/build.yml
-          git commit -m "Update dependencies: FFmpeg ${{ steps.ffmpeg.outputs.tag }}, mimalloc ${{ steps.mimalloc.outputs.tag }}"
+          git add .github/workflows/build.yml .github/deps-cache.json
+          git commit -m "Update dependencies: ${{ steps.check.outputs.changes }}" || echo "Nothing to commit"
           git push
+
+      # ============================================
+      # Trigger CI build
+      # ============================================
+
+      - name: Trigger CI build
+        if: steps.check.outputs.need_build == 'true'
+        run: |
+          echo "Triggering CI build due to: ${{ steps.check.outputs.changes }}"
+          # The push above will automatically trigger the build workflow
+          echo "Build will be triggered automatically by the push event"
