@@ -1917,8 +1917,10 @@ static int parse( int argc, char **argv, x264_param_t *param, cli_opt_t *opt )
     const char *audio_demuxer = "auto";
     int audio_track      = TRACK_ANY;
     float audio_bitrate  = -1;
-    float audio_quality  = -1.0f;
-    float acodec_quality = -1.0f;
+    float audio_quality  = 0;
+    int audio_quality_set = 0;
+    float acodec_quality = 0;
+    int acodec_quality_set = 0;
     int audio_samplerate = -1;
     int audio_enable     = 1;
     hnd_t haud           = NULL;
@@ -2148,9 +2150,11 @@ static int parse( int argc, char **argv, x264_param_t *param, cli_opt_t *opt )
                 break;
             case OPT_AUDIOQUALITY:
                 audio_quality = (float) atof( optarg );
+                audio_quality_set = 1;
                 break;
             case OPT_AUDIOCODECQUALITY:
                 acodec_quality = (float) atof( optarg );
+                acodec_quality_set = 1;
                 break;
             case OPT_AUDIOSAMPLERATE:
                 audio_samplerate = atoi( optarg );
@@ -2323,10 +2327,10 @@ generic_option:
     {
         if( audio_bitrate > 0 )
             len += snprintf( &arg[len], MAX_ARGS, "is_vbr=0,bitrate=%f", audio_bitrate );
-        else if( audio_quality >= 0 )
+        else if( audio_quality_set )
             len += snprintf( &arg[len], MAX_ARGS, "is_vbr=1,bitrate=%f", audio_quality );
 
-        if( acodec_quality >= 0 )
+        if( acodec_quality_set )
             len += snprintf( &arg[len], MAX_ARGS - len, "%squality=%f", len ? "," : "", acodec_quality );
 
         if( audio_samplerate > 0 )
