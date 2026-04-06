@@ -81,6 +81,9 @@ jobs:
           p7zip
           base-devel
           git
+          autoconf
+          automake
+          libtool
           mingw-w64-${{matrix.toolchain}}-x86_64-nasm
           mingw-w64-${{matrix.toolchain}}-x86_64-toolchain
           mingw-w64-${{matrix.toolchain}}-x86_64-cmake
