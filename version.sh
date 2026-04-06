@@ -28,6 +28,17 @@ fi
 # Get build date
 BUILD_DATE=`date +%Y%m%d`
 
+# Get git commit hash (short)
+GIT_HASH=`git rev-list HEAD -n 1 2>/dev/null | cut -c 1-7`
+[ -z "$GIT_HASH" ] && GIT_HASH="unknown"
+
+# Build arch with CPU target
+if [ -n "$TARGET_CPU" ]; then
+    ARCH_INFO="${BUILD_ARCH}_${TARGET_CPU}"
+else
+    ARCH_INFO="${BUILD_ARCH}"
+fi
+
 if [ $LOCAL_VER \> 1 ] ; then
     PLAIN_VER=`git rev-list origin/master | sort | join config.git-hash - | wc -l | awk '{print $1}'`
     echo "#define X264_REV $PLAIN_VER"
@@ -45,11 +56,7 @@ if [ $LOCAL_VER \> 1 ] ; then
     echo "#define X264_VERSION \" r$VER\""
 else
     echo "#define X264_VERSION \"\""
-    if [ -n "$TARGET_CPU" ]; then
-        VER="${BUILD_DATE}_${TARGET_CPU}@ADE [${BIT_DEPTH}-bit@${CHROMA_FORMATS} ${BUILD_ARCH}]"
-    else
-        VER="${BUILD_DATE}@ADE [${BIT_DEPTH}-bit@${CHROMA_FORMATS} ${BUILD_ARCH}]"
-    fi
+    VER="${BUILD_DATE} ${GIT_HASH} @ADE [${BIT_DEPTH}-bit@${CHROMA_FORMATS} ${ARCH_INFO}]"
 fi
 rm -f config.git-hash
 API=`grep '#define X264_BUILD' < "$(dirname "$0")"/x264.h | sed -e 's/.* \([1-9][0-9]*\).*/\1/'`
