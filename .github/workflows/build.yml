@@ -147,6 +147,7 @@ jobs:
     - name: Compile x264 8bit only
       run: |
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
+        export X264_TARGET_CPU=${{matrix.target_cpu}}
         CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=8 --enable-lto --enable-static --extra-cflags="-I/usr/local/include -I/clang64/include -I../../ffmpeg" --extra-ldflags="-L/usr/local/lib -L/clang64/lib"
         echo "=== config.log ffms section ==="
         grep -A20 "checking for packages: ffms2" config.log || true
@@ -157,6 +158,7 @@ jobs:
     - name: Compile x264 10bit only
       run: |
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
+        export X264_TARGET_CPU=${{matrix.target_cpu}}
         CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=10 --enable-lto --enable-static --extra-cflags="-I/usr/local/include -I/clang64/include -I../../ffmpeg" --extra-ldflags="-L/usr/local/lib -L/clang64/lib"
         make -j`nproc`
         strip -s x264.exe
@@ -165,6 +167,7 @@ jobs:
       working-directory: build
       run: |
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
+        export X264_TARGET_CPU=${{matrix.target_cpu}}
         pushd all
         CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=all --enable-lto --enable-static --extra-cflags="-I/usr/local/include -I/clang64/include -I../../ffmpeg" --extra-ldflags="-L/usr/local/lib -L/clang64/lib"
         make -j`nproc`

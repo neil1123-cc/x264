@@ -18,6 +18,16 @@ elif [ $CHROMA_FORMATS == "X264_CSP_I444" ] ; then
     CHROMA_FORMATS="4:4:4"
 fi
 BUILD_ARCH=`grep "SYS_ARCH=" < config.mak | awk -F= '{print $2}'`
+
+# Get target CPU from environment variable or config.mak
+TARGET_CPU="${X264_TARGET_CPU:-}"
+if [ -z "$TARGET_CPU" ] && grep -q "X264_TARGET_CPU=" config.mak 2>/dev/null; then
+    TARGET_CPU=`grep "X264_TARGET_CPU=" < config.mak | awk -F= '{print $2}'`
+fi
+
+# Get build date
+BUILD_DATE=`date +%Y%m%d`
+
 if [ $LOCAL_VER \> 1 ] ; then
     PLAIN_VER=`git rev-list origin/master | sort | join config.git-hash - | wc -l | awk '{print $1}'`
     echo "#define X264_REV $PLAIN_VER"
@@ -35,7 +45,11 @@ if [ $LOCAL_VER \> 1 ] ; then
     echo "#define X264_VERSION \" r$VER\""
 else
     echo "#define X264_VERSION \"\""
-    VER="x [${BIT_DEPTH}-bit@${CHROMA_FORMATS} ${BUILD_ARCH}]"
+    if [ -n "$TARGET_CPU" ]; then
+        VER="${BUILD_DATE}_${TARGET_CPU} [${BIT_DEPTH}-bit@${CHROMA_FORMATS} ${BUILD_ARCH}]"
+    else
+        VER="${BUILD_DATE} [${BIT_DEPTH}-bit@${CHROMA_FORMATS} ${BUILD_ARCH}]"
+    fi
 fi
 rm -f config.git-hash
 API=`grep '#define X264_BUILD' < "$(dirname "$0")"/x264.h | sed -e 's/.* \([1-9][0-9]*\).*/\1/'`
