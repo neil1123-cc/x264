@@ -422,11 +422,23 @@ static void print_version_info( void )
 #if HAVE_LSMASH
     printf( "(lsmash %d.%d.%d)\n", LSMASH_VERSION_MAJOR, LSMASH_VERSION_MINOR, LSMASH_VERSION_MICRO );
 #endif
-    printf( "built on " __DATE__ ", " );
+    {   /* Fix __DATE__ extra space and trim __clang_version__ parentheses */
+        char date[16] = __DATE__;
+        char *p = date;
+        while( *p && *p != ' ' ) p++;
+        if( *p == ' ' && *(p+1) == ' ' )
+            memmove( p, p+1, strlen(p) );
+#ifdef __clang__
+        char clang_ver[64] = __clang_version__;
+        char *paren = strchr( clang_ver, '(' );
+        if( paren ) *paren = '\0';
+        printf( "built on %s, clang: %s\n", date, clang_ver );
+#else
+        printf( "built on %s, ", date );
+#endif
+    }
 #ifdef __INTEL_COMPILER
     printf( "intel: %.2f (%d)\n", __INTEL_COMPILER / 100.f, __INTEL_COMPILER_BUILD_DATE );
-#elif defined(__clang__)
-    printf( "clang: " __clang_version__ "\n" );
 #elif defined(__GNUC__)
     printf( "gcc: " __VERSION__ "\n" );
 #elif defined(_MSC_FULL_VER)
