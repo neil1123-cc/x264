@@ -46,7 +46,7 @@ FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
 #ifdef DEBUG
 FILEFLAGS       VS_FF_DEBUG
 #else
-FILEFLAGS       0
+FILEFLAGS       0L
 #endif
 FILEOS          VOS_NT_WINDOWS32 /* Identical for x86-64 */
 #ifdef DLL
