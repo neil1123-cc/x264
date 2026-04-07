@@ -1,0 +1,353 @@
+name: Build PGO
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (empty for artifact only)'
+        required: false
+        default: ''
+      profdata_source:
+        description: 'Source of profdata'
+        required: true
+        default: 'generate'
+        type: choice
+        options:
+          - generate
+          - branch
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    strategy:
+      fail-fast: true
+      matrix:
+        target_cpu:
+          - x86-64
+          - haswell
+          - skylake
+          - alderlake
+          - raptorlake
+          - arrowlake
+          - znver2
+          - znver3
+          - znver4
+          - znver5
+    steps:
+    - name: Checkout x264
+      uses: actions/checkout@v4
+      with:
+        path: x264
+        fetch-depth: 0
+
+    - name: Fetch profdata from branch
+      if: inputs.profdata_source == 'branch'
+      run: |
+        cd x264
+        git fetch origin profdata-${{ matrix.target_cpu }} --depth=1 || echo "Branch not found"
+        git checkout profdata-${{ matrix.target_cpu }} -- profdata 2>/dev/null || echo "profdata not found in branch"
+        mkdir -p ../build
+        mv profdata ../build/default.profdata 2>/dev/null || echo "No profdata to move"
+
+    - name: Cache FFmpeg
+      id: cache-ff
+      uses: actions/cache@v4
+      with:
+        path: ffmpeg
+        key: ffmpeg-n8.1-full-v1-clang
+
+    - name: Checkout FFmpeg
+      uses: actions/checkout@v4
+      with:
+        path: ffmpeg
+        repository: FFmpeg/FFmpeg
+        ref: n8.1
+      if: steps.cache-ff.outputs.cache-hit != 'true'
+
+    - name: Checkout mimalloc
+      uses: actions/checkout@v4
+      with:
+        path: mimalloc
+        repository: microsoft/mimalloc
+        ref: v3.2.8
+
+    - name: Checkout obuparse
+      uses: actions/checkout@v4
+      with:
+        path: obuparse
+        repository: dwbuiten/obuparse
+
+    - name: Checkout L-SMASH
+      uses: actions/checkout@v4
+      with:
+        path: lsmash
+        repository: vimeo/l-smash
+
+    - name: Setup MSYS2
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: CLANG64
+        update: true
+        install: >-
+          p7zip
+          base-devel
+          git
+          autoconf
+          automake
+          libtool
+          mingw-w64-clang-x86_64-nasm
+          mingw-w64-clang-x86_64-toolchain
+          mingw-w64-clang-x86_64-cmake
+          mingw-w64-clang-x86_64-ninja
+
+    - name: Compile FFmpeg (full with avfilter)
+      run: |
+        PGO_OPT="--enable-avdevice --enable-avfilter --enable-ffmpeg --enable-indev=lavfi"
+        for f in testsrc testsrc2 smptebars nullsrc geq gradients format scale; do
+          PGO_OPT="$PGO_OPT --enable-filter=$f"
+        done
+        ./configure --prefix=/usr/local --enable-gpl --enable-version3 \
+          --disable-runtime-cpudetect --disable-all --disable-autodetect \
+          --enable-avformat --enable-avcodec --enable-swscale --enable-swresample \
+          --disable-everything --disable-network $PGO_OPT \
+          --enable-demuxer=mpegts,mov,matroska,h264,hevc,rawvideo,yuv4mpegpipe \
+          --enable-decoder=h264,hevc,ffv1,ffvhuff,huffyuv,rawvideo,wrapped_avframe,aac,ac3,mp3 \
+          --enable-encoder=rawvideo,aac,ac3,mp2,pcm_s16le,pcm_s24le,pcm_s32le \
+          --enable-muxer=yuv4mpegpipe \
+          --enable-protocol=file,pipe \
+          --cc=cc --cxx=c++ --cpu=x86-64
+        make -j$(nproc)
+      working-directory: ffmpeg
+      if: steps.cache-ff.outputs.cache-hit != 'true'
+
+    - name: Get rid of .dll.a
+      run: find /*64/ /usr/ -type f -name "*.dll.a" -print -delete
+
+    - name: Install FFmpeg
+      run: make install
+      working-directory: ffmpeg
+
+    - name: Checkout ffms2
+      uses: actions/checkout@v4
+      with:
+        path: ffms2
+        repository: FFMS/ffms2
+
+    - name: Compile ffms2 (static)
+      run: |
+        export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH
+        ./autogen.sh
+        ./configure --prefix=/usr/local --enable-static --disable-shared
+        make -j$(nproc)
+      working-directory: ffms2
+
+    - name: Install ffms2
+      run: make install
+      working-directory: ffms2
+
+    - name: Compile mimalloc
+      run: |
+        mkdir build
+        cd build
+        cmake -GNinja .. -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+          -DMI_BUILD_SHARED=OFF -DMI_BUILD_STATIC=ON -DMI_BUILD_OBJECT=OFF -DMI_BUILD_TESTS=OFF -DMI_USE_CXX=ON
+        ninja
+      working-directory: mimalloc
+
+    - name: Install mimalloc
+      run: ninja install
+      working-directory: mimalloc/build
+
+    - name: Compile obuparse
+      run: make CC=cc libobuparse.a
+      working-directory: obuparse
+
+    - name: Install obuparse
+      run: |
+        install -d /usr/local/include
+        install -d /usr/local/lib
+        install -v obuparse.h /usr/local/include
+        install -v libobuparse.a /usr/local/lib
+      working-directory: obuparse
+
+    - name: Compile L-SMASH
+      run: |
+        ./configure --prefix=/usr/local --cc=cc --extra-cflags="-I/usr/local/include" \
+          --extra-ldflags="-L/usr/local/lib" --extra-libs="-lobuparse"
+        make -j$(nproc)
+      working-directory: lsmash
+
+    - name: Install L-SMASH
+      run: |
+        make install
+        cp importer/importer.h /usr/local/include/lsmash_importer.h
+      working-directory: lsmash
+
+    - name: Setup build dir
+      run: mkdir -p build/allprof
+
+    - name: Compile x264 profiling version
+      if: inputs.profdata_source == 'generate'
+      working-directory: build/allprof
+      env:
+        PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
+        X264_TARGET_CPU: ${{ matrix.target_cpu }}
+      run: |
+        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=all --enable-lto --enable-lavf --enable-lsmash --enable-static \
+          --extra-cflags="-O2 -fprofile-instr-generate -fprofile-update=atomic -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
+          --extra-ldflags="-fprofile-instr-generate -L/usr/local/lib -L/clang64/lib"
+        make -j$(nproc)
+        mv x264.exe x264-profiling.exe
+
+    - name: Generate test videos for PGO
+      if: inputs.profdata_source == 'generate'
+      working-directory: build
+      run: |
+        mkdir -p test-videos
+        # 1080p 30fps
+        ffmpeg -f lavfi -i "testsrc=duration=8:size=1920x1080:rate=30" -c:v rawvideo -pix_fmt yuv420p test-videos/1080p_30fps.y4m
+        # 720p 24fps
+        ffmpeg -f lavfi -i "testsrc2=duration=6:size=1280x720:rate=24" -c:v rawvideo -pix_fmt yuv420p test-videos/720p_24fps.y4m
+        # 480p
+        ffmpeg -f lavfi -i "smptebars=duration=4:size=854x480:rate=30" -c:v rawvideo -pix_fmt yuv420p test-videos/480p_smpte.y4m
+        # 4K
+        ffmpeg -f lavfi -i "testsrc=duration=3:size=3840x2160:rate=30" -c:v rawvideo -pix_fmt yuv420p test-videos/4k_30fps.y4m
+        # Noise
+        ffmpeg -f lavfi -i "nullsrc=s=640x480:r=30,geq=random(1)*255:128:128" -t 3 -c:v rawvideo -pix_fmt yuv420p test-videos/noise_480p.y4m
+        # Gradient
+        ffmpeg -f lavfi -i "gradients=s=1280x720:c0=000000:c1=ffffff" -t 3 -c:v rawvideo -pix_fmt yuv420p test-videos/gradient_720p.y4m
+
+    - name: Run PGO profiling workload
+      if: inputs.profdata_source == 'generate'
+      working-directory: build/allprof
+      run: |
+        OPT8_FAST="--crf 23 --preset ultrafast --threads 4"
+        OPT8_FASTER="--crf 23 --preset faster --threads 4"
+        OPT8_MEDIUM="--crf 20 --preset medium --threads 4"
+        OPT8_MEDIUM2="--crf 23 --preset medium --aq-mode 2 --threads 4"
+        OPT8_SLOW="--crf 18 --preset slow --me umh --threads 4"
+        OPT8_SLOWER="--crf 20 --preset slower --me esa --threads 2"
+        OPT8_VERYSLOW="--crf 18 --preset veryslow --me tesa --threads 2"
+        OPT8_PSY="--crf 20 --preset medium --psy-rd 1.0:0.15 --aq-mode 3 --threads 4"
+        OPT8_PLACEBO="--crf 16 --preset placebo --me tesa --threads 2"
+
+        OPT10_FAST="--output-depth 10 --crf 23 --preset fast --threads 4"
+        OPT10_MEDIUM="--output-depth 10 --crf 20 --preset medium --aq-mode 2 --threads 4"
+        OPT10_SLOW="--output-depth 10 --crf 18 --preset slow --me umh --threads 4"
+        OPT10_PSY="--output-depth 10 --crf 20 --preset medium --psy-rd 1.0:0.15 --aq-mode 3 --threads 4"
+        OPT10_PLACEBO="--output-depth 10 --crf 16 --preset placebo --me tesa --threads 2"
+
+        echo "=== 8-bit Primary Tests ==="
+        for opt in "$OPT8_MEDIUM" "$OPT8_MEDIUM2" "$OPT8_SLOW" "$OPT8_PSY"; do
+          ./x264-profiling.exe $opt ../test-videos/1080p_30fps.y4m -o /dev/null 2>/dev/null || true
+          ./x264-profiling.exe $opt ../test-videos/720p_24fps.y4m -o /dev/null 2>/dev/null || true
+        done
+
+        for opt in "$OPT8_MEDIUM" "$OPT8_SLOW"; do
+          ./x264-profiling.exe $opt ../test-videos/4k_30fps.y4m -o /dev/null 2>/dev/null || true
+        done
+
+        echo "=== 8-bit Preset Coverage ==="
+        for opt in "$OPT8_FAST" "$OPT8_FASTER" "$OPT8_SLOWER" "$OPT8_VERYSLOW" "$OPT8_PLACEBO"; do
+          ./x264-profiling.exe $opt ../test-videos/480p_smpte.y4m -o /dev/null 2>/dev/null || true
+          ./x264-profiling.exe $opt ../test-videos/noise_480p.y4m -o /dev/null 2>/dev/null || true
+        done
+
+        echo "=== 10-bit Tests ==="
+        for opt in "$OPT10_MEDIUM" "$OPT10_SLOW" "$OPT10_PSY"; do
+          ./x264-profiling.exe $opt ../test-videos/1080p_30fps.y4m -o /dev/null 2>/dev/null || true
+          ./x264-profiling.exe $opt ../test-videos/720p_24fps.y4m -o /dev/null 2>/dev/null || true
+        done
+
+        for opt in "$OPT10_FAST" "$OPT10_PLACEBO"; do
+          ./x264-profiling.exe $opt ../test-videos/480p_smpte.y4m -o /dev/null 2>/dev/null || true
+        done
+
+        llvm-profdata merge -output=default.profdata *.profraw
+        echo "=== Profile data generated ==="
+        ls -la *.profdata
+
+    - name: Build PGO-optimized x264 (8bit)
+      working-directory: build
+      env:
+        PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
+        X264_TARGET_CPU: ${{ matrix.target_cpu }}
+      run: |
+        mkdir -p pgo-8bit
+        cd pgo-8bit
+        cp ../default.profdata ./
+        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=8 --enable-lto --enable-lavf --enable-lsmash --enable-static \
+          --extra-cflags="-fprofile-instr-use=default.profdata -O3 -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
+          --extra-ldflags="-fprofile-instr-use=default.profdata -L/usr/local/lib -L/clang64/lib"
+        make -j$(nproc)
+        strip -s x264.exe
+
+    - name: Build PGO-optimized x264 (10bit)
+      working-directory: build
+      env:
+        PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
+        X264_TARGET_CPU: ${{ matrix.target_cpu }}
+      run: |
+        mkdir -p pgo-10bit
+        cd pgo-10bit
+        cp ../default.profdata ./
+        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=10 --enable-lto --enable-lavf --enable-lsmash --enable-static \
+          --extra-cflags="-fprofile-instr-use=default.profdata -O3 -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
+          --extra-ldflags="-fprofile-instr-use=default.profdata -L/usr/local/lib -L/clang64/lib"
+        make -j$(nproc)
+        strip -s x264.exe
+
+    - name: Build PGO-optimized x264 (all bit-depths)
+      working-directory: build
+      env:
+        PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
+        X264_TARGET_CPU: ${{ matrix.target_cpu }}
+      run: |
+        mkdir -p pgo-all
+        cd pgo-all
+        cp ../default.profdata ./
+        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=all --enable-lto --enable-lavf --enable-lsmash --enable-static \
+          --extra-cflags="-fprofile-instr-use=default.profdata -O3 -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
+          --extra-ldflags="-fprofile-instr-use=default.profdata -L/usr/local/lib -L/clang64/lib"
+        make -j$(nproc)
+        strip -s x264.exe
+
+    - name: Package
+      run: |
+        mkdir dist
+        cp build/pgo-8bit/x264.exe dist/x264-8bit-pgo.exe
+        cp build/pgo-10bit/x264.exe dist/x264-10bit-pgo.exe
+        cp build/pgo-all/x264.exe dist/x264-pgo.exe
+        cp build/default.profdata dist/x264.profdata
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: x264-pgo-${{ matrix.target_cpu }}
+        path: dist/*
+
+    - name: Compress artifact for release
+      if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
+      run: |
+        cd dist
+        7za a -t7z -mx=7 ../x264-win64-${{ matrix.target_cpu }}-clang-pgo.${{ inputs.tag }}.7z \
+          x264-8bit-pgo.exe x264-10bit-pgo.exe x264-pgo.exe
+
+    - name: Release
+      uses: softprops/action-gh-release@v2
+      if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
+      with:
+        tag_name: ${{ inputs.tag }}
+        files: x264-win64-${{ matrix.target_cpu }}-clang-pgo.${{ inputs.tag }}.7z
+        fail_on_unmatched_files: true
+        generate_release_notes: false
+        prerelease: true

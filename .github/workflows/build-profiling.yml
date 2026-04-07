@@ -1,26 +1,14 @@
-name: Build
+name: Build Profiling
 
 on:
-  push:
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'which tag to upload to'
-        default: ''
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
-jobs:
-  build:
-    runs-on: windows-latest
-    defaults:
-      run:
-        shell: msys2 {0}
-    strategy:
-      fail-fast: false
-      matrix:
-        target_cpu:
+      target_cpu:
+        description: 'Target CPU architecture'
+        required: true
+        default: 'x86-64'
+        type: choice
+        options:
           - x86-64
           - haswell
           - skylake
@@ -31,9 +19,24 @@ jobs:
           - znver3
           - znver4
           - znver5
-        toolchain:
-          - clang
-          #- ucrt
+      upload_profdata:
+        description: 'Upload profdata to Git branch'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
     steps:
     - name: Checkout x264
       uses: actions/checkout@v4
@@ -46,7 +49,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ffmpeg
-        key: ffmpeg-n8.1-minimal-v1-${{matrix.toolchain}}
+        key: ffmpeg-n8.1-full-v1-clang
 
     - name: Checkout FFmpeg
       uses: actions/checkout@v4
@@ -78,7 +81,7 @@ jobs:
     - name: Setup MSYS2
       uses: msys2/setup-msys2@v2
       with:
-        msystem: ${{ matrix.toolchain == 'clang' && 'CLANG64' || 'UCRT64' }}
+        msystem: CLANG64
         update: true
         install: >-
           p7zip
@@ -87,20 +90,27 @@ jobs:
           autoconf
           automake
           libtool
-          mingw-w64-${{matrix.toolchain}}-x86_64-nasm
-          mingw-w64-${{matrix.toolchain}}-x86_64-toolchain
-          mingw-w64-${{matrix.toolchain}}-x86_64-cmake
-          mingw-w64-${{matrix.toolchain}}-x86_64-ninja
+          mingw-w64-clang-x86_64-nasm
+          mingw-w64-clang-x86_64-toolchain
+          mingw-w64-clang-x86_64-cmake
+          mingw-w64-clang-x86_64-ninja
 
-    - name: Compile FFmpeg (minimal)
+    - name: Compile FFmpeg (full with avfilter)
       run: |
+        # Full FFmpeg with avfilter for lavfi test video generation
+        PGO_OPT="--enable-avdevice --enable-avfilter --enable-ffmpeg --enable-indev=lavfi"
+        for f in testsrc testsrc2 smptebars nullsrc geq gradients format scale; do
+          PGO_OPT="$PGO_OPT --enable-filter=$f"
+        done
         ./configure --prefix=/usr/local --enable-gpl --enable-version3 \
           --disable-runtime-cpudetect --disable-all --disable-autodetect \
           --enable-avformat --enable-avcodec --enable-swscale --enable-swresample \
-          --disable-everything --disable-network \
+          --disable-everything --disable-network $PGO_OPT \
           --enable-demuxer=mpegts,mov,matroska,h264,hevc,rawvideo,yuv4mpegpipe \
           --enable-decoder=h264,hevc,ffv1,ffvhuff,huffyuv,rawvideo,wrapped_avframe,aac,ac3,mp3 \
-          --enable-protocol=file \
+          --enable-encoder=rawvideo,aac,ac3,mp2,pcm_s16le,pcm_s24le,pcm_s32le \
+          --enable-muxer=yuv4mpegpipe \
+          --enable-protocol=file,pipe \
           --cc=cc --cxx=c++ --cpu=x86-64
         make -j$(nproc)
       working-directory: ffmpeg
@@ -170,67 +180,49 @@ jobs:
       working-directory: lsmash
 
     - name: Setup build dir
-      run: mkdir -p build/8b build/10b build/all
+      run: mkdir -p build/prof
 
-    - name: Compile x264 8bit
+    - name: Compile x264 profiling version
+      working-directory: build/prof
+      env:
+        PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
+        X264_TARGET_CPU: ${{ inputs.target_cpu }}
       run: |
-        export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
-        export X264_TARGET_CPU=${{matrix.target_cpu}}
-        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=8 --enable-lto --enable-lavf --enable-lsmash --enable-static \
-          --extra-cflags="-O3 -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
-          --extra-ldflags="-L/usr/local/lib -L/clang64/lib"
-        make -j$(nproc)
-        strip -s x264.exe
-      working-directory: build/8b
-
-    - name: Compile x264 10bit
-      run: |
-        export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
-        export X264_TARGET_CPU=${{matrix.target_cpu}}
-        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=10 --enable-lto --enable-lavf --enable-lsmash --enable-static \
-          --extra-cflags="-O3 -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
-          --extra-ldflags="-L/usr/local/lib -L/clang64/lib"
-        make -j$(nproc)
-        strip -s x264.exe
-      working-directory: build/10b
-
-    - name: Compile x264 8bit+10bit (all)
-      run: |
-        export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
-        export X264_TARGET_CPU=${{matrix.target_cpu}}
         CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=all --enable-lto --enable-lavf --enable-lsmash --enable-static \
-          --extra-cflags="-O3 -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
-          --extra-ldflags="-L/usr/local/lib -L/clang64/lib"
+          --extra-cflags="-O2 -fprofile-instr-generate -fprofile-update=atomic -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
+          --extra-ldflags="-fprofile-instr-generate -L/usr/local/lib -L/clang64/lib"
         make -j$(nproc)
-        strip -s x264.exe
-      working-directory: build/all
+        mv x264.exe x264-profiling.exe
 
     - name: Package
       run: |
         mkdir dist
-        cp build/8b/x264.exe dist/x264-8bit.exe
-        cp build/10b/x264.exe dist/x264-10bit.exe
-        cp build/all/x264.exe dist/x264.exe
+        cp build/prof/x264-profiling.exe dist/
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: x264-win64-${{matrix.target_cpu}}-${{matrix.toolchain}}
+        name: x264-profiling-${{ inputs.target_cpu }}
         path: dist/*
 
-    - name: Compress artifact for release
-      if: github.event_name == 'workflow_dispatch' && github.event.inputs.tag != ''
+    - name: Push profdata to branch
+      if: inputs.upload_profdata
       run: |
-        cd dist
-        7za a -t7z -mx=7 ../x264-win64-${{matrix.target_cpu}}-${{matrix.toolchain}}.${{ github.event.inputs.tag }}.7z \
-          x264-8bit.exe x264-10bit.exe x264.exe
+        # Run a minimal workload to generate profdata
+        mkdir -p test-videos
+        ffmpeg -f lavfi -i "testsrc=duration=2:size=640x480:rate=30" -c:v rawvideo -pix_fmt yuv420p test-videos/test.y4m
+        ./build/prof/x264-profiling.exe --crf 23 --preset medium test-videos/test.y4m -o /dev/null 2>/dev/null || true
 
-    - name: Release
-      uses: softprops/action-gh-release@v2
-      if: github.event_name == 'workflow_dispatch' && github.event.inputs.tag != ''
-      with:
-        tag_name: ${{ github.event.inputs.tag }}
-        files: x264-win64-${{matrix.target_cpu}}-${{matrix.toolchain}}.${{ github.event.inputs.tag }}.7z
-        fail_on_unmatched_files: true
-        generate_release_notes: false
-        prerelease: true
+        # Merge profdata
+        llvm-profdata merge -output=default.profdata *.profraw
+
+        # Push to branch
+        cd x264
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git checkout --orphan profdata-${{ inputs.target_cpu }}
+        git rm -rf . 2>/dev/null || true
+        cp ../default.profdata ./profdata
+        git add profdata
+        git commit -m "Update profdata for ${{ inputs.target_cpu }} - $(date +%Y%m%d)" || echo "No changes"
+        git push -f https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git profdata-${{ inputs.target_cpu }}
