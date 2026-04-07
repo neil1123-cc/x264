@@ -862,7 +862,7 @@ case $host_cpu in
                 LDFLAGS="$LDFLAGS -Wl,--dynamicbase,--nxcompat,--tsaware"
                 LDFLAGSCLI="$LDFLAGSCLI -Wl,--image-base,0x140000000"
                 SOFLAGS="$SOFLAGS -Wl,--image-base,0x180000000"
-                RCFLAGS="--target=pe-x86-64 --use-temp-file $RCFLAGS"
+                RCFLAGS="--target=pe-x86-64 $RCFLAGS"
             fi
         else
             ASFLAGS="$ASFLAGS -f elf64"
