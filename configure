@@ -1628,7 +1628,6 @@ fi
 
 if [ "$debug" = "yes" ]; then
     CFLAGS="-O1 -g $CFLAGS"
-    RCFLAGS="$RCFLAGS -DDEBUG"
 else
     CFLAGS="-O3 -ffast-math $CFLAGS"
     if [ "$lto" = "auto" ] && [ $compiler = GNU ] && cc_check "" "-flto" ; then
