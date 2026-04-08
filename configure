@@ -1779,7 +1779,7 @@ else # gcc/icc
     AR="$AR rc "
     LD="$CC -o "
     LIBX264=libx264.a
-    [ -n "$RC" ] && RCFLAGS="$RCFLAGS -I. -o "
+    [ -n "$RC" ] && RCFLAGS="$RCFLAGS -I."
     # Add system include paths for llvm-windres preprocessing (finds windows.h)
     if [ $SYS = WINDOWS ]; then
         for inc in /clang64/include /clang64/x86_64-w64-mingw32/include \

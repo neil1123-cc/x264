@@ -425,10 +425,10 @@ $(ALLOBJS): $(GENERATED)
 	-@ $(if $(STRIP), $(STRIP) -x $@)
 
 %.dll.o: %.rc x264.h
-	$(RC) $(RCFLAGS)$@ -DDLL $<
+	$(RC) $(RCFLAGS) -o $@ -DDLL $<
 
 %.o: %.rc x264.h x264res.manifest
-	$(RC) $(RCFLAGS)$@ $<
+	$(RC) $(RCFLAGS) -o $@ $<
 
 config.mak:
 	./configure
