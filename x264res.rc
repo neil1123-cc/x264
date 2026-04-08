@@ -23,9 +23,25 @@
  * For more information, contact us at licensing@x264.com.
  *****************************************************************************/
 
-#include <windows.h>
 #include <stdint.h>
 #include "x264.h"
+
+/* Define Windows resource constants directly for llvm-rc compatibility */
+#ifndef VS_FFI_FILEFLAGSMASK
+#define VS_FFI_FILEFLAGSMASK 0x0000003FL
+#endif
+#ifndef VOS_NT_WINDOWS32
+#define VOS_NT_WINDOWS32 0x00040004L
+#endif
+#ifndef VFT_DLL
+#define VFT_DLL 0x00000002L
+#endif
+#ifndef VFT_APP
+#define VFT_APP 0x00000001L
+#endif
+#ifndef VFT2_UNKNOWN
+#define VFT2_UNKNOWN 0x00000000L
+#endif
 
 #ifndef X264_REV
 #define X264_REV 0
