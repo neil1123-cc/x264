@@ -835,7 +835,7 @@ case $host_cpu in
             ASFLAGS="$ASFLAGS -f win32 -DPREFIX"
             LDFLAGS="$LDFLAGS -Wl,--large-address-aware"
             [ $compiler = GNU ] && LDFLAGS="$LDFLAGS -Wl,--dynamicbase,--nxcompat,--tsaware"
-            [ $compiler = GNU ] && RCFLAGS="--target=pe-i386 --use-temp-file $RCFLAGS"
+            [ $compiler = GNU ] && RCFLAGS="--target=pe-i386 $RCFLAGS"
         else
             ASFLAGS="$ASFLAGS -f elf32"
         fi
@@ -862,7 +862,7 @@ case $host_cpu in
                 LDFLAGS="$LDFLAGS -Wl,--dynamicbase,--nxcompat,--tsaware"
                 LDFLAGSCLI="$LDFLAGSCLI -Wl,--image-base,0x140000000"
                 SOFLAGS="$SOFLAGS -Wl,--image-base,0x180000000"
-                RCFLAGS="--target=pe-x86-64 --use-temp-file $RCFLAGS"
+                RCFLAGS="--target=pe-x86-64 $RCFLAGS"
             fi
         else
             ASFLAGS="$ASFLAGS -f elf64"
@@ -1780,14 +1780,6 @@ else # gcc/icc
     LD="$CC -o "
     LIBX264=libx264.a
     [ -n "$RC" ] && RCFLAGS="$RCFLAGS -I."
-    # Add system include paths for llvm-windres preprocessing (finds windows.h)
-    if [ $SYS = WINDOWS ]; then
-        for inc in /clang64/include /clang64/x86_64-w64-mingw32/include \
-                    /mingw64/include /mingw64/x86_64-w64-mingw32/include \
-                    /ucrt64/include /ucrt64/x86_64-w64-mingw32/include; do
-            [ -d "$inc" ] && RCFLAGS="$RCFLAGS -I$inc"
-        done
-    fi
 fi
 if [ $compiler != GNU ]; then
     CFLAGS="$(cc_cflags $CFLAGS)"
