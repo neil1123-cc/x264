@@ -8,13 +8,13 @@ on:
         required: false
         default: ''
       profdata_source:
-        description: 'Source of profdata'
+        description: 'Source of profdata (generate only works for x86-64)'
         required: true
-        default: 'generate'
+        default: 'branch'
         type: choice
         options:
-          - generate
           - branch
+          - generate
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -29,7 +29,7 @@ jobs:
       run:
         shell: msys2 {0}
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         target_cpu:
           - x86-64
@@ -43,6 +43,14 @@ jobs:
           - znver4
           - znver5
     steps:
+    - name: Validate profdata_source for target
+      shell: bash
+      run: |
+        if [ "${{ inputs.profdata_source }}" = "generate" ] && [ "${{ matrix.target_cpu }}" != "x86-64" ]; then
+          echo "::error::profdata_source=generate only works for x86-64. For ${{ matrix.target_cpu }}, use profdata_source=branch."
+          exit 1
+        fi
+
     - name: Checkout x264
       uses: actions/checkout@v4
       with:
@@ -53,8 +61,9 @@ jobs:
       if: inputs.profdata_source == 'branch'
       run: |
         cd x264
-        git fetch origin profdata-${{ matrix.target_cpu }} --depth=1 || echo "Branch not found"
-        git checkout profdata-${{ matrix.target_cpu }} -- profdata 2>/dev/null || echo "profdata not found in branch"
+        # All architectures use x86-64 profdata (x264 doesn't use -march)
+        git fetch origin profdata-x86-64 --depth=1 || echo "Branch not found"
+        git checkout profdata-x86-64 -- profdata 2>/dev/null || echo "profdata not found in branch"
         mkdir -p ../build
         mv profdata ../build/default.profdata 2>/dev/null || echo "No profdata to move"
 
@@ -196,7 +205,7 @@ jobs:
       run: mkdir -p build/allprof
 
     - name: Compile x264 profiling version
-      if: inputs.profdata_source == 'generate'
+      if: inputs.profdata_source == 'generate' && matrix.target_cpu == 'x86-64'
       working-directory: build/allprof
       env:
         PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
@@ -209,7 +218,7 @@ jobs:
         mv x264.exe x264-profiling.exe
 
     - name: Generate test videos for PGO
-      if: inputs.profdata_source == 'generate'
+      if: inputs.profdata_source == 'generate' && matrix.target_cpu == 'x86-64'
       working-directory: build
       run: |
         mkdir -p test-videos
@@ -227,7 +236,7 @@ jobs:
         ffmpeg -f lavfi -i "gradients=s=1280x720:c0=000000:c1=ffffff" -t 3 -c:v rawvideo -pix_fmt yuv420p test-videos/gradient_720p.y4m
 
     - name: Run PGO profiling workload
-      if: inputs.profdata_source == 'generate'
+      if: inputs.profdata_source == 'generate' && matrix.target_cpu == 'x86-64'
       working-directory: build/allprof
       run: |
         OPT8_FAST="--crf 23 --preset ultrafast --threads 4"
