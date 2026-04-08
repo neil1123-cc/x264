@@ -95,6 +95,7 @@ jobs:
           mingw-w64-${{matrix.toolchain}}-x86_64-toolchain
           mingw-w64-${{matrix.toolchain}}-x86_64-cmake
           mingw-w64-${{matrix.toolchain}}-x86_64-ninja
+          mingw-w64-ucrt-x86_64-binutils
 
     - name: Compile FFmpeg (minimal)
       run: |
@@ -180,7 +181,7 @@ jobs:
       run: |
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
         export X264_TARGET_CPU=${{matrix.target_cpu}}
-        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=8 --enable-lto --enable-lavf --enable-lsmash --enable-static \
+        CC=cc RC=windres ../../x264/configure --prefix=/usr/local --bit-depth=8 --enable-lto --enable-lavf --enable-lsmash --enable-static \
           --extra-cflags="-O3 -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
           --extra-ldflags="-L/usr/local/lib -L/clang64/lib"
         make -j$(nproc)
@@ -191,7 +192,7 @@ jobs:
       run: |
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
         export X264_TARGET_CPU=${{matrix.target_cpu}}
-        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=10 --enable-lto --enable-lavf --enable-lsmash --enable-static \
+        CC=cc RC=windres ../../x264/configure --prefix=/usr/local --bit-depth=10 --enable-lto --enable-lavf --enable-lsmash --enable-static \
           --extra-cflags="-O3 -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
           --extra-ldflags="-L/usr/local/lib -L/clang64/lib"
         make -j$(nproc)
@@ -202,7 +203,7 @@ jobs:
       run: |
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
         export X264_TARGET_CPU=${{matrix.target_cpu}}
-        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=all --enable-lto --enable-lavf --enable-lsmash --enable-static \
+        CC=cc RC=windres ../../x264/configure --prefix=/usr/local --bit-depth=all --enable-lto --enable-lavf --enable-lsmash --enable-static \
           --extra-cflags="-O3 -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
           --extra-ldflags="-L/usr/local/lib -L/clang64/lib"
         make -j$(nproc)
