@@ -117,6 +117,7 @@ jobs:
           mingw-w64-clang-x86_64-toolchain
           mingw-w64-clang-x86_64-cmake
           mingw-w64-clang-x86_64-ninja
+          mingw-w64-ucrt-x86_64-binutils
 
     - name: Compile FFmpeg (full with avfilter)
       run: |
@@ -211,7 +212,7 @@ jobs:
         PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
         X264_TARGET_CPU: ${{ matrix.target_cpu }}
       run: |
-        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=all --enable-lto --enable-lavf --enable-lsmash --enable-static \
+        CC=cc RC=/ucrt64/bin/windres ../../x264/configure --prefix=/usr/local --bit-depth=all --enable-lto --enable-lavf --enable-lsmash --enable-static \
           --extra-cflags="-O2 -fprofile-instr-generate -fprofile-update=atomic -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
           --extra-ldflags="-fprofile-instr-generate -L/usr/local/lib -L/clang64/lib"
         make -j$(nproc)
@@ -294,7 +295,7 @@ jobs:
         mkdir -p pgo-8bit
         cd pgo-8bit
         cp ../default.profdata ./
-        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=8 --enable-lto --enable-lavf --enable-lsmash --enable-static \
+        CC=cc RC=/ucrt64/bin/windres ../../x264/configure --prefix=/usr/local --bit-depth=8 --enable-lto --enable-lavf --enable-lsmash --enable-static \
           --extra-cflags="-fprofile-instr-use=default.profdata -O3 -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
           --extra-ldflags="-fprofile-instr-use=default.profdata -L/usr/local/lib -L/clang64/lib"
         make -j$(nproc)
@@ -309,7 +310,7 @@ jobs:
         mkdir -p pgo-10bit
         cd pgo-10bit
         cp ../default.profdata ./
-        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=10 --enable-lto --enable-lavf --enable-lsmash --enable-static \
+        CC=cc RC=/ucrt64/bin/windres ../../x264/configure --prefix=/usr/local --bit-depth=10 --enable-lto --enable-lavf --enable-lsmash --enable-static \
           --extra-cflags="-fprofile-instr-use=default.profdata -O3 -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
           --extra-ldflags="-fprofile-instr-use=default.profdata -L/usr/local/lib -L/clang64/lib"
         make -j$(nproc)
@@ -324,7 +325,7 @@ jobs:
         mkdir -p pgo-all
         cd pgo-all
         cp ../default.profdata ./
-        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=all --enable-lto --enable-lavf --enable-lsmash --enable-static \
+        CC=cc RC=/ucrt64/bin/windres ../../x264/configure --prefix=/usr/local --bit-depth=all --enable-lto --enable-lavf --enable-lsmash --enable-static \
           --extra-cflags="-fprofile-instr-use=default.profdata -O3 -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
           --extra-ldflags="-fprofile-instr-use=default.profdata -L/usr/local/lib -L/clang64/lib"
         make -j$(nproc)
