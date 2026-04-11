@@ -45,6 +45,15 @@ jobs:
         path: x264
         fetch-depth: 0
 
+    - name: Fetch PGO profdata
+      shell: bash
+      run: |
+        cd x264
+        git fetch origin profdata-x86-64 --depth=1 || echo "Branch not found"
+        git checkout profdata-x86-64 -- x264.profdata 2>/dev/null || echo "profdata not found"
+        mkdir -p ../build
+        mv x264.profdata ../build/x264.profdata 2>/dev/null || echo "No profdata"
+
     - name: Cache FFmpeg
       id: cache-ff
       uses: actions/cache@v4
@@ -181,9 +190,18 @@ jobs:
       run: |
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
         export X264_TARGET_CPU=${{matrix.target_cpu}}
+        CFLAGS="-O3 -I/usr/local/include -I/clang64/include -I../../ffmpeg"
+        LDFLAGS="-L/usr/local/lib -L/clang64/lib"
+        if [ -f ../x264.profdata ]; then
+          CFLAGS="$CFLAGS -fprofile-instr-use=../x264.profdata"
+          LDFLAGS="$LDFLAGS -fprofile-instr-use=../x264.profdata"
+          echo "Using PGO profdata"
+        else
+          echo "Building without PGO"
+        fi
         CC=cc RC=/ucrt64/bin/windres ../../x264/configure --prefix=/usr/local --bit-depth=8 --enable-lto --enable-lavf --enable-lsmash --enable-static \
-          --extra-cflags="-O3 -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
-          --extra-ldflags="-L/usr/local/lib -L/clang64/lib"
+          --extra-cflags="$CFLAGS" \
+          --extra-ldflags="$LDFLAGS"
         make -j$(nproc)
         strip -s x264.exe
       working-directory: build/8b
@@ -192,9 +210,18 @@ jobs:
       run: |
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
         export X264_TARGET_CPU=${{matrix.target_cpu}}
+        CFLAGS="-O3 -I/usr/local/include -I/clang64/include -I../../ffmpeg"
+        LDFLAGS="-L/usr/local/lib -L/clang64/lib"
+        if [ -f ../x264.profdata ]; then
+          CFLAGS="$CFLAGS -fprofile-instr-use=../x264.profdata"
+          LDFLAGS="$LDFLAGS -fprofile-instr-use=../x264.profdata"
+          echo "Using PGO profdata"
+        else
+          echo "Building without PGO"
+        fi
         CC=cc RC=/ucrt64/bin/windres ../../x264/configure --prefix=/usr/local --bit-depth=10 --enable-lto --enable-lavf --enable-lsmash --enable-static \
-          --extra-cflags="-O3 -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
-          --extra-ldflags="-L/usr/local/lib -L/clang64/lib"
+          --extra-cflags="$CFLAGS" \
+          --extra-ldflags="$LDFLAGS"
         make -j$(nproc)
         strip -s x264.exe
       working-directory: build/10b
@@ -203,9 +230,18 @@ jobs:
       run: |
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
         export X264_TARGET_CPU=${{matrix.target_cpu}}
+        CFLAGS="-O3 -I/usr/local/include -I/clang64/include -I../../ffmpeg"
+        LDFLAGS="-L/usr/local/lib -L/clang64/lib"
+        if [ -f ../x264.profdata ]; then
+          CFLAGS="$CFLAGS -fprofile-instr-use=../x264.profdata"
+          LDFLAGS="$LDFLAGS -fprofile-instr-use=../x264.profdata"
+          echo "Using PGO profdata"
+        else
+          echo "Building without PGO"
+        fi
         CC=cc RC=/ucrt64/bin/windres ../../x264/configure --prefix=/usr/local --bit-depth=all --enable-lto --enable-lavf --enable-lsmash --enable-static \
-          --extra-cflags="-O3 -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
-          --extra-ldflags="-L/usr/local/lib -L/clang64/lib"
+          --extra-cflags="$CFLAGS" \
+          --extra-ldflags="$LDFLAGS"
         make -j$(nproc)
         strip -s x264.exe
       working-directory: build/all
