@@ -69,10 +69,18 @@ jobs:
           automake
           libtool
           mingw-w64-clang-x86_64-nasm
-          mingw-w64-clang-x86_64-toolchain
+          mingw-w64-clang-x86_64-clang
+          mingw-w64-clang-x86_64-compiler-rt
+          mingw-w64-clang-x86_64-lld
+          mingw-w64-clang-x86_64-crt
+          mingw-w64-clang-x86_64-headers
+          mingw-w64-clang-x86_64-libc++
+          mingw-w64-clang-x86_64-libwinpthread
+          mingw-w64-clang-x86_64-make
+          mingw-w64-clang-x86_64-pkgconf
           mingw-w64-clang-x86_64-cmake
           mingw-w64-clang-x86_64-ninja
-          mingw-w64-ucrt-x86_64-binutils
+          mingw-w64-clang-x86_64-llvm
 
     - name: Compile FFmpeg (full with avfilter)
       run: |
