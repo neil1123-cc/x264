@@ -144,11 +144,10 @@ jobs:
 
     - name: Compile x264 (profiling)
       working-directory: build/all
-      env:
-        PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
-        X264_TARGET_CPU: x86-64
       run: |
-        CC=cc RC=/ucrt64/bin/windres ../../x264/configure --prefix=/usr/local --bit-depth=all --enable-lto --enable-lavf --enable-lsmash --enable-static \
+        export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
+        export X264_TARGET_CPU=x86-64
+        CC=cc RC=/ucrt64/bin/windres ../../x264/configure --prefix=/usr/local --bit-depth=all --enable-lto --enable-static \
           --extra-cflags="-O2 -fprofile-instr-generate -fprofile-update=atomic -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
           --extra-ldflags="-fprofile-instr-generate -L/usr/local/lib -L/clang64/lib"
         make -j$(nproc)
