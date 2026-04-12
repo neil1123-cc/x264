@@ -156,8 +156,8 @@ jobs:
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
         export X264_TARGET_CPU=x86-64
         CC=cc RC=/ucrt64/bin/windres ../../x264/configure --prefix=/usr/local --bit-depth=all --enable-lto --enable-static \
-          --extra-cflags="-O2 -flto=thin -fprofile-instr-generate -fprofile-update=atomic -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
-          --extra-ldflags="-flto=thin -fprofile-instr-generate -L/usr/local/lib -L/clang64/lib"
+          --extra-cflags="-O2 -flto=thin -fmerge-all-constants -ffunction-sections -fdata-sections -fprofile-instr-generate -fprofile-update=atomic -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
+          --extra-ldflags="-flto=thin -Wl,--gc-sections -Wl,--icf=safe -fprofile-instr-generate -L/usr/local/lib -L/clang64/lib"
         make -j$(nproc)
         mv x264.exe x264-profiling.exe
 
