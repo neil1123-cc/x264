@@ -74,7 +74,7 @@ jobs:
       with:
         path: mimalloc
         repository: microsoft/mimalloc
-        ref: null
+        ref: v3.2.8
 
     - name: Checkout obuparse
       uses: actions/checkout@v4
