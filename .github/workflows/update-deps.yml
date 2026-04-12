@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PAT_TOKEN }}
 
       # ============================================
       # Get latest versions
@@ -207,7 +209,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add .github/workflows/build.yml .github/workflows/build-pgo.yml .github/deps-cache.json
           git commit -m "Update dependencies: ${{ steps.check.outputs.changes }}" || echo "Nothing to commit"
-          git push https://${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}.git HEAD:${{ github.ref_name }}
+          git push
 
       # ============================================
       # Trigger CI build
