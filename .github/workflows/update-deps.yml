@@ -36,8 +36,11 @@ jobs:
       - name: Get latest mimalloc release
         id: mimalloc
         run: |
-          TAG=$(curl -s "https://api.github.com/repos/microsoft/mimalloc/releases/latest" | \
-            jq -r '.tag_name')
+          TAG=$(curl -s "https://api.github.com/repos/microsoft/mimalloc/tags?per_page=100" | \
+            jq -r '.[].name' | \
+            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | \
+            sort -Vr | \
+            head -1)
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "mimalloc latest release: $TAG"
 
