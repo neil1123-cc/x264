@@ -179,65 +179,77 @@ jobs:
       working-directory: ffms2
       run: |
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH
+        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
         ./autogen.sh
-        ./configure --prefix="$GITHUB_WORKSPACE/ffms2-install" --enable-static --disable-shared
+        ./configure --prefix="$WORKSPACE/ffms2-install" --enable-static --disable-shared
         make -j$(nproc)
         make install
-        cp -r "$GITHUB_WORKSPACE/ffms2-install/"* /usr/local/
+        cp -r "$WORKSPACE/ffms2-install/"* /usr/local/
 
     - name: Compile mimalloc
       if: steps.cache-mimalloc.outputs.cache-hit != 'true'
       working-directory: mimalloc
       run: |
+        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
         mkdir build
         cd build
-        cmake -GNinja .. -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/mimalloc-install" \
+        cmake -GNinja .. -DCMAKE_INSTALL_PREFIX="$WORKSPACE/mimalloc-install" \
           -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
           -DMI_BUILD_SHARED=OFF -DMI_BUILD_STATIC=ON -DMI_BUILD_OBJECT=OFF \
           -DMI_BUILD_TESTS=OFF -DMI_USE_CXX=ON
         ninja
         ninja install
-        cp -r "$GITHUB_WORKSPACE/mimalloc-install/"* /usr/local/
+        cp -r "$WORKSPACE/mimalloc-install/"* /usr/local/
 
     - name: Compile obuparse
       if: steps.cache-obuparse.outputs.cache-hit != 'true'
       working-directory: obuparse
       run: |
+        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
         make CC=cc libobuparse.a
-        install -d "$GITHUB_WORKSPACE/obuparse-install/include"
-        install -d "$GITHUB_WORKSPACE/obuparse-install/lib"
-        install -v obuparse.h "$GITHUB_WORKSPACE/obuparse-install/include"
-        install -v libobuparse.a "$GITHUB_WORKSPACE/obuparse-install/lib"
-        cp -r "$GITHUB_WORKSPACE/obuparse-install/"* /usr/local/
+        install -d "$WORKSPACE/obuparse-install/include"
+        install -d "$WORKSPACE/obuparse-install/lib"
+        install -v obuparse.h "$WORKSPACE/obuparse-install/include"
+        install -v libobuparse.a "$WORKSPACE/obuparse-install/lib"
+        cp -r "$WORKSPACE/obuparse-install/"* /usr/local/
 
     - name: Compile L-SMASH
       if: steps.cache-lsmash.outputs.cache-hit != 'true'
       working-directory: lsmash
       run: |
-        ./configure --prefix="$GITHUB_WORKSPACE/lsmash-install" --cc=cc \
-          --extra-cflags="-I$GITHUB_WORKSPACE/obuparse-install/include" \
-          --extra-ldflags="-L$GITHUB_WORKSPACE/obuparse-install/lib" \
+        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
+        ./configure --prefix="$WORKSPACE/lsmash-install" --cc=cc \
+          --extra-cflags="-I$WORKSPACE/obuparse-install/include" \
+          --extra-ldflags="-L$WORKSPACE/obuparse-install/lib" \
           --extra-libs="-lobuparse"
         make -j$(nproc)
         make install
-        cp importer/importer.h "$GITHUB_WORKSPACE/lsmash-install/include/lsmash_importer.h"
-        cp -r "$GITHUB_WORKSPACE/lsmash-install/"* /usr/local/
+        cp importer/importer.h "$WORKSPACE/lsmash-install/include/lsmash_importer.h"
+        cp -r "$WORKSPACE/lsmash-install/"* /usr/local/
 
     - name: Install cached mimalloc
       if: steps.cache-mimalloc.outputs.cache-hit == 'true'
-      run: cp -r "$GITHUB_WORKSPACE/mimalloc-install/"* /usr/local/
+      run: |
+        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
+        cp -r "$WORKSPACE/mimalloc-install/"* /usr/local/
 
     - name: Install cached obuparse
       if: steps.cache-obuparse.outputs.cache-hit == 'true'
-      run: cp -r "$GITHUB_WORKSPACE/obuparse-install/"* /usr/local/
+      run: |
+        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
+        cp -r "$WORKSPACE/obuparse-install/"* /usr/local/
 
     - name: Install cached L-SMASH
       if: steps.cache-lsmash.outputs.cache-hit == 'true'
-      run: cp -r "$GITHUB_WORKSPACE/lsmash-install/"* /usr/local/
+      run: |
+        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
+        cp -r "$WORKSPACE/lsmash-install/"* /usr/local/
 
     - name: Install cached ffms2
       if: steps.cache-ffms2.outputs.cache-hit == 'true'
-      run: cp -r "$GITHUB_WORKSPACE/ffms2-install/"* /usr/local/
+      run: |
+        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
+        cp -r "$WORKSPACE/ffms2-install/"* /usr/local/
 
     - name: Setup build dir
       run: mkdir -p build/8b build/10b build/all
