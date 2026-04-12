@@ -182,15 +182,18 @@ jobs:
       - name: Update build.yml and build-pgo.yml
         if: steps.check.outputs.ffmpeg_changed == 'true' || steps.check.outputs.mimalloc_changed == 'true'
         run: |
-          # Update FFmpeg ref in both files
+          # Update FFmpeg ref in all workflow files
           sed -i "s/ref: n[0-9]\+\.[0-9]\+/ref: ${{ steps.ffmpeg.outputs.tag }}/" .github/workflows/build.yml
           sed -i "s/ref: n[0-9]\+\.[0-9]\+/ref: ${{ steps.ffmpeg.outputs.tag }}/" .github/workflows/build-pgo.yml
-          # Update cache keys (different formats in each file)
+          sed -i "s/ref: n[0-9]\+\.[0-9]\+/ref: ${{ steps.ffmpeg.outputs.tag }}/" .github/workflows/build-profiling.yml
+          # Update cache keys
           sed -i "s/key: ffmpeg-n[0-9]\+\.[0-9]\+-minimal-v[0-9]\+/key: ffmpeg-${{ steps.ffmpeg.outputs.tag }}-minimal-v1/" .github/workflows/build.yml
-          sed -i "s/key: ffmpeg-n[0-9]\+\.[0-9]\+-full-v[0-9]\+/key: ffmpeg-${{ steps.ffmpeg.outputs.tag }}-full-v2/" .github/workflows/build-pgo.yml
-          # Update mimalloc ref in both files
+          sed -i "s/key: ffmpeg-n[0-9]\+\.[0-9]\+-full-v[0-9]\+/key: ffmpeg-${{ steps.ffmpeg.outputs.tag }}-full-v1/" .github/workflows/build-pgo.yml
+          sed -i "s/key: ffmpeg-n[0-9]\+\.[0-9]\+-full-v[0-9]\+/key: ffmpeg-${{ steps.ffmpeg.outputs.tag }}-full-v1/" .github/workflows/build-profiling.yml
+          # Update mimalloc ref in all workflow files
           sed -i "s/ref: v[0-9]\+\.[0-9]\+\.[0-9]\+/ref: ${{ steps.mimalloc.outputs.tag }}/" .github/workflows/build.yml
           sed -i "s/ref: v[0-9]\+\.[0-9]\+\.[0-9]\+/ref: ${{ steps.mimalloc.outputs.tag }}/" .github/workflows/build-pgo.yml
+          sed -i "s/ref: v[0-9]\+\.[0-9]\+\.[0-9]\+/ref: ${{ steps.mimalloc.outputs.tag }}/" .github/workflows/build-profiling.yml
 
       - name: Update deps cache
         run: |
@@ -210,7 +213,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .github/workflows/build.yml .github/workflows/build-pgo.yml .github/deps-cache.json
+          git add .github/workflows/*.yml .github/deps-cache.json
           git commit -m "Update dependencies: ${{ steps.check.outputs.changes }}" || echo "Nothing to commit"
           git push
 

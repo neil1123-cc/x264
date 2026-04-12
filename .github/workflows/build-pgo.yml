@@ -22,12 +22,34 @@ jobs:
         path: x264
         fetch-depth: 0
 
+    # === Dependency Caching ===
     - name: Cache FFmpeg
-      id: cache-ff
+      id: cache-ffmpeg
       uses: actions/cache@v4
       with:
         path: ffmpeg
-        key: ffmpeg-n8.1-full-v2-clang
+        key: ffmpeg-n8.1-full-v1-clang
+
+    - name: Cache mimalloc
+      id: cache-mimalloc
+      uses: actions/cache@v4
+      with:
+        path: mimalloc-install
+        key: mimalloc-v3.2.8-clang-v1
+
+    - name: Cache obuparse
+      id: cache-obuparse
+      uses: actions/cache@v4
+      with:
+        path: obuparse-install
+        key: obuparse-latest-clang-v1
+
+    - name: Cache L-SMASH
+      id: cache-lsmash
+      uses: actions/cache@v4
+      with:
+        path: lsmash-install
+        key: lsmash-latest-clang-v1
 
     - name: Checkout FFmpeg
       uses: actions/checkout@v4
@@ -35,7 +57,7 @@ jobs:
         path: ffmpeg
         repository: FFmpeg/FFmpeg
         ref: n8.1
-      if: steps.cache-ff.outputs.cache-hit != 'true'
+      if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
 
     - name: Checkout mimalloc
       uses: actions/checkout@v4
@@ -43,18 +65,21 @@ jobs:
         path: mimalloc
         repository: microsoft/mimalloc
         ref: v3.2.8
+      if: steps.cache-mimalloc.outputs.cache-hit != 'true'
 
     - name: Checkout obuparse
       uses: actions/checkout@v4
       with:
         path: obuparse
         repository: dwbuiten/obuparse
+      if: steps.cache-obuparse.outputs.cache-hit != 'true'
 
     - name: Checkout L-SMASH
       uses: actions/checkout@v4
       with:
         path: lsmash
         repository: vimeo/l-smash
+      if: steps.cache-lsmash.outputs.cache-hit != 'true'
 
     - name: Setup MSYS2
       uses: msys2/setup-msys2@v2
@@ -83,6 +108,8 @@ jobs:
           mingw-w64-clang-x86_64-llvm
 
     - name: Compile FFmpeg (full with avfilter)
+      if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
+      working-directory: ffmpeg
       run: |
         PGO_OPT="--enable-avdevice --enable-avfilter --enable-ffmpeg --enable-indev=lavfi"
         for f in testsrc testsrc2 smptebars smptehdbars nullsrc geq gradients format scale noise; do
@@ -99,8 +126,6 @@ jobs:
           --enable-protocol=file,pipe \
           --cc=cc --cxx=c++ --cpu=x86-64
         make -j$(nproc)
-      working-directory: ffmpeg
-      if: steps.cache-ff.outputs.cache-hit != 'true'
 
     - name: Get rid of .dll.a
       run: find /*64/ /usr/ -type f -name "*.dll.a" -print -delete
@@ -110,42 +135,51 @@ jobs:
       working-directory: ffmpeg
 
     - name: Compile mimalloc
+      if: steps.cache-mimalloc.outputs.cache-hit != 'true'
+      working-directory: mimalloc
       run: |
         mkdir build
         cd build
-        cmake -GNinja .. -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
-          -DMI_BUILD_SHARED=OFF -DMI_BUILD_STATIC=ON -DMI_BUILD_OBJECT=OFF -DMI_BUILD_TESTS=OFF -DMI_USE_CXX=ON
+        cmake -GNinja .. -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/mimalloc-install" \
+          -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+          -DMI_BUILD_SHARED=OFF -DMI_BUILD_STATIC=ON -DMI_BUILD_OBJECT=OFF \
+          -DMI_BUILD_TESTS=OFF -DMI_USE_CXX=ON
         ninja
-      working-directory: mimalloc
-
-    - name: Install mimalloc
-      run: ninja install
-      working-directory: mimalloc/build
+        ninja install
 
     - name: Compile obuparse
-      run: make CC=cc libobuparse.a
+      if: steps.cache-obuparse.outputs.cache-hit != 'true'
       working-directory: obuparse
-
-    - name: Install obuparse
       run: |
-        install -d /usr/local/include
-        install -d /usr/local/lib
-        install -v obuparse.h /usr/local/include
-        install -v libobuparse.a /usr/local/lib
-      working-directory: obuparse
+        make CC=cc libobuparse.a
+        install -d "$GITHUB_WORKSPACE/obuparse-install/include"
+        install -d "$GITHUB_WORKSPACE/obuparse-install/lib"
+        install -v obuparse.h "$GITHUB_WORKSPACE/obuparse-install/include"
+        install -v libobuparse.a "$GITHUB_WORKSPACE/obuparse-install/lib"
 
     - name: Compile L-SMASH
+      if: steps.cache-lsmash.outputs.cache-hit != 'true'
+      working-directory: lsmash
       run: |
-        ./configure --prefix=/usr/local --cc=cc --extra-cflags="-I/usr/local/include" \
-          --extra-ldflags="-L/usr/local/lib" --extra-libs="-lobuparse"
+        ./configure --prefix="$GITHUB_WORKSPACE/lsmash-install" --cc=cc \
+          --extra-cflags="-I$GITHUB_WORKSPACE/obuparse-install/include" \
+          --extra-ldflags="-L$GITHUB_WORKSPACE/obuparse-install/lib" \
+          --extra-libs="-lobuparse"
         make -j$(nproc)
-      working-directory: lsmash
-
-    - name: Install L-SMASH
-      run: |
         make install
-        cp importer/importer.h /usr/local/include/lsmash_importer.h
-      working-directory: lsmash
+        cp importer/importer.h "$GITHUB_WORKSPACE/lsmash-install/include/lsmash_importer.h"
+
+    - name: Install cached mimalloc
+      if: steps.cache-mimalloc.outputs.cache-hit == 'true'
+      run: cp -r "$GITHUB_WORKSPACE/mimalloc-install/"* /usr/local/
+
+    - name: Install cached obuparse
+      if: steps.cache-obuparse.outputs.cache-hit == 'true'
+      run: cp -r "$GITHUB_WORKSPACE/obuparse-install/"* /usr/local/
+
+    - name: Install cached L-SMASH
+      if: steps.cache-lsmash.outputs.cache-hit == 'true'
+      run: cp -r "$GITHUB_WORKSPACE/lsmash-install/"* /usr/local/
 
     - name: Setup build dir
       run: mkdir -p build/all
