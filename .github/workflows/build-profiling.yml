@@ -171,6 +171,7 @@ jobs:
         ./configure --prefix="$GITHUB_WORKSPACE/ffms2-install" --enable-static --disable-shared
         make -j$(nproc)
         make install
+        cp -r "$GITHUB_WORKSPACE/ffms2-install/"* /usr/local/
 
     - name: Compile mimalloc
       if: steps.cache-mimalloc.outputs.cache-hit != 'true'
@@ -184,6 +185,7 @@ jobs:
           -DMI_BUILD_TESTS=OFF -DMI_USE_CXX=ON
         ninja
         ninja install
+        cp -r "$GITHUB_WORKSPACE/mimalloc-install/"* /usr/local/
 
     - name: Compile obuparse
       if: steps.cache-obuparse.outputs.cache-hit != 'true'
@@ -194,6 +196,7 @@ jobs:
         install -d "$GITHUB_WORKSPACE/obuparse-install/lib"
         install -v obuparse.h "$GITHUB_WORKSPACE/obuparse-install/include"
         install -v libobuparse.a "$GITHUB_WORKSPACE/obuparse-install/lib"
+        cp -r "$GITHUB_WORKSPACE/obuparse-install/"* /usr/local/
 
     - name: Compile L-SMASH
       if: steps.cache-lsmash.outputs.cache-hit != 'true'
@@ -206,6 +209,7 @@ jobs:
         make -j$(nproc)
         make install
         cp importer/importer.h "$GITHUB_WORKSPACE/lsmash-install/include/lsmash_importer.h"
+        cp -r "$GITHUB_WORKSPACE/lsmash-install/"* /usr/local/
 
     - name: Install cached mimalloc
       if: steps.cache-mimalloc.outputs.cache-hit == 'true'
