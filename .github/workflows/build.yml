@@ -62,14 +62,7 @@ jobs:
         path: ffmpeg
         key: ffmpeg-n8.1-minimal-v1-${{matrix.toolchain}}
 
-    - name: Cache mimalloc
-      id: cache-mimalloc
-      uses: actions/cache@v4
-      with:
-        path: mimalloc-install
-        key: mimalloc-v3.2.8-clang-v1
-
-    - name: Cache obuparse
+    - name: Checkout obuparse
       id: cache-obuparse
       uses: actions/cache@v4
       with:
@@ -104,7 +97,6 @@ jobs:
         path: mimalloc
         repository: microsoft/mimalloc
         ref: v3.2.8
-      if: steps.cache-mimalloc.outputs.cache-hit != 'true'
 
     - name: Checkout obuparse
       uses: actions/checkout@v4
@@ -187,19 +179,22 @@ jobs:
         cp -r "$WORKSPACE/ffms2-install/"* /usr/local/
 
     - name: Compile mimalloc
-      if: steps.cache-mimalloc.outputs.cache-hit != 'true'
       working-directory: mimalloc
       run: |
-        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
         mkdir build
         cd build
-        cmake -GNinja .. -DCMAKE_INSTALL_PREFIX="$WORKSPACE/mimalloc-install" \
+        cmake -GNinja .. -DCMAKE_INSTALL_PREFIX=/usr/local \
           -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
           -DMI_BUILD_SHARED=OFF -DMI_BUILD_STATIC=ON -DMI_BUILD_OBJECT=OFF \
           -DMI_BUILD_TESTS=OFF -DMI_USE_CXX=ON
         ninja
         ninja install
-        cp -r "$WORKSPACE/mimalloc-install/"* /usr/local/
+        # Create compatibility symlink for CMake (mimalloc v3.x uses versioned directories)
+        shopt -s nullglob
+        for dir in /usr/local/lib/cmake/mimalloc-*; do
+          ln -s "$dir" /usr/local/lib/cmake/mimalloc
+          break
+        done
 
     - name: Compile obuparse
       if: steps.cache-obuparse.outputs.cache-hit != 'true'
@@ -226,12 +221,6 @@ jobs:
         make install
         cp importer/importer.h "$WORKSPACE/lsmash-install/include/lsmash_importer.h"
         cp -r "$WORKSPACE/lsmash-install/"* /usr/local/
-
-    - name: Install cached mimalloc
-      if: steps.cache-mimalloc.outputs.cache-hit == 'true'
-      run: |
-        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
-        cp -r "$WORKSPACE/mimalloc-install/"* /usr/local/
 
     - name: Install cached obuparse
       if: steps.cache-obuparse.outputs.cache-hit == 'true'
