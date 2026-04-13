@@ -205,33 +205,33 @@ jobs:
 
         # === Resolution & Frame Rate Coverage ===
         # 4K high motion
-        ffmpeg -f lavfi -i "testsrc=duration=2:size=3840x2160:rate=30" -c:v rawvideo -pix_fmt yuv420p test-videos/4k_30fps.y4m
+        ffmpeg -f lavfi -i "testsrc=duration=10:size=3840x2160:rate=30" -c:v rawvideo -pix_fmt yuv420p test-videos/4k_30fps.y4m
         # 1080p standard
-        ffmpeg -f lavfi -i "testsrc=duration=4:size=1920x1080:rate=30" -c:v rawvideo -pix_fmt yuv420p test-videos/1080p_30fps.y4m
+        ffmpeg -f lavfi -i "testsrc=duration=20:size=1920x1080:rate=30" -c:v rawvideo -pix_fmt yuv420p test-videos/1080p_30fps.y4m
         # 1080p high framerate
-        ffmpeg -f lavfi -i "testsrc2=duration=3:size=1920x1080:rate=60" -c:v rawvideo -pix_fmt yuv420p test-videos/1080p_60fps.y4m
+        ffmpeg -f lavfi -i "testsrc2=duration=15:size=1920x1080:rate=60" -c:v rawvideo -pix_fmt yuv420p test-videos/1080p_60fps.y4m
         # 720p film
-        ffmpeg -f lavfi -i "testsrc=duration=4:size=1280x720:rate=24" -c:v rawvideo -pix_fmt yuv420p test-videos/720p_24fps.y4m
+        ffmpeg -f lavfi -i "testsrc=duration=20:size=1280x720:rate=24" -c:v rawvideo -pix_fmt yuv420p test-videos/720p_24fps.y4m
         # 720p PAL
-        ffmpeg -f lavfi -i "testsrc2=duration=3:size=1280x720:rate=25" -c:v rawvideo -pix_fmt yuv420p test-videos/720p_25fps.y4m
+        ffmpeg -f lavfi -i "testsrc2=duration=15:size=1280x720:rate=25" -c:v rawvideo -pix_fmt yuv420p test-videos/720p_25fps.y4m
         # 480p SD
-        ffmpeg -f lavfi -i "smptebars=duration=3:size=854x480:rate=30" -c:v rawvideo -pix_fmt yuv420p test-videos/480p_smpte.y4m
+        ffmpeg -f lavfi -i "smptebars=duration=15:size=854x480:rate=30" -c:v rawvideo -pix_fmt yuv420p test-videos/480p_smpte.y4m
         # Low res
-        ffmpeg -f lavfi -i "testsrc=duration=3:size=640x360:rate=30" -c:v rawvideo -pix_fmt yuv420p test-videos/360p_30fps.y4m
+        ffmpeg -f lavfi -i "testsrc=duration=15:size=640x360:rate=30" -c:v rawvideo -pix_fmt yuv420p test-videos/360p_30fps.y4m
 
         # === Motion & Content Types ===
         # High detail noise
-        ffmpeg -f lavfi -i "nullsrc=s=1280x720:r=30,geq=random(1)*255:random(1)*255:random(1)*255" -t 2 -c:v rawvideo -pix_fmt yuv420p test-videos/noise_color.y4m
+        ffmpeg -f lavfi -i "nullsrc=s=1280x720:r=30,geq=random(1)*255:random(1)*255:random(1)*255" -t 10 -c:v rawvideo -pix_fmt yuv420p test-videos/noise_color.y4m
         # Film grain simulation
-        ffmpeg -f lavfi -i "testsrc=duration=3:size=1280x720:rate=30,noise=alls=20:allf=t" -c:v rawvideo -pix_fmt yuv420p test-videos/film_grain.y4m
+        ffmpeg -f lavfi -i "testsrc=duration=15:size=1280x720:rate=30,noise=alls=20:allf=t" -c:v rawvideo -pix_fmt yuv420p test-videos/film_grain.y4m
         # Smooth gradient
-        ffmpeg -f lavfi -i "gradients=s=1280x720:c0=000000:c1=ffffff" -t 2 -c:v rawvideo -pix_fmt yuv420p test-videos/gradient_gray.y4m
+        ffmpeg -f lavfi -i "gradients=s=1280x720:c0=000000:c1=ffffff" -t 10 -c:v rawvideo -pix_fmt yuv420p test-videos/gradient_gray.y4m
         # Color gradient
-        ffmpeg -f lavfi -i "gradients=s=1280x720:c0=ff0000:c1=00ff00:c2=0000ff" -t 2 -c:v rawvideo -pix_fmt yuv420p test-videos/gradient_rgb.y4m
+        ffmpeg -f lavfi -i "gradients=s=1280x720:c0=ff0000:c1=00ff00:c2=0000ff" -t 10 -c:v rawvideo -pix_fmt yuv420p test-videos/gradient_rgb.y4m
         # SMPTE color bars
-        ffmpeg -f lavfi -i "smptebars=duration=2:size=1920x1080:rate=30" -c:v rawvideo -pix_fmt yuv420p test-videos/smpte_1080p.y4m
+        ffmpeg -f lavfi -i "smptebars=duration=10:size=1920x1080:rate=30" -c:v rawvideo -pix_fmt yuv420p test-videos/smpte_1080p.y4m
         # HD color bars
-        ffmpeg -f lavfi -i "smptehdbars=duration=2:size=1920x1080:rate=30" -c:v rawvideo -pix_fmt yuv420p test-videos/smptehd_1080p.y4m
+        ffmpeg -f lavfi -i "smptehdbars=duration=10:size=1920x1080:rate=30" -c:v rawvideo -pix_fmt yuv420p test-videos/smptehd_1080p.y4m
 
         echo "=== Test videos generated ==="
         ls -la test-videos/
