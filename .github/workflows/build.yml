@@ -8,6 +8,9 @@ on:
         description: 'which tag to upload to'
         default: ''
 
+permissions:
+  contents: write
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -49,8 +52,8 @@ jobs:
       shell: bash
       run: |
         cd x264
-        git fetch origin profdata-x86-64 --depth=1 || echo "Branch not found"
-        git checkout profdata-x86-64 -- x264.profdata 2>/dev/null || echo "profdata not found"
+        git fetch origin profdata-x86-64 --depth=1 || { echo "Branch not found"; exit 0; }
+        git checkout FETCH_HEAD -- x264.profdata 2>/dev/null || echo "profdata not found"
         mkdir -p ../build
         mv x264.profdata ../build/x264.profdata 2>/dev/null || echo "No profdata"
 
