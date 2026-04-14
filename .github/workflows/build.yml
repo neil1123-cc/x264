@@ -247,7 +247,7 @@ jobs:
       run: |
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
         export X264_TARGET_CPU=${{matrix.target_cpu}}
-        CFLAGS="-O3 -flto -ffat-lto-objects -I/usr/local/include -I/clang64/include -I../../ffmpeg"
+        CFLAGS="-O3 -flto -ffat-lto-objects -fmerge-all-constants -I/usr/local/include -I/clang64/include -I../../ffmpeg"
         LDFLAGS="-flto -L/usr/local/lib -L/clang64/lib"
         if [ -f ../x264.profdata ]; then
           CFLAGS="$CFLAGS -fprofile-instr-use=../x264.profdata"
@@ -267,7 +267,7 @@ jobs:
       run: |
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
         export X264_TARGET_CPU=${{matrix.target_cpu}}
-        CFLAGS="-O3 -flto -ffat-lto-objects -I/usr/local/include -I/clang64/include -I../../ffmpeg"
+        CFLAGS="-O3 -flto -ffat-lto-objects -fmerge-all-constants -I/usr/local/include -I/clang64/include -I../../ffmpeg"
         LDFLAGS="-flto -L/usr/local/lib -L/clang64/lib"
         if [ -f ../x264.profdata ]; then
           CFLAGS="$CFLAGS -fprofile-instr-use=../x264.profdata"
@@ -287,7 +287,7 @@ jobs:
       run: |
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
         export X264_TARGET_CPU=${{matrix.target_cpu}}
-        CFLAGS="-O3 -flto -ffat-lto-objects -I/usr/local/include -I/clang64/include -I../../ffmpeg"
+        CFLAGS="-O3 -flto -ffat-lto-objects -fmerge-all-constants -I/usr/local/include -I/clang64/include -I../../ffmpeg"
         LDFLAGS="-flto -L/usr/local/lib -L/clang64/lib"
         if [ -f ../x264.profdata ]; then
           CFLAGS="$CFLAGS -fprofile-instr-use=../x264.profdata"
