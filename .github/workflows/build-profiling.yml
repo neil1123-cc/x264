@@ -229,8 +229,8 @@ jobs:
         X264_TARGET_CPU: ${{ inputs.target_cpu }}
       run: |
         CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=all --enable-lto --enable-lavf --enable-lsmash --enable-static \
-          --extra-cflags="-O2 -fprofile-instr-generate -fprofile-update=atomic -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
-          --extra-ldflags="-fprofile-instr-generate -L/usr/local/lib -L/clang64/lib"
+          --extra-cflags="-O2 -flto -ffat-lto-objects -fmerge-all-constants -momit-leaf-frame-pointer -fprofile-instr-generate -fprofile-update=atomic -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
+          --extra-ldflags="-flto -fprofile-instr-generate -L/usr/local/lib -L/clang64/lib"
         make -j$(nproc)
         mv x264.exe x264-profiling.exe
 
