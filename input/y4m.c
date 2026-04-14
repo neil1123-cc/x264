@@ -82,6 +82,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         return -1;
 
     info->vfr = 0;
+    info->num_frames = 0;  /* may be overwritten by XLENGTH extension */
 
     if( !strcmp( psz_filename, "-" ) )
         h->fh = stdin;
@@ -214,7 +215,6 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     FAIL_IF_ERROR( h->bit_depth < 8 || h->bit_depth > 16, "unsupported bit depth `%d'\n", h->bit_depth );
 
     info->thread_safe = 1;
-    info->num_frames  = 0;
     info->csp         = colorspace;
 
     if( h->bit_depth > 8 )
