@@ -247,7 +247,7 @@ jobs:
       run: |
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
         export X264_TARGET_CPU=${{matrix.target_cpu}}
-        CFLAGS="-O3 -flto -ffat-lto-objects -fmerge-all-constants -I/usr/local/include -I/clang64/include -I../../ffmpeg"
+        CFLAGS="-O3 -flto -ffat-lto-objects -fmerge-all-constants -momit-leaf-frame-pointer -I/usr/local/include -I/clang64/include -I../../ffmpeg"
         LDFLAGS="-flto -L/usr/local/lib -L/clang64/lib"
         if [ -f ../x264.profdata ]; then
           CFLAGS="$CFLAGS -fprofile-instr-use=../x264.profdata"
@@ -267,7 +267,7 @@ jobs:
       run: |
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
         export X264_TARGET_CPU=${{matrix.target_cpu}}
-        CFLAGS="-O3 -flto -ffat-lto-objects -fmerge-all-constants -I/usr/local/include -I/clang64/include -I../../ffmpeg"
+        CFLAGS="-O3 -flto -ffat-lto-objects -fmerge-all-constants -momit-leaf-frame-pointer -I/usr/local/include -I/clang64/include -I../../ffmpeg"
         LDFLAGS="-flto -L/usr/local/lib -L/clang64/lib"
         if [ -f ../x264.profdata ]; then
           CFLAGS="$CFLAGS -fprofile-instr-use=../x264.profdata"
@@ -287,7 +287,7 @@ jobs:
       run: |
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
         export X264_TARGET_CPU=${{matrix.target_cpu}}
-        CFLAGS="-O3 -flto -ffat-lto-objects -fmerge-all-constants -I/usr/local/include -I/clang64/include -I../../ffmpeg"
+        CFLAGS="-O3 -flto -ffat-lto-objects -fmerge-all-constants -momit-leaf-frame-pointer -I/usr/local/include -I/clang64/include -I../../ffmpeg"
         LDFLAGS="-flto -L/usr/local/lib -L/clang64/lib"
         if [ -f ../x264.profdata ]; then
           CFLAGS="$CFLAGS -fprofile-instr-use=../x264.profdata"
@@ -332,66 +332,3 @@ jobs:
         fail_on_unmatched_files: true
         generate_release_notes: false
         prerelease: true
-
-  # Test -momit-leaf-frame-pointer optimization
-  test-omit-leaf-fp:
-    runs-on: windows-latest
-    defaults:
-      run:
-        shell: msys2 {0}
-    steps:
-    - name: Checkout x264
-      uses: actions/checkout@v4
-      with:
-        path: x264
-        fetch-depth: 0
-
-    - name: Fetch PGO profdata
-      shell: bash
-      run: |
-        cd x264
-        git fetch origin profdata-x86-64 --depth=1 || echo "Branch not found"
-        git checkout profdata-x86-64 -- x264.profdata 2>/dev/null || echo "profdata not found"
-        mkdir -p ../build
-        mv x264.profdata ../build/x264.profdata 2>/dev/null || echo "No profdata"
-
-    - name: Setup MSYS2
-      uses: msys2/setup-msys2@v2
-      with:
-        msystem: CLANG64
-        update: true
-        install: >-
-          base-devel
-          git
-          mingw-w64-clang-x86_64-nasm
-          mingw-w64-clang-x86_64-clang
-          mingw-w64-clang-x86_64-compiler-rt
-          mingw-w64-clang-x86_64-lld
-          mingw-w64-clang-x86_64-crt
-          mingw-w64-clang-x86_64-headers
-          mingw-w64-clang-x86_64-libc++
-          mingw-w64-clang-x86_64-libwinpthread
-          mingw-w64-clang-x86_64-make
-
-    - name: Setup build dir
-      run: mkdir -p build/8b
-
-    - name: Compile x264 with -momit-leaf-frame-pointer
-      run: |
-        export X264_TARGET_CPU=x86-64
-        CFLAGS="-O3 -flto -ffat-lto-objects -fmerge-all-constants -momit-leaf-frame-pointer"
-        LDFLAGS="-flto"
-        if [ -f ../x264.profdata ]; then
-          CFLAGS="$CFLAGS -fprofile-instr-use=../x264.profdata"
-          LDFLAGS="$LDFLAGS -fprofile-instr-use=../x264.profdata"
-          echo "Using PGO profdata"
-        else
-          echo "Building without PGO"
-        fi
-        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=8 --enable-static \
-          --extra-cflags="$CFLAGS" \
-          --extra-ldflags="$LDFLAGS"
-        make -j$(nproc)
-        strip -s x264.exe
-        echo "Build succeeded"
-      working-directory: build/8b
