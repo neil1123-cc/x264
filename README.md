@@ -17,8 +17,9 @@
 |------|------|------|
 | FFmpeg | n8.1 | 输入/输出支持 |
 | mimalloc | v3.2.8 | 高性能内存分配器 |
-| L-SMASH | latest | MP4/MOV 输出支持 |
-| obuparse | latest | AV1 解析支持 |
+| L-SMASH | `04e39f1` (2026-04-05) | MP4/MOV 输出支持 |
+| obuparse | `c2156b4` (2026-02-22) | AV1 解析支持 |
+| ffms2 | `0fa01d0` (2026-04-09) | 视频输入支持 |
 
 ## 编译环境
 
