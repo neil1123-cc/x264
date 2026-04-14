@@ -425,6 +425,39 @@ jobs:
         ninja
         ninja install
 
+    - name: Checkout obuparse
+      uses: actions/checkout@v4
+      with:
+        path: obuparse
+        repository: dwbuiten/obuparse
+
+    - name: Compile obuparse
+      working-directory: obuparse
+      run: |
+        make CC=cc libobuparse.a
+        install -d /usr/local/include
+        install -d /usr/local/lib
+        install -v obuparse.h /usr/local/include
+        install -v libobuparse.a /usr/local/lib
+
+    - name: Checkout L-SMASH
+      uses: actions/checkout@v4
+      with:
+        path: lsmash
+        repository: vimeo/l-smash
+
+    - name: Compile L-SMASH
+      working-directory: lsmash
+      run: |
+        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
+        ./configure --prefix=/usr/local --cc=cc \
+          --extra-cflags="-I$WORKSPACE/obuparse" \
+          --extra-ldflags="-L$WORKSPACE/obuparse" \
+          --extra-libs="-lobuparse"
+        make -j$(nproc)
+        make install
+        cp importer/importer.h /usr/local/include/lsmash_importer.h
+
     - name: Build x264 with ${{ matrix.config.name }}
       run: |
         mkdir -p build
@@ -432,7 +465,7 @@ jobs:
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
         CFLAGS="${{ matrix.config.cflags }} -I/usr/local/include -I/clang64/include -I../ffmpeg"
         LDFLAGS="${{ matrix.config.ldflags }} -L/usr/local/lib -L/clang64/lib"
-        CC=cc ../x264/configure --prefix=/usr/local --bit-depth=8 --enable-lavf --enable-static \
+        CC=cc RC=/ucrt64/bin/windres ../x264/configure --prefix=/usr/local --bit-depth=8 --enable-lavf --enable-lsmash --enable-static \
           --extra-cflags="$CFLAGS" \
           --extra-ldflags="$LDFLAGS"
         make -j$(nproc)
