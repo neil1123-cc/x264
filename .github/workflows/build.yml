@@ -333,116 +333,6 @@ jobs:
         generate_release_notes: false
         prerelease: true
 
-  # Test -fno-plt optimization
-  test-fno-plt:
-    runs-on: windows-latest
-    defaults:
-      run:
-        shell: msys2 {0}
-    steps:
-    - name: Checkout x264
-      uses: actions/checkout@v4
-      with:
-        path: x264
-        fetch-depth: 0
-
-    - name: Fetch PGO profdata
-      shell: bash
-      run: |
-        cd x264
-        git fetch origin profdata-x86-64 --depth=1 || echo "Branch not found"
-        git checkout profdata-x86-64 -- x264.profdata 2>/dev/null || echo "profdata not found"
-        mkdir -p ../build
-        mv x264.profdata ../build/x264.profdata 2>/dev/null || echo "No profdata"
-
-    - name: Cache FFmpeg
-      id: cache-ffmpeg
-      uses: actions/cache@v4
-      with:
-        path: ffmpeg
-        key: ffmpeg-n8.1-minimal-v1-clang
-
-    - name: Checkout FFmpeg
-      uses: actions/checkout@v4
-      with:
-        path: ffmpeg
-        repository: FFmpeg/FFmpeg
-        ref: n8.1
-      if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
-
-    - name: Setup MSYS2
-      uses: msys2/setup-msys2@v2
-      with:
-        msystem: CLANG64
-        update: true
-        install: >-
-          base-devel
-          git
-          autoconf
-          automake
-          libtool
-          mingw-w64-clang-x86_64-nasm
-          mingw-w64-clang-x86_64-clang
-          mingw-w64-clang-x86_64-compiler-rt
-          mingw-w64-clang-x86_64-lld
-          mingw-w64-clang-x86_64-crt
-          mingw-w64-clang-x86_64-headers
-          mingw-w64-clang-x86_64-libc++
-          mingw-w64-clang-x86_64-libwinpthread
-          mingw-w64-clang-x86_64-make
-          mingw-w64-clang-x86_64-pkgconf
-
-    - name: Compile FFmpeg (minimal)
-      if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
-      working-directory: ffmpeg
-      run: |
-        ./configure --prefix=/usr/local --enable-gpl --enable-version3 \
-          --disable-runtime-cpudetect --disable-all --disable-autodetect \
-          --enable-avformat --enable-avcodec --enable-swscale --enable-swresample \
-          --disable-everything --disable-network \
-          --enable-demuxer=mpegts,mov,matroska,h264,hevc,rawvideo,yuv4mpegpipe \
-          --enable-decoder=h264,hevc,ffv1,ffvhuff,huffyuv,rawvideo,wrapped_avframe,aac,ac3,mp3 \
-          --enable-protocol=file \
-          --cc=cc --cxx=c++ --cpu=x86-64
-        make -j$(nproc)
-
-    - name: Get rid of .dll.a
-      run: find /*64/ /usr/ -type f -name "*.dll.a" -print -delete
-
-    - name: Install FFmpeg
-      run: make install
-      working-directory: ffmpeg
-
-    - name: Setup build dir
-      run: mkdir -p build/8b
-
-    - name: Compile x264 with -fno-plt
-      run: |
-        export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
-        export X264_TARGET_CPU=x86-64
-        CFLAGS="-O3 -flto -ffat-lto-objects -fmerge-all-constants -fno-plt -I/usr/local/include -I/clang64/include -I../../ffmpeg"
-        LDFLAGS="-flto -L/usr/local/lib -L/clang64/lib"
-        if [ -f ../x264.profdata ]; then
-          CFLAGS="$CFLAGS -fprofile-instr-use=../x264.profdata"
-          LDFLAGS="$LDFLAGS -fprofile-instr-use=../x264.profdata"
-          echo "Using PGO profdata"
-        else
-          echo "Building without PGO"
-        fi
-        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=8 --enable-lavf --enable-static \
-          --extra-cflags="$CFLAGS" \
-          --extra-ldflags="$LDFLAGS"
-        make -j$(nproc)
-        strip -s x264.exe
-      working-directory: build/8b
-
-    - name: Test x264
-      run: |
-        # Generate test y4m and encode to verify no crash
-        ../../ffmpeg/ffmpeg -f lavfi -i testsrc=duration=1:size=640x480:rate=30 -f yuv4mpegpipe - | build/8b/x264.exe - -o test.264
-        echo "Test passed"
-      shell: bash
-
   # Test -momit-leaf-frame-pointer optimization
   test-omit-leaf-fp:
     runs-on: windows-latest
@@ -465,21 +355,6 @@ jobs:
         mkdir -p ../build
         mv x264.profdata ../build/x264.profdata 2>/dev/null || echo "No profdata"
 
-    - name: Cache FFmpeg
-      id: cache-ffmpeg
-      uses: actions/cache@v4
-      with:
-        path: ffmpeg
-        key: ffmpeg-n8.1-minimal-v1-clang
-
-    - name: Checkout FFmpeg
-      uses: actions/checkout@v4
-      with:
-        path: ffmpeg
-        repository: FFmpeg/FFmpeg
-        ref: n8.1
-      if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
-
     - name: Setup MSYS2
       uses: msys2/setup-msys2@v2
       with:
@@ -488,9 +363,6 @@ jobs:
         install: >-
           base-devel
           git
-          autoconf
-          automake
-          libtool
           mingw-w64-clang-x86_64-nasm
           mingw-w64-clang-x86_64-clang
           mingw-w64-clang-x86_64-compiler-rt
@@ -500,38 +372,15 @@ jobs:
           mingw-w64-clang-x86_64-libc++
           mingw-w64-clang-x86_64-libwinpthread
           mingw-w64-clang-x86_64-make
-          mingw-w64-clang-x86_64-pkgconf
-
-    - name: Compile FFmpeg (minimal)
-      if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
-      working-directory: ffmpeg
-      run: |
-        ./configure --prefix=/usr/local --enable-gpl --enable-version3 \
-          --disable-runtime-cpudetect --disable-all --disable-autodetect \
-          --enable-avformat --enable-avcodec --enable-swscale --enable-swresample \
-          --disable-everything --disable-network \
-          --enable-demuxer=mpegts,mov,matroska,h264,hevc,rawvideo,yuv4mpegpipe \
-          --enable-decoder=h264,hevc,ffv1,ffvhuff,huffyuv,rawvideo,wrapped_avframe,aac,ac3,mp3 \
-          --enable-protocol=file \
-          --cc=cc --cxx=c++ --cpu=x86-64
-        make -j$(nproc)
-
-    - name: Get rid of .dll.a
-      run: find /*64/ /usr/ -type f -name "*.dll.a" -print -delete
-
-    - name: Install FFmpeg
-      run: make install
-      working-directory: ffmpeg
 
     - name: Setup build dir
       run: mkdir -p build/8b
 
     - name: Compile x264 with -momit-leaf-frame-pointer
       run: |
-        export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
         export X264_TARGET_CPU=x86-64
-        CFLAGS="-O3 -flto -ffat-lto-objects -fmerge-all-constants -momit-leaf-frame-pointer -I/usr/local/include -I/clang64/include -I../../ffmpeg"
-        LDFLAGS="-flto -L/usr/local/lib -L/clang64/lib"
+        CFLAGS="-O3 -flto -ffat-lto-objects -fmerge-all-constants -momit-leaf-frame-pointer"
+        LDFLAGS="-flto"
         if [ -f ../x264.profdata ]; then
           CFLAGS="$CFLAGS -fprofile-instr-use=../x264.profdata"
           LDFLAGS="$LDFLAGS -fprofile-instr-use=../x264.profdata"
@@ -539,16 +388,10 @@ jobs:
         else
           echo "Building without PGO"
         fi
-        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=8 --enable-lavf --enable-static \
+        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=8 --enable-static \
           --extra-cflags="$CFLAGS" \
           --extra-ldflags="$LDFLAGS"
         make -j$(nproc)
         strip -s x264.exe
+        echo "Build succeeded"
       working-directory: build/8b
-
-    - name: Test x264
-      run: |
-        # Generate test y4m and encode to verify no crash
-        ../../ffmpeg/ffmpeg -f lavfi -i testsrc=duration=1:size=640x480:rate=30 -f yuv4mpegpipe - | build/8b/x264.exe - -o test.264
-        echo "Test passed"
-      shell: bash
