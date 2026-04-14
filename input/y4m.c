@@ -185,6 +185,13 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
                     else if( !strncmp( "LIMITED", tokstart, 7 ) )
                         info->fullrange = 0;
                 }
+                else if( !strncmp( "LENGTH=", tokstart, 7 ) )
+                {
+                    /* x265 extension: total frame count for ETA */
+                    tokstart += 7;
+                    info->num_frames = strtol( tokstart, &tokend, 10 );
+                    tokstart = tokend;
+                }
                 tokstart = strchr( tokstart, 0x20 );
                 break;
         }
