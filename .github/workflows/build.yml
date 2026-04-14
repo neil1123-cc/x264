@@ -430,9 +430,9 @@ jobs:
         mkdir -p build
         cd build
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
-        CFLAGS="${{ matrix.config.cflags }} -I/usr/local/include -I/clang64/include -I../../ffmpeg"
+        CFLAGS="${{ matrix.config.cflags }} -I/usr/local/include -I/clang64/include -I../ffmpeg"
         LDFLAGS="${{ matrix.config.ldflags }} -L/usr/local/lib -L/clang64/lib"
-        CC=cc ../../x264/configure --prefix=/usr/local --bit-depth=8 --enable-lavf --enable-static \
+        CC=cc ../x264/configure --prefix=/usr/local --bit-depth=8 --enable-lavf --enable-static \
           --extra-cflags="$CFLAGS" \
           --extra-ldflags="$LDFLAGS"
         make -j$(nproc)
