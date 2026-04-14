@@ -69,7 +69,9 @@ else
 fi
 
 # Unified version format for both branches
-VER="${BUILD_DATE} ${GIT_HASH} @ADE [${BIT_DEPTH}-bit@${CHROMA_FORMATS} ${ARCH_INFO}]"
+VER_SHORT="${BUILD_DATE} ${GIT_HASH} @ADE"
+VER="${VER_SHORT} [${BIT_DEPTH}-bit@${CHROMA_FORMATS} ${ARCH_INFO}]"
 rm -f config.git-hash
 API=`grep '#define X264_BUILD' < "$SCRIPT_DIR/x264.h" | sed -e 's/.* \([1-9][0-9]*\).*/\1/'`
 echo "#define X264_POINTVER \"0.$API.$VER\""
+echo "#define X264_POINTVER_SHORT \"0.$API.$VER_SHORT\""

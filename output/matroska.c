@@ -330,7 +330,7 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
 
     memcpy( avcC+11+sps_size, pps, pps_size );
 
-    ret = mk_write_header( p_mkv->w, "x264" X264_VERSION, 50000,
+    ret = mk_write_header( p_mkv->w, "x264 "X264_POINTVER_SHORT, 50000,
                            p_mkv->tracks, p_mkv->i_track_count );
 
 
