@@ -187,7 +187,7 @@ jobs:
           sed -i "s/ref: n[0-9]\+\.[0-9]\+/ref: ${{ steps.ffmpeg.outputs.tag }}/" .github/workflows/build-pgo.yml
           sed -i "s/ref: n[0-9]\+\.[0-9]\+/ref: ${{ steps.ffmpeg.outputs.tag }}/" .github/workflows/build-profiling.yml
           # Update cache keys
-          sed -i "s/key: ffmpeg-n[0-9]\+\.[0-9]\+-full-v[0-9]\+/key: ffmpeg-${{ steps.ffmpeg.outputs.tag }}-full-v2/" .github/workflows/build.yml
+          sed -i "s/key: ffmpeg-n[0-9]\+\.[0-9]\+-minimal-v[0-9]\+/key: ffmpeg-${{ steps.ffmpeg.outputs.tag }}-minimal-v2/" .github/workflows/build.yml
           sed -i "s/key: ffmpeg-n[0-9]\+\.[0-9]\+-full-v[0-9]\+/key: ffmpeg-${{ steps.ffmpeg.outputs.tag }}-full-v1/" .github/workflows/build-pgo.yml
           sed -i "s/key: ffmpeg-n[0-9]\+\.[0-9]\+-full-v[0-9]\+/key: ffmpeg-${{ steps.ffmpeg.outputs.tag }}-full-v1/" .github/workflows/build-profiling.yml
           # Update mimalloc ref in all workflow files

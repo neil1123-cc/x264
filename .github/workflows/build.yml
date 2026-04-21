@@ -63,7 +63,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ffmpeg
-        key: ffmpeg-n8.1-full-v2-${{matrix.toolchain}}
+        key: ffmpeg-n8.1-minimal-v2-${{matrix.toolchain}}
 
     - name: Checkout obuparse
       id: cache-obuparse
@@ -139,26 +139,21 @@ jobs:
           mingw-w64-clang-x86_64-pkgconf
           mingw-w64-clang-x86_64-cmake
           mingw-w64-clang-x86_64-ninja
+          mingw-w64-clang-x86_64-ffmpeg
           mingw-w64-ucrt-x86_64-binutils
           mingw-w64-x86_64-gcc
 
-    - name: Compile FFmpeg (full with avfilter)
+    - name: Compile FFmpeg (minimal)
       if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
       working-directory: ffmpeg
       run: |
-        FFMPEG_OPT="--enable-avdevice --enable-avfilter --enable-ffmpeg --enable-ffprobe --enable-indev=lavfi"
-        for f in testsrc testsrc2 smptebars nullsrc geq gradients format scale; do
-          FFMPEG_OPT="$FFMPEG_OPT --enable-filter=$f"
-        done
         ./configure --prefix=/usr/local --enable-gpl --enable-version3 \
           --disable-runtime-cpudetect --disable-all --disable-autodetect \
           --enable-avformat --enable-avcodec --enable-swscale --enable-swresample \
-          --disable-everything --disable-network $FFMPEG_OPT \
+          --disable-everything --disable-network \
           --enable-demuxer=mpegts,mov,matroska,h264,hevc,rawvideo,yuv4mpegpipe \
           --enable-decoder=h264,hevc,ffv1,ffvhuff,huffyuv,rawvideo,wrapped_avframe,aac,ac3,mp3 \
-          --enable-encoder=rawvideo,aac,ac3,mp2,pcm_s16le,pcm_s24le,pcm_s32le \
-          --enable-muxer=yuv4mpegpipe \
-          --enable-protocol=file,pipe \
+          --enable-protocol=file \
           --cc=cc --cxx=c++ --cpu=x86-64
         make -j$(nproc)
 
