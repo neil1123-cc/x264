@@ -182,7 +182,7 @@ jobs:
         mkdir -p "$GITHUB_WORKSPACE/lsmash-install/include" "$GITHUB_WORKSPACE/lsmash-install/lib/pkgconfig"
         cp /usr/local/include/lsmash*.h "$GITHUB_WORKSPACE/lsmash-install/include/"
         cp /usr/local/lib/liblsmash.a "$GITHUB_WORKSPACE/lsmash-install/lib/"
-        cp /usr/local/lib/pkgconfig/lsmash.pc "$GITHUB_WORKSPACE/lsmash-install/lib/pkgconfig/"
+        cp /usr/local/lib/pkgconfig/liblsmash.pc "$GITHUB_WORKSPACE/lsmash-install/lib/pkgconfig/"
 
     - name: Install cached L-SMASH
       if: steps.cache-lsmash.outputs.cache-hit == 'true'

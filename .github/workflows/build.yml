@@ -241,7 +241,7 @@ jobs:
         mkdir -p "$WORKSPACE/lsmash-install/include" "$WORKSPACE/lsmash-install/lib/pkgconfig"
         cp /usr/local/include/lsmash*.h "$WORKSPACE/lsmash-install/include/"
         cp /usr/local/lib/liblsmash.a "$WORKSPACE/lsmash-install/lib/"
-        cp /usr/local/lib/pkgconfig/lsmash.pc "$WORKSPACE/lsmash-install/lib/pkgconfig/"
+        cp /usr/local/lib/pkgconfig/liblsmash.pc "$WORKSPACE/lsmash-install/lib/pkgconfig/"
 
     - name: Install cached L-SMASH
       if: steps.cache-lsmash.outputs.cache-hit == 'true'
