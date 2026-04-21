@@ -212,6 +212,12 @@ jobs:
         install -v libobuparse.a "$WORKSPACE/obuparse-install/lib"
         cp -r "$WORKSPACE/obuparse-install/"* /usr/local/
 
+    - name: Install cached obuparse
+      if: steps.cache-obuparse.outputs.cache-hit == 'true'
+      run: |
+        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
+        cp -r "$WORKSPACE/obuparse-install/"* /usr/local/
+
     - name: Compile L-SMASH
       if: steps.cache-lsmash.outputs.cache-hit != 'true'
       working-directory: lsmash
@@ -236,12 +242,6 @@ jobs:
         cp /usr/local/include/lsmash*.h "$WORKSPACE/lsmash-install/include/"
         cp /usr/local/lib/liblsmash.a "$WORKSPACE/lsmash-install/lib/"
         cp /usr/local/lib/pkgconfig/lsmash.pc "$WORKSPACE/lsmash-install/lib/pkgconfig/"
-
-    - name: Install cached obuparse
-      if: steps.cache-obuparse.outputs.cache-hit == 'true'
-      run: |
-        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
-        cp -r "$WORKSPACE/obuparse-install/"* /usr/local/
 
     - name: Install cached L-SMASH
       if: steps.cache-lsmash.outputs.cache-hit == 'true'
