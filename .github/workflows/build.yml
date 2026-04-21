@@ -77,7 +77,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: lsmash-install
-        key: lsmash-latest-clang-v1
+        key: lsmash-vimeo-gcc-mingw64-v1
 
     - name: Cache ffms2
       id: cache-ffms2
@@ -140,6 +140,7 @@ jobs:
           mingw-w64-clang-x86_64-cmake
           mingw-w64-clang-x86_64-ninja
           mingw-w64-ucrt-x86_64-binutils
+          mingw-w64-x86_64-gcc
 
     - name: Compile FFmpeg (minimal)
       if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
@@ -216,14 +217,25 @@ jobs:
       working-directory: lsmash
       run: |
         WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
-        ./configure --prefix="$WORKSPACE/lsmash-install" --cc=cc \
-          --extra-cflags="-I$WORKSPACE/obuparse-install/include" \
-          --extra-ldflags="-L$WORKSPACE/obuparse-install/lib" \
-          --extra-libs="-lobuparse"
-        make -j$(nproc)
-        make install
-        cp importer/importer.h "$WORKSPACE/lsmash-install/include/lsmash_importer.h"
-        cp -r "$WORKSPACE/lsmash-install/"* /usr/local/
+        env MSYSTEM=MINGW64 CHERE_INVOKING=1 PATH="/mingw64/bin:/usr/bin:/clang64/bin" /usr/bin/bash -lc '
+          set -euo pipefail
+          export PATH="/mingw64/bin:/usr/bin:/clang64/bin"
+          hash -r
+          command -v gcc >/dev/null
+          command -v ar >/dev/null
+          command -v ranlib >/dev/null
+          ./configure --prefix=/usr/local --cc=gcc \
+            --extra-cflags="-I/usr/local/include -O3 -DNDEBUG -fno-lto" \
+            --extra-ldflags="-L/usr/local/lib -fno-lto"
+          make clean
+          make lib -j$(nproc)
+          make install-lib
+        '
+        cp importer/importer.h /usr/local/include/lsmash_importer.h
+        mkdir -p "$WORKSPACE/lsmash-install/include" "$WORKSPACE/lsmash-install/lib/pkgconfig"
+        cp /usr/local/include/lsmash*.h "$WORKSPACE/lsmash-install/include/"
+        cp /usr/local/lib/liblsmash.a "$WORKSPACE/lsmash-install/lib/"
+        cp /usr/local/lib/pkgconfig/lsmash.pc "$WORKSPACE/lsmash-install/lib/pkgconfig/"
 
     - name: Install cached obuparse
       if: steps.cache-obuparse.outputs.cache-hit == 'true'
@@ -305,6 +317,96 @@ jobs:
         make -j$(nproc)
         strip -s x264.exe
       working-directory: build/all
+
+    - name: MP4 smoke (8bit CLI)
+      if: matrix.target_cpu == 'x86-64'
+      run: |
+        trap 'status=$?; if [ $status -ne 0 ]; then echo "=== x264 mp4 smoke diagnostics ==="; for f in smoke_format.txt smoke_stream.txt smoke_timing.txt smoke_count.txt smoke_packets.csv smoke_frames.csv; do if [ -f "$f" ]; then echo "--- $f ---"; cat "$f"; fi; done; fi; exit $status' EXIT
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24 -frames:v 16 -pix_fmt yuv420p smoke.y4m
+        build/8b/x264.exe --fps 24/1 --frames 16 --bframes 4 --keyint 8 --min-keyint 8 --no-open-gop -o smoke.mp4 smoke.y4m
+        ffprobe -v error -show_streams -select_streams v:0 smoke.mp4 > smoke_stream.txt
+        ffprobe -v error -show_entries stream=time_base,r_frame_rate,avg_frame_rate,duration,nal_length_size -select_streams v:0 -of default=noprint_wrappers=1 smoke.mp4 > smoke_timing.txt
+        ffprobe -v error -show_entries format=format_name,duration -of default=noprint_wrappers=1 smoke.mp4 > smoke_format.txt
+        ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=noprint_wrappers=1 smoke.mp4 > smoke_count.txt
+        ffprobe -v error -show_packets -select_streams v:0 -show_entries packet=flags -of csv=p=0 smoke.mp4 > smoke_packets.csv
+        ffprobe -v error -select_streams v:0 -show_entries frame=pts_time,pkt_dts_time,pkt_duration_time,key_frame -of csv=p=0 smoke.mp4 > smoke_frames.csv
+        grep -q "format_name=mov,mp4,m4a,3gp,3g2,mj2" smoke_format.txt
+        grep -q "duration=" smoke_format.txt
+        grep -q "codec_name=h264" smoke_stream.txt
+        grep -q "codec_tag_string=avc1" smoke_stream.txt
+        grep -q "codec_type=video" smoke_stream.txt
+        grep -q "width=128" smoke_stream.txt
+        grep -q "height=72" smoke_stream.txt
+        grep -q "pix_fmt=yuv420p" smoke_stream.txt
+        awk -F= '/^extradata_size=/{ if (($2+0) > 0) found=1 } END { if (!found) exit 1 }' smoke_stream.txt
+        grep -q "time_base=" smoke_timing.txt
+        grep -q "r_frame_rate=24/1" smoke_timing.txt
+        grep -q "avg_frame_rate=24/1" smoke_timing.txt
+        grep -q "nb_read_frames=16" smoke_count.txt
+        test -s smoke_packets.csv
+        test -s smoke_frames.csv
+        awk -F, 'NR == 1 { if ($1 !~ /K/) exit 1 } END { if (NR != 16) exit 1 }' smoke_packets.csv
+        awk -F, 'NF >= 3 && $3 != "N/A" { if (seen && ($3+0) < prev) exit 1; prev=$3+0; seen=1 } END { if (!seen) exit 1 }' smoke_frames.csv
+        awk -F, 'NF >= 3 && $2 != "N/A" && $3 != "N/A" { if (($2+0) > ($3+0)) diff=1 } END { if (!diff) exit 1 }' smoke_frames.csv
+        awk -F, 'NR == 1 { if (NF < 1 || $1 != 1) exit 1 }' smoke_frames.csv
+        awk -F, 'END { if (NR != 16) exit 1 }' smoke_frames.csv
+
+    - name: MP4 smoke (8bit CLI open GOP)
+      if: matrix.target_cpu == 'x86-64'
+      run: |
+        trap 'status=$?; if [ $status -ne 0 ]; then echo "=== x264 mp4 open-gop diagnostics ==="; for f in smoke_open_format.txt smoke_open_stream.txt smoke_open_timing.txt smoke_open_count.txt smoke_open_packets.csv smoke_open_frames.csv; do if [ -f "$f" ]; then echo "--- $f ---"; cat "$f"; fi; done; fi; exit $status' EXIT
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24 -frames:v 16 -pix_fmt yuv420p smoke_open.y4m
+        build/8b/x264.exe --fps 24/1 --frames 16 --bframes 4 --keyint 8 --min-keyint 8 --open-gop -o smoke_open.mp4 smoke_open.y4m
+        ffprobe -v error -show_streams -select_streams v:0 smoke_open.mp4 > smoke_open_stream.txt
+        ffprobe -v error -show_entries stream=time_base,r_frame_rate,avg_frame_rate,duration,nal_length_size -select_streams v:0 -of default=noprint_wrappers=1 smoke_open.mp4 > smoke_open_timing.txt
+        ffprobe -v error -show_entries format=format_name,duration -of default=noprint_wrappers=1 smoke_open.mp4 > smoke_open_format.txt
+        ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=noprint_wrappers=1 smoke_open.mp4 > smoke_open_count.txt
+        ffprobe -v error -show_packets -select_streams v:0 -show_entries packet=pts_time,dts_time,flags -of csv=p=0 smoke_open.mp4 > smoke_open_packets.csv
+        ffprobe -v error -select_streams v:0 -show_entries frame=pts_time,pkt_dts_time,pkt_duration_time,key_frame -of csv=p=0 smoke_open.mp4 > smoke_open_frames.csv
+        grep -q "format_name=mov,mp4,m4a,3gp,3g2,mj2" smoke_open_format.txt
+        grep -q "codec_name=h264" smoke_open_stream.txt
+        grep -q "codec_tag_string=avc1" smoke_open_stream.txt
+        grep -q "nb_read_frames=16" smoke_open_count.txt
+        test -s smoke_open_packets.csv
+        test -s smoke_open_frames.csv
+        awk -F, 'NR == 1 { if (NF < 3 || $3 !~ /K/) exit 1 } END { if (NR != 16) exit 1 }' smoke_open_packets.csv
+        awk -F, 'NF >= 3 && $1 != "N/A" && $2 != "N/A" { if (($1+0) > ($2+0)) diff=1 } END { if (!diff) exit 1 }' smoke_open_packets.csv
+        awk -F, 'NF >= 3 && $3 != "N/A" { if (seen && ($3+0) < prev) exit 1; prev=$3+0; seen=1 } END { if (!seen) exit 1 }' smoke_open_frames.csv
+
+    - name: MP4 smoke (8bit CLI single frame)
+      if: matrix.target_cpu == 'x86-64'
+      run: |
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24 -frames:v 1 -pix_fmt yuv420p smoke_single.y4m
+        build/8b/x264.exe --fps 24/1 --frames 1 --bframes 0 --keyint 1 --min-keyint 1 -o smoke_single.mp4 smoke_single.y4m
+        ffprobe -v error -show_entries format=format_name,duration -of default=noprint_wrappers=1 smoke_single.mp4 > smoke_single_format.txt
+        ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=noprint_wrappers=1 smoke_single.mp4 > smoke_single_count.txt
+        ffprobe -v error -show_packets -select_streams v:0 -show_entries packet=flags -of csv=p=0 smoke_single.mp4 > smoke_single_packets.csv
+        grep -q "format_name=mov,mp4,m4a,3gp,3g2,mj2" smoke_single_format.txt
+        grep -q "nb_read_frames=1" smoke_single_count.txt
+        awk -F, 'NR == 1 { if ($1 !~ /K/) exit 1 } END { if (NR != 1) exit 1 }' smoke_single_packets.csv
+
+    - name: MP4 smoke (8bit CLI 24000/1001)
+      if: matrix.target_cpu == 'x86-64'
+      run: |
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24000/1001 -frames:v 1 -pix_fmt yuv420p smoke_frac.y4m
+        build/8b/x264.exe --fps 24000/1001 --frames 1 --bframes 0 --keyint 1 --min-keyint 1 -o smoke_frac.mp4 smoke_frac.y4m
+        ffprobe -v error -show_entries stream=r_frame_rate,avg_frame_rate -select_streams v:0 -of default=noprint_wrappers=1 smoke_frac.mp4 > smoke_frac_timing.txt
+        ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=noprint_wrappers=1 smoke_frac.mp4 > smoke_frac_count.txt
+        grep -q "r_frame_rate=24000/1001" smoke_frac_timing.txt
+        grep -q "avg_frame_rate=24000/1001" smoke_frac_timing.txt
+        grep -q "nb_read_frames=1" smoke_frac_count.txt
+
+    - name: MP4 smoke (8bit CLI AUD request stays valid)
+      if: matrix.target_cpu == 'x86-64'
+      run: |
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24 -frames:v 16 -pix_fmt yuv420p smoke_aud.y4m
+        build/8b/x264.exe --fps 24/1 --frames 16 --bframes 4 --keyint 8 --min-keyint 8 --aud -o smoke_aud.mp4 smoke_aud.y4m
+        ffprobe -v error -show_entries format=format_name -of default=noprint_wrappers=1 smoke_aud.mp4 > smoke_aud_format.txt
+        ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=noprint_wrappers=1 smoke_aud.mp4 > smoke_aud_count.txt
+        ffprobe -v error -show_packets -select_streams v:0 -show_entries packet=pts_time,dts_time,flags -of csv=p=0 smoke_aud.mp4 > smoke_aud_packets.csv
+        grep -q "format_name=mov,mp4,m4a,3gp,3g2,mj2" smoke_aud_format.txt
+        grep -q "nb_read_frames=16" smoke_aud_count.txt
+        test -s smoke_aud_packets.csv
 
     - name: Package
       run: |

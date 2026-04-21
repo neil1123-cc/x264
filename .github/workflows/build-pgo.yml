@@ -42,7 +42,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: lsmash-install
-        key: lsmash-latest-clang-v1
+        key: lsmash-vimeo-gcc-mingw64-v1
 
     - name: Checkout FFmpeg
       uses: actions/checkout@v4
@@ -98,6 +98,7 @@ jobs:
           mingw-w64-clang-x86_64-cmake
           mingw-w64-clang-x86_64-ninja
           mingw-w64-clang-x86_64-llvm
+          mingw-w64-x86_64-gcc
 
     - name: Compile FFmpeg (full with avfilter)
       if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
@@ -159,14 +160,25 @@ jobs:
       if: steps.cache-lsmash.outputs.cache-hit != 'true'
       working-directory: lsmash
       run: |
-        ./configure --prefix="$GITHUB_WORKSPACE/lsmash-install" --cc=cc \
-          --extra-cflags="-I$GITHUB_WORKSPACE/obuparse-install/include" \
-          --extra-ldflags="-L$GITHUB_WORKSPACE/obuparse-install/lib" \
-          --extra-libs="-lobuparse"
-        make -j$(nproc)
-        make install
-        cp importer/importer.h "$GITHUB_WORKSPACE/lsmash-install/include/lsmash_importer.h"
-        cp -r "$GITHUB_WORKSPACE/lsmash-install/"* /usr/local/
+        env MSYSTEM=MINGW64 CHERE_INVOKING=1 PATH="/mingw64/bin:/usr/bin:/clang64/bin" /usr/bin/bash -lc '
+          set -euo pipefail
+          export PATH="/mingw64/bin:/usr/bin:/clang64/bin"
+          hash -r
+          command -v gcc >/dev/null
+          command -v ar >/dev/null
+          command -v ranlib >/dev/null
+          ./configure --prefix=/usr/local --cc=gcc \
+            --extra-cflags="-I/usr/local/include -O3 -DNDEBUG -fno-lto" \
+            --extra-ldflags="-L/usr/local/lib -fno-lto"
+          make clean
+          make lib -j$(nproc)
+          make install-lib
+        '
+        cp importer/importer.h /usr/local/include/lsmash_importer.h
+        mkdir -p "$GITHUB_WORKSPACE/lsmash-install/include" "$GITHUB_WORKSPACE/lsmash-install/lib/pkgconfig"
+        cp /usr/local/include/lsmash*.h "$GITHUB_WORKSPACE/lsmash-install/include/"
+        cp /usr/local/lib/liblsmash.a "$GITHUB_WORKSPACE/lsmash-install/lib/"
+        cp /usr/local/lib/pkgconfig/lsmash.pc "$GITHUB_WORKSPACE/lsmash-install/lib/pkgconfig/"
 
     - name: Install cached obuparse
       if: steps.cache-obuparse.outputs.cache-hit == 'true'
@@ -184,11 +196,23 @@ jobs:
       run: |
         export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
         export X264_TARGET_CPU=x86-64
-        CC=cc RC=/ucrt64/bin/windres ../../x264/configure --prefix=/usr/local --bit-depth=all --enable-lto --enable-static \
+        CC=cc RC=/ucrt64/bin/windres ../../x264/configure --prefix=/usr/local --bit-depth=all --enable-lto --enable-lsmash --enable-static \
           --extra-cflags="-O2 -flto -ffat-lto-objects -fmerge-all-constants -momit-leaf-frame-pointer -fprofile-instr-generate -fprofile-update=atomic -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
           --extra-ldflags="-flto -fprofile-instr-generate -L/usr/local/lib -L/clang64/lib"
         make -j$(nproc)
         mv x264.exe x264-profiling.exe
+
+    - name: MP4 smoke (PGO profiling binary)
+      working-directory: build/all
+      run: |
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24 -frames:v 8 -pix_fmt yuv420p smoke_pgo.y4m
+        ./x264-profiling.exe --fps 24/1 --frames 8 --bframes 2 --keyint 4 --min-keyint 4 -o smoke_pgo.mp4 ../smoke_pgo.y4m
+        ffprobe -v error -show_entries format=format_name -of default=noprint_wrappers=1 smoke_pgo.mp4 > smoke_pgo_format.txt
+        ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames,codec_name,codec_tag_string -of default=noprint_wrappers=1 smoke_pgo.mp4 > smoke_pgo_stream.txt
+        grep -q "format_name=mov,mp4,m4a,3gp,3g2,mj2" smoke_pgo_format.txt
+        grep -q "codec_name=h264" smoke_pgo_stream.txt
+        grep -q "codec_tag_string=avc1" smoke_pgo_stream.txt
+        grep -q "nb_read_frames=8" smoke_pgo_stream.txt
 
     - name: Generate test videos for PGO
       working-directory: build
