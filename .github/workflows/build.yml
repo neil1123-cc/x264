@@ -324,7 +324,7 @@ jobs:
       run: |
         trap 'status=$?; if [ $status -ne 0 ]; then echo "=== x264 mp4 smoke diagnostics ==="; for f in smoke_format.txt smoke_stream.txt smoke_timing.txt smoke_count.txt smoke_packets.csv smoke_frames.csv; do if [ -f "$f" ]; then echo "--- $f ---"; cat "$f"; fi; done; fi; exit $status' EXIT
         ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24 -frames:v 16 -pix_fmt yuv420p smoke.y4m
-        build/8b/x264.exe --fps 24/1 --frames 16 --bframes 4 --keyint 8 --min-keyint 8 --no-open-gop -o smoke.mp4 smoke.y4m
+        build/8b/x264.exe --fps 24/1 --frames 16 --bframes 4 --keyint 8 --min-keyint 8 -o smoke.mp4 smoke.y4m
         ffprobe -v error -show_streams -select_streams v:0 smoke.mp4 > smoke_stream.txt
         ffprobe -v error -show_entries stream=time_base,r_frame_rate,avg_frame_rate,duration,nal_length_size -select_streams v:0 -of default=noprint_wrappers=1 smoke.mp4 > smoke_timing.txt
         ffprobe -v error -show_entries format=format_name,duration -of default=noprint_wrappers=1 smoke.mp4 > smoke_format.txt
