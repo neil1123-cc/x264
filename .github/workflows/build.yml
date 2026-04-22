@@ -386,6 +386,30 @@ jobs:
         grep -q "nb_read_frames=1" smoke_single_count.txt
         awk -F, 'NR == 1 { if ($1 !~ /K/) exit 1 } END { if (NR != 1) exit 1 }' smoke_single_packets.csv
 
+    - name: MP4 smoke (8bit CLI b-pyramid)
+      if: matrix.target_cpu == 'x86-64'
+      run: |
+        trap 'status=$?; if [ $status -ne 0 ]; then echo "=== x264 mp4 b-pyramid diagnostics ==="; for f in smoke_bp_format.txt smoke_bp_stream.txt smoke_bp_timing.txt smoke_bp_count.txt smoke_bp_packets.csv smoke_bp_frames.csv; do if [ -f "$f" ]; then echo "--- $f ---"; cat "$f"; fi; done; fi; exit $status' EXIT
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24 -frames:v 16 -pix_fmt yuv420p smoke_bp.y4m
+        build/8b/x264.exe --fps 24/1 --frames 16 --bframes 4 --b-pyramid normal --keyint 8 --min-keyint 8 -o smoke_bp.mp4 smoke_bp.y4m
+        ffprobe -v error -show_streams -select_streams v:0 smoke_bp.mp4 > smoke_bp_stream.txt
+        ffprobe -v error -show_entries stream=time_base,r_frame_rate,avg_frame_rate,duration,nal_length_size -select_streams v:0 -of default=noprint_wrappers=1 smoke_bp.mp4 > smoke_bp_timing.txt
+        ffprobe -v error -show_entries format=format_name,duration -of default=noprint_wrappers=1 smoke_bp.mp4 > smoke_bp_format.txt
+        ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=noprint_wrappers=1 smoke_bp.mp4 > smoke_bp_count.txt
+        ffprobe -v error -show_packets -select_streams v:0 -show_entries packet=pts_time,dts_time,flags -of csv=p=0 smoke_bp.mp4 > smoke_bp_packets.csv
+        ffprobe -v error -select_streams v:0 -show_entries frame=pts_time,pkt_dts_time,pkt_duration_time,key_frame -of csv=p=0 smoke_bp.mp4 > smoke_bp_frames.csv
+        grep -q "format_name=mov,mp4,m4a,3gp,3g2,mj2" smoke_bp_format.txt
+        grep -q "codec_name=h264" smoke_bp_stream.txt
+        grep -q "codec_tag_string=avc1" smoke_bp_stream.txt
+        grep -q "r_frame_rate=24/1" smoke_bp_timing.txt
+        grep -q "avg_frame_rate=24/1" smoke_bp_timing.txt
+        grep -q "nb_read_frames=16" smoke_bp_count.txt
+        test -s smoke_bp_packets.csv
+        test -s smoke_bp_frames.csv
+        awk -F, 'NR == 1 { if (NF < 3 || $3 !~ /K/) exit 1 } END { if (NR != 16) exit 1 }' smoke_bp_packets.csv
+        awk -F, 'NF >= 3 && $1 != "N/A" && $2 != "N/A" { if (($1+0) > ($2+0)) diff=1 } END { if (!diff) exit 1 }' smoke_bp_packets.csv
+        awk -F, 'END { if (NR != 16) exit 1 }' smoke_bp_frames.csv
+
     - name: MP4 smoke (8bit CLI 24000/1001)
       if: matrix.target_cpu == 'x86-64'
       run: |
@@ -396,6 +420,22 @@ jobs:
         grep -q "r_frame_rate=24000/1001" smoke_frac_timing.txt
         grep -q "avg_frame_rate=24000/1001" smoke_frac_timing.txt
         grep -q "nb_read_frames=1" smoke_frac_count.txt
+
+    - name: MP4 smoke (8bit CLI 24000/1001 multi-frame)
+      if: matrix.target_cpu == 'x86-64'
+      run: |
+        trap 'status=$?; if [ $status -ne 0 ]; then echo "=== x264 mp4 fractional diagnostics ==="; for f in smoke_frac_multi_timing.txt smoke_frac_multi_count.txt smoke_frac_multi_packets.csv; do if [ -f "$f" ]; then echo "--- $f ---"; cat "$f"; fi; done; fi; exit $status' EXIT
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24000/1001 -frames:v 24 -pix_fmt yuv420p smoke_frac_multi.y4m
+        build/8b/x264.exe --fps 24000/1001 --frames 24 --bframes 4 --keyint 12 --min-keyint 12 -o smoke_frac_multi.mp4 smoke_frac_multi.y4m
+        ffprobe -v error -show_entries stream=r_frame_rate,avg_frame_rate -select_streams v:0 -of default=noprint_wrappers=1 smoke_frac_multi.mp4 > smoke_frac_multi_timing.txt
+        ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=noprint_wrappers=1 smoke_frac_multi.mp4 > smoke_frac_multi_count.txt
+        ffprobe -v error -show_packets -select_streams v:0 -show_entries packet=pts_time,dts_time,flags -of csv=p=0 smoke_frac_multi.mp4 > smoke_frac_multi_packets.csv
+        grep -q "r_frame_rate=24000/1001" smoke_frac_multi_timing.txt
+        grep -q "avg_frame_rate=24000/1001" smoke_frac_multi_timing.txt
+        grep -q "nb_read_frames=24" smoke_frac_multi_count.txt
+        test -s smoke_frac_multi_packets.csv
+        awk -F, 'NR == 1 { if (NF < 3 || $3 !~ /K/) exit 1 } END { if (NR != 24) exit 1 }' smoke_frac_multi_packets.csv
+        awk -F, 'NF >= 3 && $1 != "N/A" && $2 != "N/A" { if (($1+0) > ($2+0)) diff=1 } END { if (!diff) exit 1 }' smoke_frac_multi_packets.csv
 
     - name: MP4 smoke (8bit CLI AUD request stays valid)
       if: matrix.target_cpu == 'x86-64'
@@ -408,6 +448,17 @@ jobs:
         grep -q "format_name=mov,mp4,m4a,3gp,3g2,mj2" smoke_aud_format.txt
         grep -q "nb_read_frames=16" smoke_aud_count.txt
         test -s smoke_aud_packets.csv
+
+    - name: MP4 smoke (8bit CLI rejects cbr nal-hrd)
+      if: matrix.target_cpu == 'x86-64'
+      run: |
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24 -frames:v 16 -pix_fmt yuv420p smoke_hrd.y4m
+        if build/8b/x264.exe --fps 24/1 --frames 16 --bframes 4 --keyint 8 --min-keyint 8 --vbv-bufsize 1000 --vbv-maxrate 1000 --nal-hrd cbr -o smoke_hrd.mp4 smoke_hrd.y4m > smoke_hrd.log 2>&1; then
+          echo "Expected MP4 + cbr nal-hrd to fail"
+          cat smoke_hrd.log
+          exit 1
+        fi
+        grep -q "cbr nal-hrd is not compatible with mp4" smoke_hrd.log
 
     - name: Package
       run: |
