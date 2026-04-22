@@ -449,16 +449,14 @@ jobs:
         grep -q "nb_read_frames=16" smoke_aud_count.txt
         test -s smoke_aud_packets.csv
 
-    - name: MP4 smoke (8bit CLI rejects cbr nal-hrd)
+    - name: MP4 smoke (8bit CLI warns and downgrades cbr nal-hrd)
       if: matrix.target_cpu == 'x86-64'
       run: |
         ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24 -frames:v 16 -pix_fmt yuv420p smoke_hrd.y4m
-        if build/8b/x264.exe --fps 24/1 --frames 16 --bframes 4 --keyint 8 --min-keyint 8 --vbv-bufsize 1000 --vbv-maxrate 1000 --nal-hrd cbr -o smoke_hrd.mp4 smoke_hrd.y4m > smoke_hrd.log 2>&1; then
-          echo "Expected MP4 + cbr nal-hrd to fail"
-          cat smoke_hrd.log
-          exit 1
-        fi
+        build/8b/x264.exe --fps 24/1 --frames 16 --bframes 4 --keyint 8 --min-keyint 8 --vbv-bufsize 1000 --vbv-maxrate 1000 --nal-hrd cbr -o smoke_hrd.mp4 smoke_hrd.y4m > smoke_hrd.log 2>&1
         grep -q "cbr nal-hrd is not compatible with mp4" smoke_hrd.log
+        grep -q "nal_hrd=vbr" smoke_hrd.log
+        test -s smoke_hrd.mp4
 
     - name: Package
       run: |
