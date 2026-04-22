@@ -3,9 +3,6 @@ name: Generate PGO Profdata
 on:
   workflow_dispatch:
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 permissions:
   contents: write
 
@@ -17,148 +14,45 @@ jobs:
         shell: msys2 {0}
     steps:
     - name: Checkout x264
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         path: x264
         fetch-depth: 0
 
     # === Dependency Caching ===
-    - name: Cache FFmpeg
-      id: cache-ffmpeg
-      uses: actions/cache@v4
-      with:
-        path: ffmpeg
-        key: ffmpeg-n8.1-full-v1-clang
-
-    - name: Checkout obuparse
-      id: cache-obuparse
-      uses: actions/cache@v4
-      with:
-        path: obuparse-install
-        key: obuparse-latest-clang-v1
-
     - name: Cache L-SMASH
       id: cache-lsmash
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: lsmash-install
         key: lsmash-vimeo-gcc-mingw64-v1
 
-    - name: Checkout FFmpeg
-      uses: actions/checkout@v4
+    - name: Setup shared dependencies
+      uses: ./x264/.github/actions/setup-windows-deps
       with:
-        path: ffmpeg
-        repository: FFmpeg/FFmpeg
-        ref: n8.1
-      if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
-
-    - name: Checkout mimalloc
-      uses: actions/checkout@v4
-      with:
-        path: mimalloc
-        repository: microsoft/mimalloc
-        ref: v3.3.1
-
-    - name: Checkout obuparse
-      uses: actions/checkout@v4
-      with:
-        path: obuparse
-        repository: dwbuiten/obuparse
-      if: steps.cache-obuparse.outputs.cache-hit != 'true'
+        ffmpeg-cache-suffix: full-v1-clang
+        ffmpeg-configure: |
+          PGO_OPT="--enable-avdevice --enable-avfilter --enable-ffmpeg --enable-indev=lavfi"
+          for f in testsrc testsrc2 smptebars smptehdbars nullsrc geq gradients format scale noise; do
+            PGO_OPT="$PGO_OPT --enable-filter=$f"
+          done
+          ./configure --prefix=/usr/local --enable-gpl --enable-version3 \
+            --disable-runtime-cpudetect --disable-all --disable-autodetect \
+            --enable-avformat --enable-avcodec --enable-swscale --enable-swresample \
+            --disable-everything --disable-network $PGO_OPT \
+            --enable-demuxer=mpegts,mov,matroska,h264,hevc,rawvideo,yuv4mpegpipe \
+            --enable-decoder=h264,hevc,ffv1,ffvhuff,huffyuv,rawvideo,wrapped_avframe,aac,ac3,mp3 \
+            --enable-encoder=rawvideo,aac,ac3,mp2,pcm_s16le,pcm_s24le,pcm_s32le \
+            --enable-muxer=yuv4mpegpipe \
+            --enable-protocol=file,pipe \
+            --cc=cc --cxx=c++ --cpu=x86-64
 
     - name: Checkout L-SMASH
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         path: lsmash
         repository: vimeo/l-smash
       if: steps.cache-lsmash.outputs.cache-hit != 'true'
-
-    - name: Setup MSYS2
-      uses: msys2/setup-msys2@v2
-      with:
-        msystem: CLANG64
-        update: true
-        install: >-
-          p7zip
-          base-devel
-          git
-          autoconf
-          automake
-          libtool
-          mingw-w64-clang-x86_64-nasm
-          mingw-w64-clang-x86_64-clang
-          mingw-w64-clang-x86_64-compiler-rt
-          mingw-w64-clang-x86_64-lld
-          mingw-w64-clang-x86_64-crt
-          mingw-w64-clang-x86_64-headers
-          mingw-w64-clang-x86_64-libc++
-          mingw-w64-clang-x86_64-libwinpthread
-          mingw-w64-clang-x86_64-make
-          mingw-w64-clang-x86_64-pkgconf
-          mingw-w64-clang-x86_64-cmake
-          mingw-w64-clang-x86_64-ninja
-          mingw-w64-clang-x86_64-llvm
-          mingw-w64-x86_64-gcc
-
-    - name: Compile FFmpeg (full with avfilter)
-      if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
-      working-directory: ffmpeg
-      run: |
-        PGO_OPT="--enable-avdevice --enable-avfilter --enable-ffmpeg --enable-indev=lavfi"
-        for f in testsrc testsrc2 smptebars smptehdbars nullsrc geq gradients format scale noise; do
-          PGO_OPT="$PGO_OPT --enable-filter=$f"
-        done
-        ./configure --prefix=/usr/local --enable-gpl --enable-version3 \
-          --disable-runtime-cpudetect --disable-all --disable-autodetect \
-          --enable-avformat --enable-avcodec --enable-swscale --enable-swresample \
-          --disable-everything --disable-network $PGO_OPT \
-          --enable-demuxer=mpegts,mov,matroska,h264,hevc,rawvideo,yuv4mpegpipe \
-          --enable-decoder=h264,hevc,ffv1,ffvhuff,huffyuv,rawvideo,wrapped_avframe,aac,ac3,mp3 \
-          --enable-encoder=rawvideo,aac,ac3,mp2,pcm_s16le,pcm_s24le,pcm_s32le \
-          --enable-muxer=yuv4mpegpipe \
-          --enable-protocol=file,pipe \
-          --cc=cc --cxx=c++ --cpu=x86-64
-        make -j$(nproc)
-
-    - name: Get rid of .dll.a
-      run: find /*64/ /usr/ -type f -name "*.dll.a" -print -delete
-
-    - name: Install FFmpeg
-      run: make install
-      working-directory: ffmpeg
-
-    - name: Compile mimalloc
-      working-directory: mimalloc
-      run: |
-        mkdir build
-        cd build
-        cmake -GNinja .. -DCMAKE_INSTALL_PREFIX=/usr/local \
-          -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
-          -DMI_BUILD_SHARED=OFF -DMI_BUILD_STATIC=ON -DMI_BUILD_OBJECT=OFF \
-          -DMI_BUILD_TESTS=OFF -DMI_USE_CXX=ON
-        ninja
-        ninja install
-        # Create compatibility symlink for CMake (mimalloc v3.x uses versioned directories)
-        shopt -s nullglob
-        for dir in /usr/local/lib/cmake/mimalloc-*; do
-          ln -s "$dir" /usr/local/lib/cmake/mimalloc
-          break
-        done
-
-    - name: Compile obuparse
-      if: steps.cache-obuparse.outputs.cache-hit != 'true'
-      working-directory: obuparse
-      run: |
-        make CC=cc libobuparse.a
-        install -d "$GITHUB_WORKSPACE/obuparse-install/include"
-        install -d "$GITHUB_WORKSPACE/obuparse-install/lib"
-        install -v obuparse.h "$GITHUB_WORKSPACE/obuparse-install/include"
-        install -v libobuparse.a "$GITHUB_WORKSPACE/obuparse-install/lib"
-        cp -r "$GITHUB_WORKSPACE/obuparse-install/"* /usr/local/
-
-    - name: Install cached obuparse
-      if: steps.cache-obuparse.outputs.cache-hit == 'true'
-      run: cp -r "$GITHUB_WORKSPACE/obuparse-install/"* /usr/local/
 
     - name: Compile L-SMASH
       if: steps.cache-lsmash.outputs.cache-hit != 'true'

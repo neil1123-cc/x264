@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           token: ${{ secrets.PAT_TOKEN }}
 
@@ -69,15 +69,15 @@ jobs:
           echo "obuparse latest commit: $SHA"
 
       # ============================================
-      # Get current versions from build.yml or cache
+      # Get current versions from shared action or cache
       # ============================================
 
       - name: Get current versions
         id: current
         run: |
-          # FFmpeg and mimalloc from build.yml
-          FFMPEG=$(grep -oP 'ref: n[0-9]+\.[0-9]+' .github/workflows/build.yml | head -1 | grep -oP 'n[0-9]+\.[0-9]+')
-          MIMALLOC=$(grep -oP 'ref: v[0-9]+\.[0-9]+\.[0-9]+' .github/workflows/build.yml | head -1 | grep -oP 'v[0-9]+\.[0-9]+\.[0-9]+')
+          # FFmpeg and mimalloc from shared composite action
+          FFMPEG=$(grep -oP 'default: n[0-9]+\.[0-9]+' .github/actions/setup-windows-deps/action.yml | head -1 | grep -oP 'n[0-9]+\.[0-9]+')
+          MIMALLOC=$(grep -oP 'default: v[0-9]+\.[0-9]+\.[0-9]+' .github/actions/setup-windows-deps/action.yml | head -1 | grep -oP 'v[0-9]+\.[0-9]+\.[0-9]+')
           echo "ffmpeg=$FFMPEG" >> $GITHUB_OUTPUT
           echo "mimalloc=$MIMALLOC" >> $GITHUB_OUTPUT
 
@@ -179,21 +179,11 @@ jobs:
       # Update files
       # ============================================
 
-      - name: Update build.yml and build-pgo.yml
+      - name: Update shared dependency action
         if: steps.check.outputs.ffmpeg_changed == 'true' || steps.check.outputs.mimalloc_changed == 'true'
         run: |
-          # Update FFmpeg ref in all workflow files
-          sed -i "s/ref: n[0-9]\+\.[0-9]\+/ref: ${{ steps.ffmpeg.outputs.tag }}/" .github/workflows/build.yml
-          sed -i "s/ref: n[0-9]\+\.[0-9]\+/ref: ${{ steps.ffmpeg.outputs.tag }}/" .github/workflows/build-pgo.yml
-          sed -i "s/ref: n[0-9]\+\.[0-9]\+/ref: ${{ steps.ffmpeg.outputs.tag }}/" .github/workflows/build-profiling.yml
-          # Update cache keys
-          sed -i "s/key: ffmpeg-n[0-9]\+\.[0-9]\+-minimal-v[0-9]\+/key: ffmpeg-${{ steps.ffmpeg.outputs.tag }}-minimal-v2/" .github/workflows/build.yml
-          sed -i "s/key: ffmpeg-n[0-9]\+\.[0-9]\+-full-v[0-9]\+/key: ffmpeg-${{ steps.ffmpeg.outputs.tag }}-full-v1/" .github/workflows/build-pgo.yml
-          sed -i "s/key: ffmpeg-n[0-9]\+\.[0-9]\+-full-v[0-9]\+/key: ffmpeg-${{ steps.ffmpeg.outputs.tag }}-full-v1/" .github/workflows/build-profiling.yml
-          # Update mimalloc ref in all workflow files
-          sed -i "s/ref: v[0-9]\+\.[0-9]\+\.[0-9]\+/ref: ${{ steps.mimalloc.outputs.tag }}/" .github/workflows/build.yml
-          sed -i "s/ref: v[0-9]\+\.[0-9]\+\.[0-9]\+/ref: ${{ steps.mimalloc.outputs.tag }}/" .github/workflows/build-pgo.yml
-          sed -i "s/ref: v[0-9]\+\.[0-9]\+\.[0-9]\+/ref: ${{ steps.mimalloc.outputs.tag }}/" .github/workflows/build-profiling.yml
+          sed -i "0,/default: n[0-9]\+\.[0-9]\+/s//default: ${{ steps.ffmpeg.outputs.tag }}/" .github/actions/setup-windows-deps/action.yml
+          sed -i "0,/default: v[0-9]\+\.[0-9]\+\.[0-9]\+/s//default: ${{ steps.mimalloc.outputs.tag }}/" .github/actions/setup-windows-deps/action.yml
 
       - name: Update deps cache
         run: |
@@ -213,7 +203,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .github/workflows/*.yml .github/deps-cache.json
+          git add .github/workflows/*.yml .github/actions/setup-windows-deps/action.yml .github/deps-cache.json
           git commit -m "Update dependencies: ${{ steps.check.outputs.changes }}" || echo "Nothing to commit"
           git push
 

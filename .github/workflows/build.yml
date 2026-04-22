@@ -11,9 +11,6 @@ on:
 permissions:
   contents: write
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -43,7 +40,7 @@ jobs:
           #- ucrt
     steps:
     - name: Checkout x264
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         path: x264
         fetch-depth: 0
@@ -58,114 +55,44 @@ jobs:
         mv x264.profdata ../build/x264.profdata 2>/dev/null || echo "No profdata"
 
     # === Dependency Caching ===
-    - name: Cache FFmpeg
-      id: cache-ffmpeg
-      uses: actions/cache@v4
-      with:
-        path: ffmpeg
-        key: ffmpeg-n8.1-minimal-v2-${{matrix.toolchain}}
-
-    - name: Checkout obuparse
-      id: cache-obuparse
-      uses: actions/cache@v4
-      with:
-        path: obuparse-install
-        key: obuparse-latest-clang-v1
-
     - name: Cache L-SMASH
       id: cache-lsmash
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: lsmash-install
         key: lsmash-vimeo-gcc-mingw64-v1
 
     - name: Cache ffms2
       id: cache-ffms2
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ffms2-install
         key: ffms2-latest-clang-v1
 
-    - name: Checkout FFmpeg
-      uses: actions/checkout@v4
+    - name: Setup shared dependencies
+      uses: ./x264/.github/actions/setup-windows-deps
       with:
-        path: ffmpeg
-        repository: FFmpeg/FFmpeg
-        ref: n8.1
-      if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
-
-    - name: Checkout mimalloc
-      uses: actions/checkout@v4
-      with:
-        path: mimalloc
-        repository: microsoft/mimalloc
-        ref: v3.3.1
-
-    - name: Checkout obuparse
-      uses: actions/checkout@v4
-      with:
-        path: obuparse
-        repository: dwbuiten/obuparse
-      if: steps.cache-obuparse.outputs.cache-hit != 'true'
+        ffmpeg-cache-suffix: minimal-v2-${{ matrix.toolchain }}
+        extra-msys2-packages: mingw-w64-clang-x86_64-ffmpeg
+        ffmpeg-configure: |
+          ./configure --prefix=/usr/local --enable-gpl --enable-version3 \
+            --disable-runtime-cpudetect --disable-all --disable-autodetect \
+            --enable-avformat --enable-avcodec --enable-swscale --enable-swresample \
+            --disable-everything --disable-network \
+            --enable-demuxer=mpegts,mov,matroska,h264,hevc,rawvideo,yuv4mpegpipe \
+            --enable-decoder=h264,hevc,ffv1,ffvhuff,huffyuv,rawvideo,wrapped_avframe,aac,ac3,mp3 \
+            --enable-protocol=file \
+            --cc=cc --cxx=c++ --cpu=x86-64
 
     - name: Checkout L-SMASH
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         path: lsmash
         repository: vimeo/l-smash
       if: steps.cache-lsmash.outputs.cache-hit != 'true'
 
-    - name: Setup MSYS2
-      uses: msys2/setup-msys2@v2
-      with:
-        msystem: CLANG64
-        update: true
-        install: >-
-          p7zip
-          base-devel
-          git
-          autoconf
-          automake
-          libtool
-          mingw-w64-clang-x86_64-nasm
-          mingw-w64-clang-x86_64-clang
-          mingw-w64-clang-x86_64-compiler-rt
-          mingw-w64-clang-x86_64-lld
-          mingw-w64-clang-x86_64-crt
-          mingw-w64-clang-x86_64-headers
-          mingw-w64-clang-x86_64-libc++
-          mingw-w64-clang-x86_64-libwinpthread
-          mingw-w64-clang-x86_64-make
-          mingw-w64-clang-x86_64-pkgconf
-          mingw-w64-clang-x86_64-cmake
-          mingw-w64-clang-x86_64-ninja
-          mingw-w64-clang-x86_64-ffmpeg
-          mingw-w64-ucrt-x86_64-binutils
-          mingw-w64-x86_64-gcc
-
-    - name: Compile FFmpeg (minimal)
-      if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
-      working-directory: ffmpeg
-      run: |
-        ./configure --prefix=/usr/local --enable-gpl --enable-version3 \
-          --disable-runtime-cpudetect --disable-all --disable-autodetect \
-          --enable-avformat --enable-avcodec --enable-swscale --enable-swresample \
-          --disable-everything --disable-network \
-          --enable-demuxer=mpegts,mov,matroska,h264,hevc,rawvideo,yuv4mpegpipe \
-          --enable-decoder=h264,hevc,ffv1,ffvhuff,huffyuv,rawvideo,wrapped_avframe,aac,ac3,mp3 \
-          --enable-protocol=file \
-          --cc=cc --cxx=c++ --cpu=x86-64
-        make -j$(nproc)
-
-    - name: Get rid of .dll.a
-      run: find /*64/ /usr/ -type f -name "*.dll.a" -print -delete
-
-    - name: Install FFmpeg
-      run: make install
-      working-directory: ffmpeg
-
     - name: Checkout ffms2
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         path: ffms2
         repository: FFMS/ffms2
@@ -182,42 +109,6 @@ jobs:
         make -j$(nproc)
         make install
         cp -r "$WORKSPACE/ffms2-install/"* /usr/local/
-
-    - name: Compile mimalloc
-      working-directory: mimalloc
-      run: |
-        mkdir build
-        cd build
-        cmake -GNinja .. -DCMAKE_INSTALL_PREFIX=/usr/local \
-          -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
-          -DMI_BUILD_SHARED=OFF -DMI_BUILD_STATIC=ON -DMI_BUILD_OBJECT=OFF \
-          -DMI_BUILD_TESTS=OFF -DMI_USE_CXX=ON
-        ninja
-        ninja install
-        # Create compatibility symlink for CMake (mimalloc v3.x uses versioned directories)
-        shopt -s nullglob
-        for dir in /usr/local/lib/cmake/mimalloc-*; do
-          ln -s "$dir" /usr/local/lib/cmake/mimalloc
-          break
-        done
-
-    - name: Compile obuparse
-      if: steps.cache-obuparse.outputs.cache-hit != 'true'
-      working-directory: obuparse
-      run: |
-        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
-        make CC=cc libobuparse.a
-        install -d "$WORKSPACE/obuparse-install/include"
-        install -d "$WORKSPACE/obuparse-install/lib"
-        install -v obuparse.h "$WORKSPACE/obuparse-install/include"
-        install -v libobuparse.a "$WORKSPACE/obuparse-install/lib"
-        cp -r "$WORKSPACE/obuparse-install/"* /usr/local/
-
-    - name: Install cached obuparse
-      if: steps.cache-obuparse.outputs.cache-hit == 'true'
-      run: |
-        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
-        cp -r "$WORKSPACE/obuparse-install/"* /usr/local/
 
     - name: Compile L-SMASH
       if: steps.cache-lsmash.outputs.cache-hit != 'true'
@@ -497,7 +388,7 @@ jobs:
         cp build/all/x264.exe dist/x264.exe
 
     - name: Upload artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x264-win64-${{matrix.target_cpu}}-${{matrix.toolchain}}
         path: dist/*
@@ -510,7 +401,7 @@ jobs:
           x264-8bit.exe x264-10bit.exe x264.exe
 
     - name: Release
-      uses: softprops/action-gh-release@v2
+      uses: softprops/action-gh-release@v3
       if: github.event_name == 'workflow_dispatch' && github.event.inputs.tag != ''
       with:
         tag_name: ${{ github.event.inputs.tag }}

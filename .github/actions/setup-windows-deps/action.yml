@@ -1,0 +1,149 @@
+name: Setup Windows dependencies
+description: Install shared Windows CI dependencies and build cached third-party libraries
+
+inputs:
+  ffmpeg-ref:
+    description: FFmpeg ref to checkout
+    required: false
+    default: n8.1
+  ffmpeg-cache-suffix:
+    description: Cache suffix appended after the FFmpeg ref
+    required: false
+    default: minimal-v2-clang
+  ffmpeg-configure:
+    description: Shell snippet that configures FFmpeg before building
+    required: true
+  mimalloc-ref:
+    description: mimalloc ref to checkout
+    required: false
+    default: v3.3.1
+  obuparse-cache-key:
+    description: Cache key for obuparse install artifacts
+    required: false
+    default: obuparse-latest-clang-v1
+  extra-msys2-packages:
+    description: Extra MSYS2 packages to install
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Cache FFmpeg
+      id: cache-ffmpeg
+      uses: actions/cache@v5
+      with:
+        path: ffmpeg
+        key: ffmpeg-${{ inputs.ffmpeg-ref }}-${{ inputs.ffmpeg-cache-suffix }}
+
+    - name: Cache obuparse
+      id: cache-obuparse
+      uses: actions/cache@v5
+      with:
+        path: obuparse-install
+        key: ${{ inputs.obuparse-cache-key }}
+
+    - name: Checkout FFmpeg
+      if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
+      uses: actions/checkout@v6
+      with:
+        path: ffmpeg
+        repository: FFmpeg/FFmpeg
+        ref: ${{ inputs.ffmpeg-ref }}
+
+    - name: Checkout mimalloc
+      uses: actions/checkout@v6
+      with:
+        path: mimalloc
+        repository: microsoft/mimalloc
+        ref: ${{ inputs.mimalloc-ref }}
+
+    - name: Checkout obuparse
+      if: steps.cache-obuparse.outputs.cache-hit != 'true'
+      uses: actions/checkout@v6
+      with:
+        path: obuparse
+        repository: dwbuiten/obuparse
+
+    - name: Setup MSYS2
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: CLANG64
+        update: true
+        install: >-
+          p7zip
+          base-devel
+          git
+          autoconf
+          automake
+          libtool
+          mingw-w64-clang-x86_64-nasm
+          mingw-w64-clang-x86_64-clang
+          mingw-w64-clang-x86_64-compiler-rt
+          mingw-w64-clang-x86_64-lld
+          mingw-w64-clang-x86_64-crt
+          mingw-w64-clang-x86_64-headers
+          mingw-w64-clang-x86_64-libc++
+          mingw-w64-clang-x86_64-libwinpthread
+          mingw-w64-clang-x86_64-make
+          mingw-w64-clang-x86_64-pkgconf
+          mingw-w64-clang-x86_64-cmake
+          mingw-w64-clang-x86_64-ninja
+          mingw-w64-clang-x86_64-llvm
+          mingw-w64-ucrt-x86_64-binutils
+          mingw-w64-x86_64-gcc
+          ${{ inputs.extra-msys2-packages }}
+
+    - name: Compile FFmpeg
+      if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
+      shell: msys2 {0}
+      working-directory: ffmpeg
+      run: |
+        ${{ inputs.ffmpeg-configure }}
+        make -j$(nproc)
+
+    - name: Get rid of .dll.a
+      shell: msys2 {0}
+      run: find /*64/ /usr/ -type f -name "*.dll.a" -print -delete
+
+    - name: Install FFmpeg
+      shell: msys2 {0}
+      working-directory: ffmpeg
+      run: make install
+
+    - name: Compile mimalloc
+      shell: msys2 {0}
+      working-directory: mimalloc
+      run: |
+        mkdir build
+        cd build
+        cmake -GNinja .. -DCMAKE_INSTALL_PREFIX=/usr/local \
+          -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+          -DMI_BUILD_SHARED=OFF -DMI_BUILD_STATIC=ON -DMI_BUILD_OBJECT=OFF \
+          -DMI_BUILD_TESTS=OFF -DMI_USE_CXX=ON
+        ninja
+        ninja install
+        shopt -s nullglob
+        for dir in /usr/local/lib/cmake/mimalloc-*; do
+          ln -s "$dir" /usr/local/lib/cmake/mimalloc
+          break
+        done
+
+    - name: Compile obuparse
+      if: steps.cache-obuparse.outputs.cache-hit != 'true'
+      shell: msys2 {0}
+      working-directory: obuparse
+      run: |
+        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
+        make CC=cc libobuparse.a
+        install -d "$WORKSPACE/obuparse-install/include" "$WORKSPACE/obuparse-install/lib"
+        install -v obuparse.h "$WORKSPACE/obuparse-install/include"
+        install -v libobuparse.a "$WORKSPACE/obuparse-install/lib"
+        cp -r "$WORKSPACE/obuparse-install/"* /usr/local/
+
+    - name: Install cached obuparse
+      if: steps.cache-obuparse.outputs.cache-hit == 'true'
+      shell: msys2 {0}
+      run: |
+        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
+        cp -r "$WORKSPACE/obuparse-install/"* /usr/local/
