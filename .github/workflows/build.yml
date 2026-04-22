@@ -386,6 +386,17 @@ jobs:
         grep -q "nb_read_frames=1" smoke_single_count.txt
         awk -F, 'NR == 1 { if ($1 !~ /K/) exit 1 } END { if (NR != 1) exit 1 }' smoke_single_packets.csv
 
+    - name: MP4 smoke (8bit CLI frames=0 means encode available input)
+      if: matrix.target_cpu == 'x86-64'
+      run: |
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24 -frames:v 1 -pix_fmt yuv420p smoke_zero.y4m
+        build/8b/x264.exe --fps 24/1 --frames 0 --bframes 0 --keyint 1 --min-keyint 1 -o smoke_zero.mp4 smoke_zero.y4m
+        ffprobe -v error -show_entries format=format_name,duration -of default=noprint_wrappers=1 smoke_zero.mp4 > smoke_zero_format.txt
+        ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=noprint_wrappers=1 smoke_zero.mp4 > smoke_zero_count.txt
+        grep -q "format_name=mov,mp4,m4a,3gp,3g2,mj2" smoke_zero_format.txt
+        grep -q "nb_read_frames=1" smoke_zero_count.txt
+        test -s smoke_zero.mp4
+
     - name: MP4 smoke (8bit CLI b-pyramid)
       if: matrix.target_cpu == 'x86-64'
       run: |
@@ -457,6 +468,26 @@ jobs:
         grep -q "cbr nal-hrd is not compatible with mp4" smoke_hrd.log
         grep -q "nal_hrd=vbr" smoke_hrd.log
         test -s smoke_hrd.mp4
+
+    - name: MP4 smoke (8bit CLI warns and normalizes intra-refresh open-gop)
+      if: matrix.target_cpu == 'x86-64'
+      run: |
+        trap 'status=$?; if [ $status -ne 0 ]; then echo "=== x264 mp4 intra-refresh diagnostics ==="; for f in smoke_ir_format.txt smoke_ir_stream.txt smoke_ir_count.txt smoke_ir_packets.csv smoke_ir_frames.csv smoke_ir.log; do if [ -f "$f" ]; then echo "--- $f ---"; cat "$f"; fi; done; fi; exit $status' EXIT
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24 -frames:v 16 -pix_fmt yuv420p smoke_ir.y4m
+        build/8b/x264.exe --fps 24/1 --frames 16 --bframes 1 --b-pyramid none --ref 1 --keyint 8 --min-keyint 8 --intra-refresh --open-gop -o smoke_ir.mp4 smoke_ir.y4m > smoke_ir.log 2>&1
+        grep -q "intra-refresh is not compatible with open-gop" smoke_ir.log
+        ffprobe -v error -show_streams -select_streams v:0 smoke_ir.mp4 > smoke_ir_stream.txt
+        ffprobe -v error -show_entries format=format_name -of default=noprint_wrappers=1 smoke_ir.mp4 > smoke_ir_format.txt
+        ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=noprint_wrappers=1 smoke_ir.mp4 > smoke_ir_count.txt
+        ffprobe -v error -show_packets -select_streams v:0 -show_entries packet=pts_time,dts_time,flags -of csv=p=0 smoke_ir.mp4 > smoke_ir_packets.csv
+        ffprobe -v error -select_streams v:0 -show_entries frame=pts_time,pkt_dts_time,pkt_duration_time,key_frame -of csv=p=0 smoke_ir.mp4 > smoke_ir_frames.csv
+        grep -q "format_name=mov,mp4,m4a,3gp,3g2,mj2" smoke_ir_format.txt
+        grep -q "codec_name=h264" smoke_ir_stream.txt
+        grep -q "codec_tag_string=avc1" smoke_ir_stream.txt
+        grep -q "nb_read_frames=16" smoke_ir_count.txt
+        test -s smoke_ir.mp4
+        test -s smoke_ir_packets.csv
+        test -s smoke_ir_frames.csv
 
     - name: Package
       run: |
