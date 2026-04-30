@@ -35,6 +35,10 @@
 #include <libavutil/pixdesc.h>
 #include <libavutil/version.h>
 
+#if HAVE_AUDIO
+#include "audio/audio.h"
+#endif
+
 #define FAIL_IF_ERROR( cond, ... ) FAIL_IF_ERR( cond, "lavf", __VA_ARGS__ )
 
 typedef struct
@@ -47,6 +51,10 @@ typedef struct
     int next_frame;
     int vfr_input;
     cli_pic_t *first_pic;
+#if HAVE_AUDIO
+    char *filename;
+    int has_audio;
+#endif
 } lavf_hnd_t;
 
 /* handle the deprecated jpeg pixel formats */
@@ -63,7 +71,7 @@ static int handle_jpeg( int csp, int *fullrange )
 
 static AVCodecContext *codec_from_stream( AVStream *stream )
 {
-    AVCodec *codec = avcodec_find_decoder( stream->codecpar->codec_id );
+    const AVCodec *codec = avcodec_find_decoder( stream->codecpar->codec_id );
     if( !codec )
         return NULL;
 
@@ -193,7 +201,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     }
 
     /* specify the input format. this is helpful when lavf fails to guess */
-    AVInputFormat *format = NULL;
+    const AVInputFormat *format = NULL;
     if( opt->format )
         FAIL_IF_ERROR( !(format = av_find_input_format( opt->format )), "unknown file format: %s\n", opt->format );
 
@@ -201,6 +209,13 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     if( options )
         av_dict_free( &options );
     FAIL_IF_ERROR( avformat_find_stream_info( h->lavf, NULL ) < 0, "could not find input stream info\n" );
+	
+#if HAVE_AUDIO
+    h->filename = strdup( psz_filename );
+    int j = 0;
+    while( j < h->lavf->nb_streams )
+        h->has_audio |= !!(h->lavf->streams[j++]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO );
+#endif
 
     int i = 0;
     while( i < h->lavf->nb_streams && h->lavf->streams[i]->codecpar->codec_type != AVMEDIA_TYPE_VIDEO )
@@ -212,15 +227,32 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     if( !h->lavc )
         return -1;
 
-    info->fps_num      = h->lavf->streams[i]->avg_frame_rate.num;
-    info->fps_den      = h->lavf->streams[i]->avg_frame_rate.den;
-    info->timebase_num = h->lavf->streams[i]->time_base.num;
-    info->timebase_den = h->lavf->streams[i]->time_base.den;
+    AVStream *s        = h->lavf->streams[i];
+    info->fps_num      = s->avg_frame_rate.num;
+    info->fps_den      = s->avg_frame_rate.den;
+    info->timebase_num = s->time_base.num;
+    info->timebase_den = s->time_base.den;
     /* lavf is thread unsafe as calling av_read_frame invalidates previously read AVPackets */
     info->thread_safe  = 0;
     h->vfr_input       = info->vfr;
-    FAIL_IF_ERROR( avcodec_open2( h->lavc, avcodec_find_decoder( h->lavc->codec_id ), NULL ),
+
+    if( !opt->b_accurate_fps )
+        x264_ntsc_fps( &info->fps_num, &info->fps_den );
+	
+    if( opt->demuxer_threads > 1 )
+        h->lavc->thread_count = opt->demuxer_threads;
+
+    const AVCodec *p;
+    if( opt->lavf_decoder )
+        p = avcodec_find_decoder_by_name(opt->lavf_decoder);
+    else
+        p = avcodec_find_decoder(h->lavc->codec_id);
+    AVDictionary *avcodec_opts = NULL;
+    av_dict_set( &avcodec_opts, "strict", "-2", 0 );
+    FAIL_IF_ERROR( avcodec_open2( h->lavc, p, &avcodec_opts ),
                    "could not find decoder for video stream\n" );
+    if( avcodec_opts )
+        av_dict_free( &avcodec_opts );
 
     /* prefetch the first frame and set/confirm flags */
     h->first_pic = malloc( sizeof(cli_pic_t) );
@@ -232,15 +264,46 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     info->width      = h->lavc->width;
     info->height     = h->lavc->height;
     info->csp        = h->first_pic->img.csp;
-    info->num_frames = h->lavf->streams[i]->nb_frames;
+    info->num_frames = s->nb_frames;
+    /* 备用估算：当 nb_frames 为 0 时，通过时长和帧率估算 */
+    if( info->num_frames == 0 && s->duration > 0 )
+    {
+        double fps = (double)s->avg_frame_rate.num / s->avg_frame_rate.den;
+        double duration_est = s->duration * av_q2d(s->time_base);
+        if( fps > 0 && duration_est > 0 )
+            info->num_frames = (int)(duration_est * fps + 0.5);
+    }
     info->sar_height = h->lavc->sample_aspect_ratio.den;
     info->sar_width  = h->lavc->sample_aspect_ratio.num;
     info->fullrange |= h->lavc->color_range == AVCOL_RANGE_JPEG;
+	
+    /* -1 = 'unset' (internal) , 2 from lavf|ffms = 'unset' */
+    if( h->lavc->colorspace >= 0 && h->lavc->colorspace <= 8 && h->lavc->colorspace != 2 )
+        info->colormatrix = h->lavc->colorspace;
+    else
+        info->colormatrix = -1;
 
     /* avisynth stores rgb data vertically flipped. */
     if( !strcasecmp( get_filename_extension( psz_filename ), "avs" ) &&
         (h->lavc->pix_fmt == AV_PIX_FMT_BGRA || h->lavc->pix_fmt == AV_PIX_FMT_BGR24) )
         info->csp |= X264_CSP_VFLIP;
+
+    /* show video info */
+    double duration = s->duration * av_q2d(s->time_base);
+    const AVPixFmtDescriptor *pix_desc = av_pix_fmt_desc_get(h->lavc->pix_fmt);
+    x264_cli_log( "lavf", X264_LOG_INFO,
+                  "\n Format    : %s"
+                  "\n Codec     : %s ( %s )"
+                  "\n PixFmt    : %s"
+                  "\n Framerate : %d/%d"
+                  "\n Timebase  : %d/%d"
+                  "\n Duration  : %d:%02d:%02d\n",
+                  format ? format->name : h->lavf->iformat->name,
+                  p->name, p->long_name,
+                  pix_desc->name,
+                  s->avg_frame_rate.num, s->avg_frame_rate.den,
+                  s->time_base.num, s->time_base.den,
+                  (int)duration / 60 / 60, (int)duration / 60 % 60, (int)duration - (int)duration / 60 * 60 );
 
     *p_handle = h;
 
@@ -273,8 +336,28 @@ static int close_file( hnd_t handle )
     avformat_close_input( &h->lavf );
     av_packet_free( &h->pkt );
     av_frame_free( &h->frame );
+#if HAVE_AUDIO
+    free( h->filename );
+#endif
     free( h );
     return 0;
 }
 
+#if HAVE_AUDIO
+static hnd_t open_audio( hnd_t handle, int track )
+{
+    lavf_hnd_t *h = handle;
+    if( !x264_is_regular_file_path( h->filename ) )
+    {
+        x264_cli_log( "lavf", X264_LOG_WARNING, "reading audio from non-regular files is not implemented yet.\n" );
+        return 0;
+    }
+    if( !h->has_audio )
+        return 0;
+    return x264_audio_open_from_file( NULL, h->filename, track );
+}
+
+const cli_input_t lavf_input = { open_file, picture_alloc, read_frame, NULL, picture_clean, close_file, open_audio };
+#else
 const cli_input_t lavf_input = { open_file, picture_alloc, read_frame, NULL, picture_clean, close_file };
+#endif

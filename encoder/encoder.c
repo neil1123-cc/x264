@@ -674,8 +674,12 @@ static int validate_parameters( x264_t *h, int b_open )
         score += h->param.analyse.i_me_range == 0;
         score += h->param.rc.i_qp_step == 3;
         score += h->param.i_keyint_max == 12;
-        score += h->param.rc.i_qp_min == 2;
-        score += h->param.rc.i_qp_max == 31;
+        score += h->param.rc.i_qp_min[SLICE_TYPE_I] == 2 ||
+                 h->param.rc.i_qp_min[SLICE_TYPE_P] == 2 ||
+                 h->param.rc.i_qp_min[SLICE_TYPE_B] == 2;
+        score += h->param.rc.i_qp_max[SLICE_TYPE_I] == 31 ||
+                 h->param.rc.i_qp_max[SLICE_TYPE_P] == 31 ||
+                 h->param.rc.i_qp_max[SLICE_TYPE_B] == 31;
         score += h->param.rc.f_qcompress == 0.5;
         score += fabs(h->param.rc.f_ip_factor - 1.25) < 0.01;
         score += fabs(h->param.rc.f_pb_factor - 1.25) < 0.01;
@@ -689,6 +693,55 @@ static int validate_parameters( x264_t *h, int b_open )
             x264_log( h, X264_LOG_ERROR, "profile is optional; x264 defaults to high\n" );
             return -1;
         }
+    }
+
+    h->param.i_frame_reference = x264_clip3( h->param.i_frame_reference, 1, X264_REF_MAX );
+
+    if( b_open )	
+    {
+        const x264_level_t *l = x264_levels;
+        if( h->param.i_level_idc == X264_LEVEL_IDC_AUTO )
+        {
+            int maxrate_bak = h->param.rc.i_vbv_max_bitrate;
+            if( h->param.rc.i_rc_method == X264_RC_ABR && h->param.rc.i_vbv_buffer_size <= 0 )
+                h->param.rc.i_vbv_max_bitrate = h->param.rc.i_bitrate * 2;
+            x264_sps_init( h->sps, h->param.i_sps_id, &h->param );
+            do h->param.i_level_idc = l->level_idc;
+                while( l[1].level_idc && x264_validate_levels( h, 0 ) && l++ );
+            h->param.rc.i_vbv_max_bitrate = maxrate_bak;
+        }
+        else
+        {
+            while( l->level_idc && l->level_idc != h->param.i_level_idc )
+                l++;
+            if( l->level_idc == 0 )
+            {
+                x264_log( h, X264_LOG_ERROR, "invalid level_idc: %d\n", h->param.i_level_idc );
+                return -1;
+            }
+        }
+        if( h->param.rc.i_vbv_max_bitrate < 0 )
+        {
+            int cbp_factor = h->param.rc.i_vbv_max_bitrate == X264_VBV_MAXRATE_HIGH444 ? 16 :
+                             h->param.rc.i_vbv_max_bitrate == X264_VBV_MAXRATE_HIGH422 ? 16 :
+                             h->param.rc.i_vbv_max_bitrate == X264_VBV_MAXRATE_HIGH10 ? 12 :
+                             h->param.rc.i_vbv_max_bitrate == X264_VBV_MAXRATE_HIGH ? 5 : 4;
+            h->param.rc.i_vbv_max_bitrate = (l->bitrate * cbp_factor) / 4;
+            x264_log( h, X264_LOG_INFO, "VBV maxrate is automatically set to %d.\n", h->param.rc.i_vbv_max_bitrate );
+        }
+        if( h->param.rc.i_vbv_buffer_size < 0 )
+        {
+            int cbp_factor = h->param.rc.i_vbv_buffer_size == X264_VBV_BUFSIZE_HIGH444 ? 16 :
+                             h->param.rc.i_vbv_buffer_size == X264_VBV_BUFSIZE_HIGH422 ? 16 :
+                             h->param.rc.i_vbv_buffer_size == X264_VBV_BUFSIZE_HIGH10 ? 12 :
+                             h->param.rc.i_vbv_buffer_size == X264_VBV_BUFSIZE_HIGH ? 5 : 4;
+            h->param.rc.i_vbv_buffer_size = (l->cpb * cbp_factor) / 4;
+            x264_log( h, X264_LOG_INFO, "VBV bufsize is automatically set to %d.\n", h->param.rc.i_vbv_buffer_size );
+        }
+        if( h->param.analyse.i_mv_range <= 0 )
+            h->param.analyse.i_mv_range = l->mv_range >> PARAM_INTERLACED;
+        else
+            h->param.analyse.i_mv_range = x264_clip3(h->param.analyse.i_mv_range, 32, 512 >> PARAM_INTERLACED);
     }
 
     if( h->param.rc.i_rc_method < 0 || h->param.rc.i_rc_method > 2 )
@@ -904,7 +957,8 @@ static int validate_parameters( x264_t *h, int b_open )
 
             /* Official encoder doesn't appear to go under 13
              * and Avid cannot handle negative QPs */
-            h->param.rc.i_qp_min = X264_MAX( h->param.rc.i_qp_min, QP_BD_OFFSET + 1 );
+             for( int j = 0; j < 3; j++ )
+                 h->param.rc.i_qp_min[j] = X264_MAX( h->param.rc.i_qp_min[j], QP_BD_OFFSET + 1 );
         }
 
         if( type )
@@ -942,6 +996,7 @@ static int validate_parameters( x264_t *h, int b_open )
         h->param.analyse.i_trellis = 0;
         h->param.analyse.b_fast_pskip = 0;
         h->param.analyse.i_noise_reduction = 0;
+		h->param.analyse.i_fgo = 0;
         h->param.analyse.b_psy = 0;
         h->param.i_bframe = 0;
         /* 8x8dct is not useful without RD in CAVLC lossless */
@@ -959,14 +1014,30 @@ static int validate_parameters( x264_t *h, int b_open )
             return -1;
         }
 
-        h->param.rc.i_qp_min = x264_clip3( (int)(X264_MIN3( qp_p, qp_i, qp_b )), 0, QP_MAX );
-        h->param.rc.i_qp_max = x264_clip3( (int)(X264_MAX3( qp_p, qp_i, qp_b ) + .999), 0, QP_MAX );
+        h->param.rc.i_qp_min[SLICE_TYPE_I] =
+        h->param.rc.i_qp_min[SLICE_TYPE_P] =
+        h->param.rc.i_qp_min[SLICE_TYPE_B] = x264_clip3( (int)(X264_MIN3( qp_p, qp_i, qp_b )), 0, QP_MAX );
+        h->param.rc.i_qp_max_max           =
+        h->param.rc.i_qp_max[SLICE_TYPE_I] =
+        h->param.rc.i_qp_max[SLICE_TYPE_P] =
+        h->param.rc.i_qp_max[SLICE_TYPE_B] = x264_clip3( (int)(X264_MAX3( qp_p, qp_i, qp_b ) + .999), 0, QP_MAX );
         h->param.rc.i_aq_mode = 0;
+        h->param.rc.b_aq2 = 0;
+        h->param.rc.i_aq3_mode = 0;
         h->param.rc.b_mb_tree = 0;
         h->param.rc.i_bitrate = 0;
     }
-    h->param.rc.i_qp_max = x264_clip3( h->param.rc.i_qp_max, 0, QP_MAX );
-    h->param.rc.i_qp_min = x264_clip3( h->param.rc.i_qp_min, 0, h->param.rc.i_qp_max );
+    for( int i = 0; i < 3; i++ )
+    {
+        h->param.rc.i_qp_max[i] = x264_clip3( h->param.rc.i_qp_max[i], 0, QP_MAX );
+        h->param.rc.i_qp_min[i] = x264_clip3( h->param.rc.i_qp_min[i], 0, h->param.rc.i_qp_max[i] );
+    }
+    h->param.rc.i_qp_min_min = X264_MIN3( h->param.rc.i_qp_min[SLICE_TYPE_I],
+                                          h->param.rc.i_qp_min[SLICE_TYPE_P],
+                                          h->param.rc.i_qp_min[SLICE_TYPE_B] );
+    h->param.rc.i_qp_max_max = X264_MAX3( h->param.rc.i_qp_max[SLICE_TYPE_I],
+                                          h->param.rc.i_qp_max[SLICE_TYPE_P],
+                                          h->param.rc.i_qp_max[SLICE_TYPE_B] );
     h->param.rc.i_qp_step = x264_clip3( h->param.rc.i_qp_step, 2, QP_MAX );
     h->param.rc.i_bitrate = x264_clip3( h->param.rc.i_bitrate, 0, 2000000 );
     if( h->param.rc.i_rc_method == X264_RC_ABR && !h->param.rc.i_bitrate )
@@ -1056,12 +1127,11 @@ static int validate_parameters( x264_t *h, int b_open )
         /* Don't use I-frames, because Blu-ray treats them the same as IDR. */
         h->param.i_keyint_min = 1;
         /* Due to the proliferation of broken players that don't handle dupes properly. */
-        h->param.analyse.i_weighted_pred = X264_MIN( h->param.analyse.i_weighted_pred, X264_WEIGHTP_SIMPLE );
+        //h->param.analyse.i_weighted_pred = X264_MIN( h->param.analyse.i_weighted_pred, X264_WEIGHTP_SIMPLE );
         if( h->param.b_fake_interlaced )
             h->param.b_pic_struct = 1;
     }
 
-    h->param.i_frame_reference = x264_clip3( h->param.i_frame_reference, 1, X264_REF_MAX );
     h->param.i_dpb_size = x264_clip3( h->param.i_dpb_size, 1, X264_REF_MAX );
     if( h->param.i_scenecut_threshold < 0 )
         h->param.i_scenecut_threshold = 0;
@@ -1174,12 +1244,61 @@ static int validate_parameters( x264_t *h, int b_open )
         h->param.analyse.intra &= ~X264_ANALYSE_I8x8;
     }
     h->param.analyse.i_trellis = x264_clip3( h->param.analyse.i_trellis, 0, 2 );
-    h->param.rc.i_aq_mode = x264_clip3( h->param.rc.i_aq_mode, 0, 3 );
-    h->param.rc.f_aq_strength = x264_clip3f( h->param.rc.f_aq_strength, 0, 3 );
-    if( h->param.rc.f_aq_strength == 0 )
-        h->param.rc.i_aq_mode = 0;
+    if( h->param.analyse.i_weighted_pred == X264_WEIGHTP_NONE )
+        h->param.rc.f_fade_compensate += 0.1;
+    if( !h->param.rc.b_mb_tree )
+        h->param.rc.f_fade_compensate = 0;
 
-    if( h->param.i_log_level < X264_LOG_INFO )
+    h->param.rc.i_aq_mode = x264_clip3( h->param.rc.i_aq_mode, 0, 3 );
+    h->param.rc.f_aq_strength = x264_clip3f( h->param.rc.f_aq_strength, -3, 3 );
+    h->param.rc.b_aq2 = h->param.rc.b_aq2 && h->param.rc.f_aq2_strength > 0;
+    if( h->param.rc.f_aq_strength == 0 && (h->param.rc.i_aq_mode > 0 ? !h->param.rc.b_aq2 : 1) )
+        h->param.rc.i_aq_mode = 0;
+    if( h->param.rc.f_aq_sensitivity < 0 )
+        h->param.rc.f_aq_sensitivity = 0;
+    h->param.rc.f_aq_ifactor = x264_clip3f( h->param.rc.f_aq_ifactor, -10, 10 );
+    h->param.rc.f_aq_pfactor = x264_clip3f( h->param.rc.f_aq_pfactor, -10, 10 );
+    h->param.rc.f_aq_bfactor = x264_clip3f( h->param.rc.f_aq_bfactor, -10, 10 );
+    h->param.rc.f_aq2_ifactor = x264_clip3f( h->param.rc.f_aq2_ifactor, -10, 10 );
+    h->param.rc.f_aq2_pfactor = x264_clip3f( h->param.rc.f_aq2_pfactor, -10, 10 );
+    h->param.rc.f_aq2_bfactor = x264_clip3f( h->param.rc.f_aq2_bfactor, -10, 10 );
+    h->param.rc.i_aq3_mode = x264_clip3( h->param.rc.i_aq3_mode, 0, 4 );
+    h->param.rc.f_aq3_strength = x264_clip3f( h->param.rc.f_aq3_strength, -3, 3 );
+    for( int i = 0; i < 2; i++ )
+        for( int j = 0; j < 4; j++ )
+            h->param.rc.f_aq3_strengths[i][j] = x264_clip3f( h->param.rc.f_aq3_strengths[i][j], -3, 3 );
+    if( h->param.rc.f_aq3_strengths[0][0] == 0 && h->param.rc.f_aq3_strengths[1][0] == 0 &&
+        h->param.rc.f_aq3_strengths[0][1] == 0 && h->param.rc.f_aq3_strengths[1][1] == 0 &&
+        h->param.rc.f_aq3_strengths[0][2] == 0 && h->param.rc.f_aq3_strengths[1][2] == 0 &&
+        h->param.rc.f_aq3_strengths[0][3] == 0 && h->param.rc.f_aq3_strengths[1][3] == 0 )
+    {
+        if( h->param.rc.f_aq3_strength == 0 )
+            h->param.rc.i_aq3_mode = 0;
+        else
+            for( int i = 0; i < 2; i++ )
+                for( int j = 0; j < 4; j++ )
+                    h->param.rc.f_aq3_strengths[i][j] = h->param.rc.f_aq3_strength;
+    }
+    if( h->param.rc.f_aq3_sensitivity < 0 )
+        h->param.rc.f_aq3_sensitivity = 0;
+    for( int i = 0; i < 2; i++ )
+    {
+        h->param.rc.f_aq3_ifactor[i] = x264_clip3f( h->param.rc.f_aq3_ifactor[i], -10, 10 );
+        h->param.rc.f_aq3_pfactor[i] = x264_clip3f( h->param.rc.f_aq3_pfactor[i], -10, 10 );
+        h->param.rc.f_aq3_bfactor[i] = x264_clip3f( h->param.rc.f_aq3_bfactor[i], -10, 10 );
+    }
+    h->param.rc.i_aq3_boundary[0] = x264_clip3( h->param.rc.i_aq3_boundary[0], 0, (256 << (BIT_DEPTH - 8)) - 1 );
+    h->param.rc.i_aq3_boundary[1] = x264_clip3( h->param.rc.i_aq3_boundary[1], 0, (256 << (BIT_DEPTH - 8)) - 1 );
+    h->param.rc.i_aq3_boundary[2] = x264_clip3( h->param.rc.i_aq3_boundary[2], 0, (256 << (BIT_DEPTH - 8)) - 1 );
+    if( !h->param.rc.b_aq3_boundary ||
+        h->param.rc.i_aq3_boundary[0] <= h->param.rc.i_aq3_boundary[1] || h->param.rc.i_aq3_boundary[1] <= h->param.rc.i_aq3_boundary[2] )
+    {
+        h->param.rc.i_aq3_boundary[0] = (h->param.vui.b_fullrange == 1 ? 205 : 192) << (BIT_DEPTH - 8);
+        h->param.rc.i_aq3_boundary[1] = (h->param.vui.b_fullrange == 1 ?  56 :  64) << (BIT_DEPTH - 8);
+        h->param.rc.i_aq3_boundary[2] = (h->param.vui.b_fullrange == 1 ?   9 :  24) << (BIT_DEPTH - 8);
+    }
+	
+    if( h->param.i_log_level < X264_LOG_INFO && (!h->param.psz_log_file || h->param.i_log_file_level < X264_LOG_INFO) )
     {
         h->param.analyse.b_psnr = 0;
         h->param.analyse.b_ssim = 0;
@@ -1212,6 +1331,7 @@ static int validate_parameters( x264_t *h, int b_open )
     {
         h->param.analyse.f_psy_rd = 0;
         h->param.analyse.f_psy_trellis = 0;
+		h->param.rc.f_fade_compensate = 0;
     }
     h->param.analyse.f_psy_rd = x264_clip3f( h->param.analyse.f_psy_rd, 0, 10 );
     h->param.analyse.f_psy_trellis = x264_clip3f( h->param.analyse.f_psy_trellis, 0, 10 );
@@ -1238,35 +1358,6 @@ static int validate_parameters( x264_t *h, int b_open )
     h->param.analyse.i_noise_reduction = x264_clip3( h->param.analyse.i_noise_reduction, 0, 1<<16 );
     if( h->param.analyse.i_subpel_refine >= 10 && (h->param.analyse.i_trellis != 2 || !h->param.rc.i_aq_mode) )
         h->param.analyse.i_subpel_refine = 9;
-
-    if( b_open )
-    {
-        const x264_level_t *l = x264_levels;
-        if( h->param.i_level_idc < 0 )
-        {
-            int maxrate_bak = h->param.rc.i_vbv_max_bitrate;
-            if( h->param.rc.i_rc_method == X264_RC_ABR && h->param.rc.i_vbv_buffer_size <= 0 )
-                h->param.rc.i_vbv_max_bitrate = h->param.rc.i_bitrate * 2;
-            x264_sps_init( h->sps, h->param.i_sps_id, &h->param );
-            do h->param.i_level_idc = l->level_idc;
-                while( l[1].level_idc && x264_validate_levels( h, 0 ) && l++ );
-            h->param.rc.i_vbv_max_bitrate = maxrate_bak;
-        }
-        else
-        {
-            while( l->level_idc && l->level_idc != h->param.i_level_idc )
-                l++;
-            if( l->level_idc == 0 )
-            {
-                x264_log( h, X264_LOG_ERROR, "invalid level_idc: %d\n", h->param.i_level_idc );
-                return -1;
-            }
-        }
-        if( h->param.analyse.i_mv_range <= 0 )
-            h->param.analyse.i_mv_range = l->mv_range >> PARAM_INTERLACED;
-        else
-            h->param.analyse.i_mv_range = x264_clip3(h->param.analyse.i_mv_range, 32, 8192 >> PARAM_INTERLACED);
-    }
 
     h->param.analyse.i_weighted_pred = x264_clip3( h->param.analyse.i_weighted_pred, X264_WEIGHTP_NONE, X264_WEIGHTP_SMART );
 
@@ -1315,6 +1406,25 @@ static int validate_parameters( x264_t *h, int b_open )
 
     if( !h->param.analyse.i_weighted_pred && h->param.rc.b_mb_tree && h->param.analyse.b_psy )
         h->param.analyse.i_weighted_pred = X264_WEIGHTP_FAKE;
+
+    if( h->param.analyse.i_fgo )
+    {
+        if( h->param.analyse.i_subpel_refine < 7 )
+        {
+            x264_log( h, X264_LOG_WARNING, "fgo requires subme >= 7\n" );
+            h->param.analyse.i_fgo = 0;
+        }
+        else
+        {
+            /* Arbitrary clipping. */
+            h->param.analyse.i_fgo = x264_clip3( h->param.analyse.i_fgo, 0, 50 );
+            /* P-skip's threshold isn't necessarily accurate when using NSSD/FGO */
+            h->param.analyse.b_fast_pskip = 0;
+            /* B-frame QPs need to be lower to retain grain */
+            /* Arbitrary formula to scale pbratio based on fgo strength. */
+            h->param.rc.f_pb_factor = 1 + (h->param.rc.f_pb_factor - 1) / pow(h->param.analyse.i_fgo, 0.3);
+        }
+    }
 
     if( h->i_thread_frames > 1 )
     {
@@ -1424,6 +1534,7 @@ static void mbcmp_init( x264_t *h )
     memcpy( h->pixf.fpelcmp, satd ? h->pixf.satd : h->pixf.sad, sizeof(h->pixf.fpelcmp) );
     memcpy( h->pixf.fpelcmp_x3, satd ? h->pixf.satd_x3 : h->pixf.sad_x3, sizeof(h->pixf.fpelcmp_x3) );
     memcpy( h->pixf.fpelcmp_x4, satd ? h->pixf.satd_x4 : h->pixf.sad_x4, sizeof(h->pixf.fpelcmp_x4) );
+	memcpy( h->pixf.rdcmp, h->param.analyse.i_fgo ? h->pixf.nssd : h->pixf.ssd, sizeof(h->pixf.rdcmp) );
 }
 
 static void chroma_dsp_init( x264_t *h )
@@ -1724,7 +1835,7 @@ x264_t *x264_encoder_open( x264_param_t *param, void *api )
     h->out.i_bitstream = x264_clip3f(
         h->param.i_width * h->param.i_height * 4
         * ( h->param.rc.i_rc_method == X264_RC_ABR
-            ? pow( 0.95, h->param.rc.i_qp_min )
+            ? pow( 0.95, h->param.rc.i_qp_min_min )
             : pow( 0.95, h->param.rc.i_qp_constant ) * X264_MAX( 1, h->param.rc.f_ip_factor ) ),
         1000000, INT_MAX/3
     );
@@ -1851,6 +1962,13 @@ x264_t *x264_encoder_open( x264_param_t *param, void *api )
     static const char * const subsampling[4] = { "4:0:0", "4:2:0", "4:2:2", "4:4:4" };
     x264_log( h, X264_LOG_INFO, "profile %s, level %s, %s, %d-bit\n",
               profile, level, subsampling[CHROMA_FORMAT], BIT_DEPTH );
+			  
+    char *opts = x264_param2string( &h->param, 0 );
+    if( opts )
+    {
+        x264_log( h, X264_LOG_INFO, "%s\n", opts );
+        x264_free( opts );
+    }
 
     return h;
 fail:
@@ -1892,6 +2010,7 @@ static int encoder_try_reconfig( x264_t *h, x264_param_t *param, int *rc_reconfi
     COPY( analyse.b_mixed_references );
     COPY( analyse.f_psy_rd );
     COPY( analyse.f_psy_trellis );
+	COPY( analyse.i_fgo );
     COPY( crop_rect );
     // can only twiddle these if they were enabled to begin with:
     if( h->param.analyse.i_me_method >= X264_ME_ESA || param->analyse.i_me_method < X264_ME_ESA )
@@ -2987,7 +3106,7 @@ cont:
 
         int b_intra = IS_INTRA( h->mb.i_type );
         int b_skip = IS_SKIP( h->mb.i_type );
-        if( h->param.i_log_level >= X264_LOG_INFO || h->param.rc.b_stat_write )
+        if( h->param.i_log_level >= X264_LOG_INFO || (h->param.psz_log_file && h->param.i_log_file_level >= X264_LOG_INFO) || h->param.rc.b_stat_write )
         {
             if( !b_intra && !b_skip && !IS_DIRECT( h->mb.i_type ) )
             {
@@ -3007,7 +3126,7 @@ cont:
             }
         }
 
-        if( h->param.i_log_level >= X264_LOG_INFO )
+        if( h->param.i_log_level >= X264_LOG_INFO || (h->param.psz_log_file && h->param.i_log_file_level >= X264_LOG_INFO) )
         {
             if( h->mb.i_cbp_luma | h->mb.i_cbp_chroma )
             {
