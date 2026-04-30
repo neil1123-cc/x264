@@ -1,0 +1,38 @@
+{
+  "schema_version": 2,
+  "generated_at": "2026-04-30T16:02:24Z",
+  "project": "x264",
+  "profdata_file": "x264.profdata",
+  "repository": "neil1123-cc/x264",
+  "workflow": "local-update-pgo-profdata",
+  "run_id": "local",
+  "run_attempt": "1",
+  "profiling_source": "github-release",
+  "profiling_run_id": "",
+  "profiling_artifact_name": "",
+  "profiling_artifact_version": "",
+  "source_ref": "r3223",
+  "source_commit": "3442e71d4a0c336065b8ca83c7c1ae5ecfce6b4f",
+  "target_cpu": "raptorlake",
+  "profile_target": "all",
+  "profdata_branch": "profdata-raptorlake",
+  "layout": "per-cpu-bounded-window",
+  "window": {
+    "slots": 4,
+    "fresh_slot": "profiles/0.profdata",
+    "weights_newest_to_oldest": [4, 3, 2, 1]
+  },
+  "dependencies": {
+    "ffmpeg_ref": "n8.1",
+    "ffmpeg_cache_suffix": "full-v1-clang",
+    "mimalloc_ref": "v3.3.1",
+    "obuparse_ref": "v2.0.2",
+    "obuparse_cache_key": "obuparse-v2.0.2-clang-v1",
+    "ffms2_repository": "FFMS/ffms2",
+    "ffms2_ref": "master",
+    "ffms2_cache_key": "ffms2-latest-clang-v1",
+    "lsmash_repository": "vimeo/l-smash",
+    "lsmash_ref": "04e39f1fb232c332d4b04a1043c02c7c2d282d00",
+    "lsmash_cache_key": "lsmash-vimeo-clang64-patched-v3-04e39f1fb232c332d4b04a1043c02c7c2d282d00"
+  }
+}
