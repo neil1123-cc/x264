@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-01T17:30:39Z",
+  "repository": "neil1123-cc/x264",
+  "workflow": "Generate PGO Profdata",
+  "run_id": "25224682354",
+  "run_attempt": "1",
+  "source_ref": "master",
+  "source_commit": "1ad0d842950a90d134505128337d77a47d25a1f1",
+  "target_cpu": "x86-64",
+  "profdata_branch": "profdata-x86-64",
+  "layout": "per-cpu-bounded-window",
+  "window": {
+    "slots": 4,
+    "fresh_slot": "profiles/0.profdata",
+    "weights_newest_to_oldest": [4, 3, 2, 1]
+  },
+  "dependencies": {
+    "ffmpeg_ref": "n8.1",
+    "ffmpeg_cache_suffix": "full-v1-clang",
+    "mimalloc_ref": "v3.3.2",
+    "obuparse_ref": "v2.0.2",
+    "obuparse_cache_key": "obuparse-v2.0.2-clang-v1",
+    "ffms2_repository": "FFMS/ffms2",
+    "ffms2_ref": "master",
+    "ffms2_cache_key": "ffms2-latest-clang-v1",
+    "lsmash_repository": "vimeo/l-smash",
+    "lsmash_ref": "04e39f1fb232c332d4b04a1043c02c7c2d282d00",
+    "lsmash_cache_key": "lsmash-vimeo-clang64-patched-v3-04e39f1fb232c332d4b04a1043c02c7c2d282d00"
+  }
+}
