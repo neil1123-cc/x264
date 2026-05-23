@@ -18,20 +18,22 @@ hnd_t x264_audio_open_from_file( const char *preferred_filter_name, const char *
     int trackno_len = snprintf( trackno_arg, sizeof(trackno_arg), "%d", trackno );
     if( trackno_len < 0 || (size_t)trackno_len >= sizeof(trackno_arg) )
         return NULL;
+    size_t track_arg_len = (size_t)trackno_len;
 
     size_t path_len = strlen( path );
-    if( path_len > SIZE_MAX - (size_t)trackno_len - 2 )
+    if( path_len > SIZE_MAX - track_arg_len - 2 )
         return NULL;
 
     hnd_t h = NULL;
-    size_t init_arg_size = path_len + (size_t)trackno_len + 2;
-    char *init_arg = malloc( init_arg_size );
+    size_t init_arg_size = path_len + track_arg_len + 2;
+    int64_t init_arg_alloc_size = (int64_t)init_arg_size;
+    char *init_arg = malloc( init_arg_alloc_size );
     if( !init_arg )
         return NULL;
 
     memcpy( init_arg, path, path_len );
     init_arg[path_len] = ',';
-    memcpy( init_arg + path_len + 1, trackno_arg, (size_t)trackno_len + 1 );
+    memcpy( init_arg + path_len + 1, trackno_arg, track_arg_len + 1 );
 
     if( source->init( &h, init_arg ) < 0 || !h )
     {

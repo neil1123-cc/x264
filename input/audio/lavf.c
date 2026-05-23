@@ -286,7 +286,8 @@ static struct AVPacket *next_packet( hnd_t handle )
     lavf_source_t *h = handle;
     if( !h || !h->lavf )
         return NULL;
-    AVPacket *pkt = calloc( 1, sizeof( AVPacket ) );
+    int64_t packet_alloc_size = sizeof( AVPacket );
+    AVPacket *pkt = calloc( 1, packet_alloc_size );
     if( !pkt )
     {
         AF_LOG_ERR( h, "malloc failed\n" );
@@ -434,7 +435,8 @@ static int copy_packet_payload( lavf_source_t *h, audio_packet_t *out, const uin
 static audio_packet_t *convert_to_audio_packet( hnd_t handle, AVPacket *pkt, uint32_t last_delta )
 {
     lavf_source_t *h = handle;
-    audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
+    int64_t out_alloc_size = sizeof( audio_packet_t );
+    audio_packet_t *out = calloc( 1, out_alloc_size );
     if( !h || !pkt || pkt->size < 0 )
     {
         free_avpacket( pkt );
@@ -685,7 +687,8 @@ static int low_decode_audio( lavf_source_t *h, uint8_t *buf, intptr_t buflen )
 
 static struct AVPacket *decode_next_frame( lavf_source_t *h )
 {
-    AVPacket *dst = calloc( 1, sizeof( AVPacket ) );
+    int64_t decode_packet_alloc_size = sizeof( AVPacket );
+    AVPacket *dst = calloc( 1, decode_packet_alloc_size );
     if( !dst || av_new_packet( dst, AVCODEC_MAX_AUDIO_FRAME_SIZE ) )
     {
         free( dst );
@@ -832,7 +835,8 @@ static struct audio_packet_t *get_samples( hnd_t handle, int64_t first_sample, i
     if( samples > UINT_MAX || size > INT_MAX )
         return NULL;
 
-    audio_packet_t *pkt = calloc( 1, sizeof( audio_packet_t ) );
+    int64_t sample_packet_alloc_size = sizeof( audio_packet_t );
+    audio_packet_t *pkt = calloc( 1, sample_packet_alloc_size );
     if( !pkt )
         return NULL;
     int packet_size      = (int)size;

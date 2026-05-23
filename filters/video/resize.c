@@ -574,7 +574,8 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
     if( !opts && opt_string )
         return -1;
 
-    resizer_hnd_t *h = calloc( 1, sizeof(resizer_hnd_t) );
+    int64_t resize_alloc_size = sizeof(resizer_hnd_t);
+    resizer_hnd_t *h = calloc( 1, resize_alloc_size );
     if( !h )
     {
         free( opts );

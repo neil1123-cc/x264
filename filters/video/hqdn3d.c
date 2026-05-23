@@ -217,13 +217,15 @@ static int init(hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info,
         return -1;
     }
 
-    hqdn3d_hnd_t *h = calloc(1, sizeof(hqdn3d_hnd_t));
+    int64_t hqdn3d_alloc_size = sizeof(hqdn3d_hnd_t);
+    hqdn3d_hnd_t *h = calloc( 1, hqdn3d_alloc_size );
     if(!h)
         return -1;
 
     if( (uint64_t)info->width > SIZE_MAX / sizeof(*h->line) )
         goto fail;
-    h->line = calloc(1, (size_t)info->width * sizeof(*h->line));
+    int64_t line_alloc_size = (int64_t)((size_t)info->width * sizeof(*h->line));
+    h->line = calloc( 1, line_alloc_size );
     if(!h->line)
         goto fail;
     if( x264_cli_pic_alloc( &h->buffer, info->csp, info->width, info->height ) )
@@ -233,7 +235,8 @@ static int init(hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info,
         int64_t plane_size = x264_cli_pic_plane_size( info->csp, info->width, info->height, i );
         if( plane_size <= 0 || (uint64_t)plane_size > SIZE_MAX / sizeof(*h->frame[i]) )
             goto fail;
-        h->frame[i] = malloc( (size_t)plane_size * sizeof(*h->frame[i]) );
+        int64_t frame_alloc_size = plane_size * (int64_t)sizeof(*h->frame[i]);
+        h->frame[i] = malloc( frame_alloc_size );
         if( !h->frame[i] )
             goto fail;
     }

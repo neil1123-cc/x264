@@ -77,7 +77,8 @@ static mk_context *mk_create_context( mk_writer *w, mk_context *parent, unsigned
     }
     else
     {
-        c = calloc( 1, sizeof(mk_context) );
+        int64_t context_alloc_size = sizeof(mk_context);
+        c = calloc( 1, context_alloc_size );
         if( !c )
             return NULL;
     }
@@ -118,7 +119,8 @@ static int mk_append_context_data( mk_context *c, const void *data, unsigned siz
             dn <<= 1;
         }
 
-        void *dp = realloc( c->data, dn );
+        int64_t data_alloc_size = dn;
+        void *dp = realloc( c->data, data_alloc_size );
         if( !dp )
             return -1;
 
@@ -318,7 +320,8 @@ mk_writer *mk_create_writer( const char *filename )
     if( !filename )
         return NULL;
 
-    mk_writer *w = calloc( 1, sizeof(mk_writer) );
+    int64_t writer_alloc_size = sizeof(mk_writer);
+    mk_writer *w = calloc( 1, writer_alloc_size );
     if( !w )
         return NULL;
 

@@ -57,7 +57,8 @@ x264_opencl_function_t *x264_opencl_load_library( void )
     x264_opencl_function_t *ocl;
 #undef fail
 #define fail fail0
-    CHECKED_MALLOCZERO( ocl, sizeof(x264_opencl_function_t) );
+    int64_t ocl_alloc_size = sizeof(x264_opencl_function_t);
+    CHECKED_MALLOCZERO( ocl, ocl_alloc_size );
 #undef fail
 #define fail fail1
     ocl->library = ocl_open;
@@ -148,7 +149,8 @@ static cl_program opencl_cache_load( x264_t *h, const char *dev_name, const char
     if( file_size < 0 || (uint64_t)file_size > SIZE_MAX )
         goto fail;
     size_t size = file_size;
-    CHECKED_MALLOC( binary, size );
+    int64_t binary_alloc_size = file_size;
+    CHECKED_MALLOC( binary, binary_alloc_size );
 
     if( fread( binary, 1, size, fp ) != size )
         goto fail;
@@ -210,7 +212,8 @@ static void opencl_cache_save( x264_t *h, cl_program program, const char *dev_na
         goto fail;
     }
 
-    CHECKED_MALLOC( binary, size );
+    int64_t binary_alloc_size = (int64_t)size;
+    CHECKED_MALLOC( binary, binary_alloc_size );
     status = ocl->clGetProgramInfo( program, CL_PROGRAM_BINARIES, sizeof(uint8_t *), &binary, NULL );
     if( status != CL_SUCCESS )
     {
@@ -315,7 +318,8 @@ static cl_program opencl_compile( x264_t *h )
         goto fail;
     }
 
-    build_log = x264_malloc( build_log_len );
+    int64_t build_log_alloc_size = (int64_t)build_log_len;
+    build_log = x264_malloc( build_log_alloc_size );
     if( !build_log )
     {
         x264_log( h, X264_LOG_WARNING, "OpenCL: Compilation failed, unable to alloc build log\n" );
@@ -456,7 +460,8 @@ int x264_opencl_lookahead_init( x264_t *h )
         x264_log( h, X264_LOG_WARNING, "OpenCL: installed platforms buffer too large\n" );
         goto fail;
     }
-    platforms = (cl_platform_id*)x264_malloc( alloc_size );
+    int64_t platforms_alloc_size = alloc_size;
+    platforms = (cl_platform_id*)x264_malloc( platforms_alloc_size );
     if( !platforms )
     {
         x264_log( h, X264_LOG_WARNING, "OpenCL: malloc of installed platforms buffer failed\n" );
@@ -484,7 +489,8 @@ int x264_opencl_lookahead_init( x264_t *h )
             x264_log( h, X264_LOG_WARNING, "OpenCL: GPU devices buffer too large\n" );
             continue;
         }
-        devices = x264_malloc( alloc_size );
+        int64_t devices_alloc_size = alloc_size;
+        devices = x264_malloc( devices_alloc_size );
         if( !devices )
             continue;
 
@@ -525,7 +531,8 @@ int x264_opencl_lookahead_init( x264_t *h )
                 x264_log( h, X264_LOG_WARNING, "OpenCL: image formats buffer too large\n" );
                 continue;
             }
-            imageType = x264_malloc( alloc_size );
+            int64_t image_types_alloc_size = alloc_size;
+            imageType = x264_malloc( image_types_alloc_size );
             if( !imageType )
                 continue;
 
@@ -705,7 +712,8 @@ typedef int   ( ADL_API_CALL *ADL_MAIN_CONTROL_DESTROY )( void );
 
 static void* ADL_CALLBACK adl_malloc_wrapper( int iSize )
 {
-    return x264_malloc( iSize );
+    int64_t adl_alloc_size = iSize;
+    return x264_malloc( adl_alloc_size );
 }
 
 static int detect_switchable_graphics( void )

@@ -153,7 +153,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         return -1;
     *p_handle = NULL;
 
-    ffms_hnd_t *h = calloc( 1, sizeof(ffms_hnd_t) );
+    int64_t ffms_alloc_size = sizeof(ffms_hnd_t);
+    ffms_hnd_t *h = calloc( 1, ffms_alloc_size );
     if( !h )
         return -1;
     video_info_t updated_info = *info;

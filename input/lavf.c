@@ -250,7 +250,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         return -1;
     *p_handle = NULL;
 
-    lavf_hnd_t *h = calloc( 1, sizeof(lavf_hnd_t) );
+    int64_t lavf_alloc_size = sizeof(lavf_hnd_t);
+    lavf_hnd_t *h = calloc( 1, lavf_alloc_size );
     if( !h )
         return -1;
     AVDictionary *options = NULL;
@@ -353,7 +354,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         av_dict_free( &avcodec_opts );
 
     /* prefetch the first frame and set/confirm flags */
-    h->first_pic = malloc( sizeof(cli_pic_t) );
+    int64_t first_pic_alloc_size = sizeof(cli_pic_t);
+    h->first_pic = malloc( first_pic_alloc_size );
     FAIL_IF_ERROR_CLEANUP( !h->first_pic || lavf_input.picture_alloc( h->first_pic, h, X264_CSP_OTHER, updated_info.width, updated_info.height ),
                            "malloc failed\n" );
     if( read_frame_internal( h->first_pic, h, 0, &updated_info ) )

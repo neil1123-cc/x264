@@ -262,7 +262,8 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
 {
     if( !filter_chain )
         return NULL;
-    enc_lavc_t *h = calloc( 1, sizeof( enc_lavc_t ) );
+    int64_t lavc_alloc_size = sizeof( enc_lavc_t );
+    enc_lavc_t *h = calloc( 1, lavc_alloc_size );
     if( !h )
         return NULL;
     audio_hnd_t *chain = h->filter_chain = filter_chain;
@@ -392,7 +393,8 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
         }
         if( ISCODEC( aac ) && strstr( aprofile, "he" ) )
         {
-            audio_aac_info_t *aacinfo = malloc( sizeof( audio_aac_info_t ) );
+            int64_t aac_info_alloc_size = sizeof( audio_aac_info_t );
+            audio_aac_info_t *aacinfo = malloc( aac_info_alloc_size );
             if( !aacinfo )
                 goto error;
             aacinfo->has_sbr          = 1;
@@ -621,11 +623,13 @@ static audio_packet_t *get_next_packet( hnd_t handle )
         return NULL;
 
     audio_packet_t *smp = NULL;
-    audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
+    int64_t out_packet_alloc_size = sizeof( audio_packet_t );
+    audio_packet_t *out = calloc( 1, out_packet_alloc_size );
     if( !out )
         return NULL;
     out->info = h->info;
-    out->data = malloc( h->buf_size );
+    int64_t out_data_alloc_size = h->buf_size;
+    out->data = malloc( out_data_alloc_size );
     if( !out->data )
         goto error;
 
@@ -745,12 +749,14 @@ static audio_packet_t *finish( hnd_t handle )
 
     h->finishing = 1;
 
-    audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
+    int64_t finish_packet_alloc_size = sizeof( audio_packet_t );
+    audio_packet_t *out = calloc( 1, finish_packet_alloc_size );
     if( !out )
         return NULL;
     out->info     = h->info;
     out->channels = h->info.channels;
-    out->data     = malloc( h->buf_size );
+    int64_t finish_data_alloc_size = h->buf_size;
+    out->data     = malloc( finish_data_alloc_size );
     if( !out->data )
         goto error;
 

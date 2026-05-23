@@ -58,7 +58,8 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
         return 0;
     if( !handle || !*handle || !filter || !filter->get_frame || !filter->release_frame || !filter->free )
         return -1;
-    fix_vfr_pts_hnd_t *h = calloc( 1, sizeof(fix_vfr_pts_hnd_t) );
+    int64_t fix_vfr_alloc_size = sizeof(fix_vfr_pts_hnd_t);
+    fix_vfr_pts_hnd_t *h = calloc( 1, fix_vfr_alloc_size );
     if( !h )
         return -1;
 

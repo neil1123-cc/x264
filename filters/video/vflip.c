@@ -46,7 +46,8 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
     if( !handle || !*handle || !filter || !info || !filter->get_frame || !filter->release_frame || !filter->free )
         return -1;
 
-    vflip_handle *h = calloc( 1, sizeof(vflip_handle) );
+    int64_t vflip_alloc_size = sizeof(vflip_handle);
+    vflip_handle *h = calloc( 1, vflip_alloc_size );
     if( !h )
         return -1;
 

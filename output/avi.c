@@ -91,7 +91,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
     FAIL_IF_ERR( fclose( fh ), "avi", "failed to close output probe file `%s'\n", psz_filename );
     FAIL_IF_ERR( !b_regular, "avi", "AVI output is incompatible with non-regular file `%s'\n", psz_filename );
 
-    if( !(h = malloc( sizeof(avi_hnd_t) )) )
+    int64_t avi_alloc_size = sizeof(avi_hnd_t);
+    if( !(h = malloc( avi_alloc_size )) )
         return -1;
     memset( h, 0, sizeof(avi_hnd_t) );
 
@@ -185,7 +186,8 @@ static int write_buffer( avi_hnd_t *h, uint8_t *p_nalu, int i_size )
             dn <<= 1;
         }
 
-        dp = realloc( h->data, dn );
+        int64_t data_realloc_size = dn;
+        dp = realloc( h->data, data_realloc_size );
         if( !dp )
             return -1;
 

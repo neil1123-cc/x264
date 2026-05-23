@@ -512,13 +512,15 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
         FAIL_IF_ERROR( timecodes_num <= 0 || (uint64_t)timecodes_num > SIZE_MAX / sizeof(double), "too many timecodes\n" );
         FAIL_IF_ERROR( timecode_seek_to_pos( tcfile_in, file_pos ), "tcfile seek failed\n" );
 
-        timecodes = malloc( (size_t)timecodes_num * sizeof(double) );
+        int64_t timecodes_alloc_size = (int64_t)((size_t)timecodes_num * sizeof(double));
+        timecodes = malloc( timecodes_alloc_size );
         if( !timecodes )
             return -1;
         if( h->auto_timebase_den || h->auto_timebase_num )
         {
             FAIL_IF_ERROR( seq_num == INT_MAX || (uint64_t)(seq_num + 1) > SIZE_MAX / sizeof(double), "too many tcfile fps entries\n" );
-            fpss = malloc( ((size_t)seq_num + 1) * sizeof(double) );
+            int64_t fpss_alloc_size = (int64_t)(((size_t)seq_num + 1) * sizeof(double));
+            fpss = malloc( fpss_alloc_size );
             if( !fpss )
                 goto fail;
         }
@@ -626,7 +628,8 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
         FAIL_IF_ERROR( (uint64_t)timecodes_num > SIZE_MAX / sizeof(double), "too many timecodes\n" );
         FAIL_IF_ERROR( timecode_seek_to_pos( tcfile_in, file_pos ), "tcfile seek failed\n" );
 
-        timecodes = malloc( (size_t)timecodes_num * sizeof(double) );
+        int64_t timecodes_alloc_size = (int64_t)((size_t)timecodes_num * sizeof(double));
+        timecodes = malloc( timecodes_alloc_size );
         if( !timecodes )
             return -1;
 
@@ -660,7 +663,8 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
             FAIL_IF_ERROR( timecodes_num <= 1, "too few timecodes for automatic timebase generation\n" );
             size_t fpss_num = (size_t)timecodes_num - 1;
             FAIL_IF_ERROR( fpss_num > SIZE_MAX / sizeof(double), "too many tcfile fps entries\n" );
-            fpss = malloc( fpss_num * sizeof(double) );
+            int64_t fpss_alloc_size = (int64_t)(fpss_num * sizeof(double));
+            fpss = malloc( fpss_alloc_size );
             if( !fpss )
                 goto fail;
             for( size_t fpss_idx = 0; fpss_idx < fpss_num; fpss_idx++ )
@@ -727,7 +731,8 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
                    "                  Specify an appropriate timebase manually.\n" );
 
     FAIL_IF_ERROR( (uint64_t)h->stored_pts_num > SIZE_MAX / sizeof(int64_t), "too many timecodes\n" );
-    h->pts = malloc( (size_t)h->stored_pts_num * sizeof(int64_t) );
+    int64_t pts_alloc_size = (int64_t)((size_t)h->stored_pts_num * sizeof(int64_t));
+    h->pts = malloc( pts_alloc_size );
     if( !h->pts )
         goto fail;
     for( num = 0; num < h->stored_pts_num; num++ )
@@ -760,7 +765,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     if( !psz_filename || !p_handle || !*p_handle || !info || !opt )
         return -1;
 
-    h = calloc( 1, sizeof(timecode_hnd_t) );
+    int64_t timecode_alloc_size = sizeof(timecode_hnd_t);
+    h = calloc( 1, timecode_alloc_size );
     if( !h )
     {
         x264_cli_log( "timecode", X264_LOG_ERROR, "malloc failed\n" );

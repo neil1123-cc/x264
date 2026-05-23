@@ -222,7 +222,8 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
 	if( !handle || !*handle || !filter || !info ||
 	    !filter->get_frame || !filter->release_frame || !filter->free )
 		return -1;
-	if (!(h = calloc(1, sizeof(subtitles_hnd_t))))
+	int64_t subtitles_alloc_size = sizeof(subtitles_hnd_t);
+	if (!(h = calloc(1, subtitles_alloc_size)))
 		return -1;
 	fmt.width = info->width;
 	fmt.height = info->height;

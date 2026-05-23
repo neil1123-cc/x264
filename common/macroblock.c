@@ -277,24 +277,36 @@ int x264_macroblock_cache_allocate( x264_t *h )
 
     PREALLOC_INIT
 
-    PREALLOC( h->mb.qp, (int64_t)i_mb_count * (int64_t)sizeof(int8_t) );
-    PREALLOC( h->mb.cbp, (int64_t)i_mb_count * (int64_t)sizeof(int16_t) );
-    PREALLOC( h->mb.mb_transform_size, (int64_t)i_mb_count * (int64_t)sizeof(int8_t) );
-    PREALLOC( h->mb.slice_table, (int64_t)i_mb_count * (int64_t)sizeof(int32_t) );
+    int64_t mb_qp_alloc_size = (int64_t)i_mb_count * sizeof(int8_t);
+    int64_t mb_cbp_alloc_size = (int64_t)i_mb_count * sizeof(int16_t);
+    int64_t mb_transform_size_alloc_size = (int64_t)i_mb_count * sizeof(int8_t);
+    int64_t mb_slice_table_alloc_size = (int64_t)i_mb_count * sizeof(int32_t);
+    PREALLOC( h->mb.qp, mb_qp_alloc_size );
+    PREALLOC( h->mb.cbp, mb_cbp_alloc_size );
+    PREALLOC( h->mb.mb_transform_size, mb_transform_size_alloc_size );
+    PREALLOC( h->mb.slice_table, mb_slice_table_alloc_size );
 
     /* 0 -> 3 top(4), 4 -> 6 : left(3) */
-    PREALLOC( h->mb.intra4x4_pred_mode, (int64_t)i_mb_count * 8 * (int64_t)sizeof(int8_t) );
+    int64_t intra4x4_pred_mode_alloc_size = (int64_t)i_mb_count * 8 * sizeof(int8_t);
+    PREALLOC( h->mb.intra4x4_pred_mode, intra4x4_pred_mode_alloc_size );
 
     /* all coeffs */
-    PREALLOC( h->mb.non_zero_count, (int64_t)i_mb_count * 48 * (int64_t)sizeof(uint8_t) );
+    int64_t non_zero_count_alloc_size = (int64_t)i_mb_count * 48 * sizeof(uint8_t);
+    PREALLOC( h->mb.non_zero_count, non_zero_count_alloc_size );
 
     if( h->param.b_cabac )
     {
-        PREALLOC( h->mb.skipbp, (int64_t)i_mb_count * (int64_t)sizeof(int8_t) );
-        PREALLOC( h->mb.chroma_pred_mode, (int64_t)i_mb_count * (int64_t)sizeof(int8_t) );
-        PREALLOC( h->mb.mvd[0], (int64_t)i_mb_count * (int64_t)sizeof( **h->mb.mvd ) );
+        int64_t skipbp_alloc_size = (int64_t)i_mb_count * sizeof(int8_t);
+        int64_t chroma_pred_mode_alloc_size = (int64_t)i_mb_count * sizeof(int8_t);
+        int64_t mvd0_alloc_size = (int64_t)i_mb_count * sizeof( **h->mb.mvd );
+        PREALLOC( h->mb.skipbp, skipbp_alloc_size );
+        PREALLOC( h->mb.chroma_pred_mode, chroma_pred_mode_alloc_size );
+        PREALLOC( h->mb.mvd[0], mvd0_alloc_size );
         if( h->param.i_bframe )
-            PREALLOC( h->mb.mvd[1], (int64_t)i_mb_count * (int64_t)sizeof( **h->mb.mvd ) );
+        {
+            int64_t mvd1_alloc_size = (int64_t)i_mb_count * sizeof( **h->mb.mvd );
+            PREALLOC( h->mb.mvd[1], mvd1_alloc_size );
+        }
     }
 
     for( int i = 0; i < 2; i++ )
@@ -303,8 +315,9 @@ int x264_macroblock_cache_allocate( x264_t *h )
         if( h->param.analyse.i_weighted_pred == X264_WEIGHTP_SMART )
             i_refs = X264_MIN(X264_REF_MAX, i_refs + 1 + (BIT_DEPTH == 8)); //smart weights add two duplicate frames, one in >8-bit
 
+        int64_t mvr_alloc_size = 2 * ((int64_t)i_mb_count + 1) * sizeof(int16_t);
         for( int j = !i; j < i_refs; j++ )
-            PREALLOC( h->mb.mvr[i][j], 2 * ((int64_t)i_mb_count + 1) * (int64_t)sizeof(int16_t) );
+            PREALLOC( h->mb.mvr[i][j], mvr_alloc_size );
     }
 
     if( h->param.analyse.i_weighted_pred )
@@ -349,8 +362,9 @@ int x264_macroblock_cache_allocate( x264_t *h )
 
         if( x264_mb_size_mul( luma_plane_size, SIZEOF_PIXEL, &weight_buf_size ) )
             goto fail;
+        int64_t p_weight_buf_alloc_size = weight_buf_size;
         for( int i = 0; i < numweightbuf; i++ )
-            PREALLOC( h->mb.p_weight_buf[i], weight_buf_size );
+            PREALLOC( h->mb.p_weight_buf[i], p_weight_buf_alloc_size );
     }
 
     PREALLOC_END( h->mb.base );
@@ -388,10 +402,11 @@ int x264_macroblock_thread_allocate( x264_t *h, int b_lookahead )
             x264_mb_size_add( intra_border_backup_size, 32, &intra_border_backup_size ) ||
             x264_mb_size_mul( intra_border_backup_size, SIZEOF_PIXEL, &intra_border_backup_size ) )
             goto fail;
+        int64_t intra_border_backup_alloc_size = intra_border_backup_size;
         for( int i = 0; i < (PARAM_INTERLACED ? 5 : 2); i++ )
             for( int j = 0; j < (CHROMA444 ? 3 : 2); j++ )
             {
-                CHECKED_MALLOC( h->intra_border_backup[i][j], intra_border_backup_size );
+                CHECKED_MALLOC( h->intra_border_backup[i][j], intra_border_backup_alloc_size );
                 h->intra_border_backup[i][j] += 16;
             }
         int64_t deblock_strength_frame_size;
@@ -399,6 +414,8 @@ int x264_macroblock_thread_allocate( x264_t *h, int b_lookahead )
         if( x264_mb_size_mul( h->mb.i_mb_count, sizeof(**h->deblock_strength), &deblock_strength_frame_size ) ||
             x264_mb_size_mul( h->mb.i_mb_width, sizeof(**h->deblock_strength), &deblock_strength_row_size ) )
             goto fail;
+        int64_t deblock_strength_frame_alloc_size = deblock_strength_frame_size;
+        int64_t deblock_strength_row_alloc_size = deblock_strength_row_size;
         for( int i = 0; i <= PARAM_INTERLACED; i++ )
         {
             if( h->param.b_sliced_threads )
@@ -406,12 +423,12 @@ int x264_macroblock_thread_allocate( x264_t *h, int b_lookahead )
                 /* Only allocate the first one, and allocate it for the whole frame, because we
                  * won't be deblocking until after the frame is fully encoded. */
                 if( h == h->thread[0] && !i )
-                    CHECKED_MALLOC( h->deblock_strength[0], deblock_strength_frame_size );
+                    CHECKED_MALLOC( h->deblock_strength[0], deblock_strength_frame_alloc_size );
                 else
                     h->deblock_strength[i] = h->thread[0]->deblock_strength[0];
             }
             else
-                CHECKED_MALLOC( h->deblock_strength[i], deblock_strength_row_size );
+                CHECKED_MALLOC( h->deblock_strength[i], deblock_strength_row_alloc_size );
             h->deblock_strength[1] = h->deblock_strength[i];
         }
     }
@@ -456,7 +473,10 @@ int x264_macroblock_thread_allocate( x264_t *h, int b_lookahead )
     }
     scratch_size = X264_MAX( scratch_size, buf_mbtree );
     if( scratch_size )
-        CHECKED_MALLOC( h->scratch_buffer, scratch_size );
+    {
+        int64_t scratch_alloc_size = scratch_size;
+        CHECKED_MALLOC( h->scratch_buffer, scratch_alloc_size );
+    }
     else
         h->scratch_buffer = NULL;
 
@@ -469,7 +489,8 @@ int x264_macroblock_thread_allocate( x264_t *h, int b_lookahead )
         x264_mb_size_mul( buf_mbtree, 12, &buf_mbtree2 ) )
         goto fail;
     scratch_size = X264_MAX( buf_lookahead_threads, buf_mbtree2 );
-    CHECKED_MALLOC( h->scratch_buffer2, scratch_size );
+    int64_t scratch_buffer2_alloc_size = scratch_size;
+    CHECKED_MALLOC( h->scratch_buffer2, scratch_buffer2_alloc_size );
 
     return 0;
 fail:

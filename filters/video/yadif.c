@@ -150,7 +150,8 @@ static int yadif_init( hnd_t *handle, cli_vid_filter_t *filter,
                    "Only planar YCbCr images supported\n" );
     updated_info = *info;
 
-    h = calloc( 1, sizeof(yadif_handle_t) );
+    int64_t yadif_alloc_size = sizeof(yadif_handle_t);
+    h = calloc( 1, yadif_alloc_size );
     if(!h)
         return -1;
 

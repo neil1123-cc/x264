@@ -47,7 +47,8 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
         info->width > MAX_RESOLUTION || info->height > MAX_RESOLUTION )
         return -1;
 
-    source_hnd_t *h = calloc( 1, sizeof(source_hnd_t) );
+    int64_t source_alloc_size = sizeof(source_hnd_t);
+    source_hnd_t *h = calloc( 1, source_alloc_size );
     if( !h )
         return -1;
     h->cur_frame = -1;

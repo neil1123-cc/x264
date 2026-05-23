@@ -3157,8 +3157,10 @@ REALIGN_STACK int main( int argc, char **argv )
     fprintf( stderr, "x264: using random seed %u\n", seed );
     srand( seed );
 
-    buf1 = x264_malloc( 0x1e00 + 0x2000*SIZEOF_PIXEL );
-    pbuf1 = x264_malloc( 0x1e00*SIZEOF_PIXEL );
+    int64_t buf1_alloc_size = 0x1e00 + 0x2000*SIZEOF_PIXEL;
+    int64_t pbuf1_alloc_size = 0x1e00*SIZEOF_PIXEL;
+    buf1 = x264_malloc( buf1_alloc_size );
+    pbuf1 = x264_malloc( pbuf1_alloc_size );
     if( !buf1 || !pbuf1 )
     {
         fprintf( stderr, "malloc failed, unable to initiate tests!\n" );

@@ -93,7 +93,8 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
         return -1;
     if( !opt_string )
         return -1;
-    selvry_hnd_t *h = calloc( 1, sizeof(selvry_hnd_t) );
+    int64_t select_every_alloc_size = sizeof(selvry_hnd_t);
+    selvry_hnd_t *h = calloc( 1, select_every_alloc_size );
     if( !h )
         return -1;
     int offsets[MAX_PATTERN_SIZE];
@@ -150,7 +151,8 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
         goto fail;
     }
 
-    h->pattern = malloc( (size_t)parsed_pattern_len * sizeof(int) );
+    int64_t pattern_alloc_size = (int64_t)((size_t)parsed_pattern_len * sizeof(int));
+    h->pattern = malloc( pattern_alloc_size );
     if( !h->pattern )
         goto fail;
     memcpy( h->pattern, offsets, (size_t)parsed_pattern_len * sizeof(int) );
@@ -178,6 +180,8 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
     video_info_t updated_info = *info;
     if( h->step_size != h->pattern_len )
     {
+        uint32_t step_size_u = (uint32_t)h->step_size;
+        uint32_t pattern_len_u = (uint32_t)h->pattern_len;
         if( updated_info.num_frames > 0 )
         {
             int selected_frames = select_every_num_frames( h, updated_info.num_frames );
@@ -188,27 +192,27 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
             }
             updated_info.num_frames = selected_frames;
         }
-        if( updated_info.fps_den > UINT32_MAX / (uint32_t)h->step_size ||
-            updated_info.fps_num > UINT32_MAX / (uint32_t)h->pattern_len )
+        if( updated_info.fps_den > UINT32_MAX / step_size_u ||
+            updated_info.fps_num > UINT32_MAX / pattern_len_u )
         {
             x264_cli_log( NAME, X264_LOG_ERROR, "selected framerate is too large\n" );
             goto fail;
         }
-        updated_info.fps_den *= (uint32_t)h->step_size;
-        updated_info.fps_num *= (uint32_t)h->pattern_len;
+        updated_info.fps_den *= step_size_u;
+        updated_info.fps_num *= pattern_len_u;
         if( !param->b_accurate_fps )
             x264_ntsc_fps( &updated_info.fps_num, &updated_info.fps_den );
         x264_reduce_fraction( &updated_info.fps_num, &updated_info.fps_den );
         if( updated_info.vfr )
         {
-            if( updated_info.timebase_den > UINT32_MAX / (uint32_t)h->pattern_len ||
-                updated_info.timebase_num > UINT32_MAX / (uint32_t)h->step_size )
+            if( updated_info.timebase_den > UINT32_MAX / pattern_len_u ||
+                updated_info.timebase_num > UINT32_MAX / step_size_u )
             {
                 x264_cli_log( NAME, X264_LOG_ERROR, "selected timebase is too large\n" );
                 goto fail;
             }
-            updated_info.timebase_den *= (uint32_t)h->pattern_len;
-            updated_info.timebase_num *= (uint32_t)h->step_size;
+            updated_info.timebase_den *= pattern_len_u;
+            updated_info.timebase_num *= step_size_u;
             x264_reduce_fraction( &updated_info.timebase_num, &updated_info.timebase_den );
         }
     }

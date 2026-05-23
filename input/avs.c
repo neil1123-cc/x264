@@ -317,7 +317,9 @@ static char *utf16_to_ansi( const wchar_t *utf16 )
     int len = WideCharToMultiByte( CP_ACP, WC_NO_BEST_FIT_CHARS, utf16, -1, NULL, 0, NULL, &invalid );
     if( len && !invalid )
     {
-        char *ansi = malloc( (size_t)len );
+        size_t ansi_size = (size_t)len;
+        int64_t ansi_alloc_size = (int64_t)ansi_size;
+        char *ansi = malloc( ansi_alloc_size );
         if( ansi )
         {
             invalid = FALSE;
@@ -344,7 +346,8 @@ static char *utf8_to_ansi( const char *filename )
             if( len )
             {
                 size_t short_utf16_size = (size_t)len * sizeof( wchar_t );
-                wchar_t *short_utf16 = short_utf16_size / sizeof( wchar_t ) == len ? malloc( short_utf16_size ) : NULL;
+                int64_t short_utf16_alloc_size = (int64_t)short_utf16_size;
+                wchar_t *short_utf16 = short_utf16_size / sizeof( wchar_t ) == len ? malloc( short_utf16_alloc_size ) : NULL;
                 if( short_utf16 )
                 {
                     DWORD written = GetShortPathNameW( filename_utf16, short_utf16, len );
@@ -387,7 +390,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
 #ifdef _WIN32
     char *ansi_filename = NULL;
 #endif
-    avs_hnd_t *h = calloc( 1, sizeof(avs_hnd_t) );
+    int64_t avs_alloc_size = sizeof(avs_hnd_t);
+    avs_hnd_t *h = calloc( 1, avs_alloc_size );
     if( !h )
         return -1;
     video_info_t updated_info = *info;
@@ -561,7 +565,10 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         }
         char conv_func[16];
         int conv_func_len = snprintf( conv_func, sizeof(conv_func), "ConvertTo%s", csp );
-        FAIL_IF_ERROR_CLEANUP( conv_func_len < 0 || conv_func_len >= (int)sizeof(conv_func),
+        FAIL_IF_ERROR_CLEANUP( conv_func_len < 0,
+                               "conversion function name too long\n" );
+        size_t conv_func_size = (size_t)conv_func_len;
+        FAIL_IF_ERROR_CLEANUP( conv_func_size >= sizeof(conv_func),
                                "conversion function name too long\n" );
         AVS_Value arg_arr[3];
         const char *arg_name[3];
@@ -582,7 +589,10 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
             int use_pc_matrix = avs_is_yuv( vi ) ? input_range == RANGE_PC : opt->output_range == RANGE_PC;
             int matrix_len = snprintf( matrix, sizeof(matrix), "%s%s", use_pc_matrix ? "PC." : "Rec",
                                        ( vi->width > 1024 || vi->height > 576 ) ? "709" : "601" );
-            FAIL_IF_ERROR_CLEANUP( matrix_len < 0 || matrix_len >= (int)sizeof(matrix),
+            FAIL_IF_ERROR_CLEANUP( matrix_len < 0,
+                                   "matrix name too long\n" );
+            size_t matrix_size = (size_t)matrix_len;
+            FAIL_IF_ERROR_CLEANUP( matrix_size >= sizeof(matrix),
                                    "matrix name too long\n" );
             arg_arr[arg_count] = avs_new_value_string( matrix );
             arg_name[arg_count] = "matrix";

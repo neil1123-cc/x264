@@ -100,13 +100,16 @@ static int audio_init( hnd_t handle, hnd_t filters, char *audio_enc, char *audio
 
         int audio_params_len = snprintf( audio_params, sizeof(audio_params), "%s,codec=%s",
                                          audio_parameters ? audio_parameters : "", used_enc );
-        FAIL_IF_ERR( audio_params_len < 0 || (size_t)audio_params_len >= sizeof(audio_params), "mkv", "audio encoder parameters are too long\n" );
+        FAIL_IF_ERR( audio_params_len < 0, "mkv", "audio encoder parameters are too long\n" );
+        size_t audio_params_size = (size_t)audio_params_len;
+        FAIL_IF_ERR( audio_params_size >= sizeof(audio_params), "mkv", "audio encoder parameters are too long\n" );
         henc = x264_audio_encoder_open( encoder, filters, audio_params );
     }
     FAIL_IF_ERR( !henc, "mkv", "error opening audio encoder\n" );
 
     mkv_hnd_t *p_mkv = handle;
-    mkv_audio_hnd_t *a_mkv = calloc( 1, sizeof( mkv_audio_hnd_t ) );
+    int64_t audio_alloc_size = sizeof( mkv_audio_hnd_t );
+    mkv_audio_hnd_t *a_mkv = calloc( 1, audio_alloc_size );
     if( !a_mkv )
     {
         x264_cli_log( "mkv", X264_LOG_ERROR, "malloc failed!\n" );
@@ -149,7 +152,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
     if( !psz_filename || !p_handle )
         return -1;
     *p_handle = NULL;
-    mkv_hnd_t *p_mkv = calloc( 1, sizeof(mkv_hnd_t) );
+    int64_t mkv_alloc_size = sizeof(mkv_hnd_t);
+    mkv_hnd_t *p_mkv = calloc( 1, mkv_alloc_size );
     if( !p_mkv )
         return -1;
 
@@ -249,8 +253,10 @@ static int set_video_track( mkv_hnd_t *p_mkv, x264_param_t *p_param )
     }
     if( dw <= 0 || dh <= 0 || dw > UINT_MAX || dh > UINT_MAX )
         return -1;
-    v->display_width = (unsigned)dw;
-    v->display_height = (unsigned)dh;
+    unsigned display_width = (unsigned)dw;
+    unsigned display_height = (unsigned)dh;
+    v->display_width = display_width;
+    v->display_height = display_height;
 
     p_mkv->tracks[1] = vtrack;
     p_mkv->i_video_track = 1;
@@ -386,8 +392,10 @@ static int set_audio_track( mkv_hnd_t *p_mkv, x264_param_t *p_param )
         size_t codec_private_size = (size_t)info->extradata_size;
         if( codec_private_size > UINT_MAX )
             return -1;
-        atrack.codec_private_size = (unsigned)codec_private_size;
-        atrack.codec_private = malloc( codec_private_size );
+        unsigned codec_private_size_u = (unsigned)codec_private_size;
+        atrack.codec_private_size = codec_private_size_u;
+        int64_t codec_private_alloc_size = (int64_t)codec_private_size;
+        atrack.codec_private = malloc( codec_private_alloc_size );
         if( !atrack.codec_private )
             return -1;
         memcpy( atrack.codec_private, info->extradata, codec_private_size );
@@ -447,14 +455,18 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
         sei_size > INT_MAX - sps_size || sei_size + sps_size > INT_MAX - pps_size ||
         !p_nal[0].p_payload || !p_nal[1].p_payload || (sei_size && !p_nal[2].p_payload) )
         return -1;
+    unsigned sps_size_u = (unsigned)sps_size;
+    unsigned pps_size_u = (unsigned)pps_size;
+    unsigned sei_size_u = (unsigned)sei_size;
 
     uint8_t *sps = p_nal[0].p_payload + 4;
     uint8_t *pps = p_nal[1].p_payload + 4;
     uint8_t *sei = p_nal[2].p_payload;
 
     int ret;
-    unsigned codec_private_size = 5 + 1 + 2 + (unsigned)sps_size + 1 + 2 + (unsigned)pps_size;
-    uint8_t *codec_private = malloc( codec_private_size );
+    unsigned codec_private_size = 5 + 1 + 2 + sps_size_u + 1 + 2 + pps_size_u;
+    int64_t codec_private_alloc_size = codec_private_size;
+    uint8_t *codec_private = malloc( codec_private_alloc_size );
 
     if( !codec_private )
         return -1;
@@ -501,7 +513,7 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
         return -1;
     }
 
-    if( mk_add_frame_data( p_mkv->w, sei, (unsigned)sei_size ) < 0 )
+    if( mk_add_frame_data( p_mkv->w, sei, sei_size_u ) < 0 )
     {
         free( codec_private );
         return -1;
@@ -554,6 +566,7 @@ static int write_audio( mkv_hnd_t *p_mkv, int64_t video_dts, int finish )
             x264_audio_free_frame( a_mkv->encoder, frame );
             return -1;
         }
+        unsigned frame_size = (unsigned)frame->size;
         int64_t audio_dts = x264_from_timebase( frame->dts, frame->info.timebase, MKV_NANOSECONDS );
         if( audio_dts < 0 || audio_dts == INT64_MAX )
         {
@@ -567,7 +580,7 @@ static int write_audio( mkv_hnd_t *p_mkv, int64_t video_dts, int finish )
             return -1;
         }
 
-        if( mk_add_frame_data( p_mkv->w, frame->data, (unsigned)frame->size ) < 0 )
+        if( mk_add_frame_data( p_mkv->w, frame->data, frame_size ) < 0 )
         {
             x264_audio_free_frame( a_mkv->encoder, frame );
             return -1;
@@ -605,10 +618,11 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
         i_size < 0 || (i_size && !p_nalu) ||
         mkv_timebase_to_ns( &i_stamp, p_picture->i_pts, p_mkv->i_timebase_num, p_mkv->i_timebase_den ) )
         return -1;
+    unsigned nalu_size = (unsigned)i_size;
 
     if( p_mkv->b_writing_frame )
     {
-        if( mk_add_frame_data( p_mkv->w, p_nalu, (unsigned)i_size ) < 0 ||
+        if( mk_add_frame_data( p_mkv->w, p_nalu, nalu_size ) < 0 ||
             mk_set_frame_flags( p_mkv->w, i_stamp, p_picture->b_keyframe, p_picture->i_type == X264_TYPE_B, p_mkv->i_video_track ) < 0 ||
             mk_end_frame( p_mkv->w, p_mkv->i_video_track ) < 0 )
             return -1;
@@ -623,7 +637,7 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
     if( !skip )
     {
         if( mk_start_frame( p_mkv->w ) < 0 ||
-            mk_add_frame_data( p_mkv->w, p_nalu, (unsigned)i_size ) < 0 ||
+            mk_add_frame_data( p_mkv->w, p_nalu, nalu_size ) < 0 ||
             mk_set_frame_flags( p_mkv->w, i_stamp, p_picture->b_keyframe, p_picture->i_type == X264_TYPE_B, p_mkv->i_video_track ) < 0 ||
             mk_end_frame( p_mkv->w, p_mkv->i_video_track ) < 0 )
                 return -1;

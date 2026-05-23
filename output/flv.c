@@ -170,12 +170,15 @@ static int audio_init( hnd_t handle, hnd_t filters, char *audio_enc, char *audio
 
         int audio_params_len = snprintf( audio_params, sizeof(audio_params), "%s,codec=%s",
                                          audio_parameters ? audio_parameters : "", used_enc );
-        FAIL_IF_ERR( audio_params_len < 0 || (size_t)audio_params_len >= sizeof(audio_params), "flv", "audio encoder parameters are too long\n" );
+        FAIL_IF_ERR( audio_params_len < 0, "flv", "audio encoder parameters are too long\n" );
+        size_t audio_params_size = (size_t)audio_params_len;
+        FAIL_IF_ERR( audio_params_size >= sizeof(audio_params), "flv", "audio encoder parameters are too long\n" );
         henc = x264_audio_encoder_open( encoder, filters, audio_params );
     }
     FAIL_IF_ERR( !henc, "flv", "error opening audio encoder\n" );
     flv_hnd_t *p_flv = handle;
-    flv_audio_hnd_t *a_flv = calloc( 1, sizeof( flv_audio_hnd_t ) );
+    int64_t audio_alloc_size = sizeof( flv_audio_hnd_t );
+    flv_audio_hnd_t *a_flv = calloc( 1, audio_alloc_size );
     if( !a_flv )
         goto error;
     a_flv->lastdts = INVALID_DTS;
@@ -297,7 +300,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
         return -1;
     *p_handle = NULL;
 
-    flv_hnd_t *p_flv = calloc( 1, sizeof(flv_hnd_t) );
+    int64_t flv_alloc_size = sizeof(flv_hnd_t);
+    flv_hnd_t *p_flv = calloc( 1, flv_alloc_size );
 	int ret = -1;
     if( p_flv )
     {
@@ -479,12 +483,15 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
         sps_size - 4 > UINT16_MAX || pps_size - 4 > UINT16_MAX ||
         sei_size > INT_MAX - sps_size || sei_size + sps_size > INT_MAX - pps_size )
         return -1;
+    unsigned sps_payload_size = (unsigned)(sps_size - 4);
+    unsigned pps_payload_size = (unsigned)(pps_size - 4);
 
     // SEI
     /* It is within the spec to write this as-is but for
      * mplayer/ffmpeg playback this is deferred until before the first frame */
 
-    uint8_t *sei = sei_size ? malloc( (size_t)sei_size ) : NULL;
+    int64_t sei_alloc_size = sei_size;
+    uint8_t *sei = sei_size ? malloc( sei_alloc_size ) : NULL;
     if( sei_size && !sei )
         return -1;
 
@@ -512,14 +519,14 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     flv_put_byte( c, 0xff );   // 6 bits reserved (111111) + 2 bits nal size length - 1 (11)
     flv_put_byte( c, 0xe1 );   // 3 bits reserved (111) + 5 bits number of sps (00001)
 
-    flv_put_be16( c, (uint16_t)(sps_size - 4) );
-    if( flv_append_data( c, sps, (unsigned)(sps_size - 4) ) )
+    flv_put_be16( c, (uint16_t)sps_payload_size );
+    if( flv_append_data( c, sps, sps_payload_size ) )
         goto fail;
 
     // PPS
     flv_put_byte( c, 1 ); // number of pps
-    flv_put_be16( c, (uint16_t)(pps_size - 4) );
-    if( flv_append_data( c, p_nal[1].p_payload + 4, (unsigned)(pps_size - 4) ) )
+    flv_put_be16( c, (uint16_t)pps_payload_size );
+    if( flv_append_data( c, p_nal[1].p_payload + 4, pps_payload_size ) )
         goto fail;
 	
     // FRExt fields
@@ -706,9 +713,12 @@ static int write_audio( flv_hnd_t *p_flv, int64_t video_dts, int finish )
             x264_audio_free_frame( a_flv->encoder, frame );
             return -1;
         }
+        unsigned frame_size = (unsigned)frame->size;
+        uint32_t audio_payload_size = 1 + aac + frame_size;
+        uint32_t audio_tag_size = 11 + audio_payload_size;
 
         flv_put_byte( c, FLV_TAG_TYPE_AUDIO );
-        flv_put_be24( c, (uint32_t)(1 + aac + frame->size) );
+        flv_put_be24( c, audio_payload_size );
         if( flv_write_timestamp( c, audio_dts ) )
         {
             x264_audio_free_frame( a_flv->encoder, frame );
@@ -719,13 +729,13 @@ static int write_audio( flv_hnd_t *p_flv, int64_t video_dts, int finish )
         flv_put_byte( c, a_flv->header );
         if( aac )
             flv_put_byte( c, 1 );
-        if( flv_append_data( c, frame->data, (unsigned)frame->size ) )
+        if( flv_append_data( c, frame->data, frame_size ) )
         {
             x264_audio_free_frame( a_flv->encoder, frame );
             return -1;
         }
 
-        flv_put_be32( c, (uint32_t)(11 + 1 + aac + frame->size) );
+        flv_put_be32( c, audio_tag_size );
 
         x264_audio_free_frame( a_flv->encoder, frame );
 
@@ -806,6 +816,8 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
     int64_t frame_payload_size = (int64_t)i_size + sei_len;
     if( sei_len < 0 || frame_payload_size > 0xFFFFFF - 5 )
         return -1;
+    unsigned sei_len_u = (unsigned)sei_len;
+    unsigned nalu_size = (unsigned)i_size;
 
     if( p_flv->i_framenum )
     {
@@ -831,9 +843,9 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
     int frame_has_sei = p_flv->sei != NULL;
     if( frame_has_sei )
     {
-        CHECK( flv_append_data( c, p_flv->sei, (unsigned)p_flv->sei_len ) );
+        CHECK( flv_append_data( c, p_flv->sei, sei_len_u ) );
     }
-    CHECK( flv_append_data( c, p_nalu, (unsigned)i_size ) );
+    CHECK( flv_append_data( c, p_nalu, nalu_size ) );
 
     unsigned length = c->d_cur - p_flv->start;
     if( length > 0xFFFFFF || length > UINT32_MAX - 11 )

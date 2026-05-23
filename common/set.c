@@ -120,9 +120,12 @@ int x264_cqm_init( x264_t *h )
         }\
         else\
         {\
-            CHECKED_MALLOC( h->  quant##w##_mf[i], (int64_t)(QP_MAX_SPEC+1)*size*sizeof(udctcoef) );\
-            CHECKED_MALLOC( h->dequant##w##_mf[i],  (int64_t)6*size*sizeof(int) );\
-            CHECKED_MALLOC( h->unquant##w##_mf[i], (int64_t)(QP_MAX_SPEC+1)*size*sizeof(int) );\
+            int64_t quant_mf_alloc_size = (int64_t)(QP_MAX_SPEC+1) * size * sizeof(udctcoef);\
+            int64_t dequant_mf_alloc_size = (int64_t)6 * size * sizeof(int);\
+            int64_t unquant_mf_alloc_size = (int64_t)(QP_MAX_SPEC+1) * size * sizeof(int);\
+            CHECKED_MALLOC( h->  quant##w##_mf[i], quant_mf_alloc_size );\
+            CHECKED_MALLOC( h->dequant##w##_mf[i], dequant_mf_alloc_size );\
+            CHECKED_MALLOC( h->unquant##w##_mf[i], unquant_mf_alloc_size );\
         }\
         for( j = 0; j < i; j++ )\
             if( deadzone[j] == deadzone[i] &&\
@@ -135,8 +138,9 @@ int x264_cqm_init( x264_t *h )
         }\
         else\
         {\
-            CHECKED_MALLOC( h->quant##w##_bias[i], (int64_t)(QP_MAX_SPEC+1)*size*sizeof(udctcoef) );\
-            CHECKED_MALLOC( h->quant##w##_bias0[i], (int64_t)(QP_MAX_SPEC+1)*size*sizeof(udctcoef) );\
+            int64_t quant_bias_alloc_size = (int64_t)(QP_MAX_SPEC+1) * size * sizeof(udctcoef);\
+            CHECKED_MALLOC( h->quant##w##_bias[i], quant_bias_alloc_size );\
+            CHECKED_MALLOC( h->quant##w##_bias0[i], quant_bias_alloc_size );\
         }\
     }
 
@@ -223,7 +227,8 @@ int x264_cqm_init( x264_t *h )
 
     /* Emergency mode denoising. */
     x264_emms();
-    CHECKED_MALLOC( h->nr_offset_emergency, (int64_t)sizeof(*h->nr_offset_emergency)*(QP_MAX-QP_MAX_SPEC) );
+    int64_t nr_offset_emergency_alloc_size = (int64_t)sizeof(*h->nr_offset_emergency) * (QP_MAX-QP_MAX_SPEC);
+    CHECKED_MALLOC( h->nr_offset_emergency, nr_offset_emergency_alloc_size );
     for( int q = 0; q < QP_MAX - QP_MAX_SPEC; q++ )
         for( int cat = 0; cat < 3 + CHROMA444; cat++ )
         {

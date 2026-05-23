@@ -55,7 +55,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         !cli_input.picture_alloc || !cli_input.picture_clean || !cli_input.read_frame )
         return -1;
 
-    h = calloc( 1, sizeof(thread_hnd_t) );
+    int64_t thread_alloc_size = sizeof(thread_hnd_t);
+    h = calloc( 1, thread_alloc_size );
     FAIL_IF_ERR( !h, "x264", "malloc failed\n" );
     h->input = cli_input;
     h->p_handle = *p_handle;
@@ -68,7 +69,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         goto fail;
     }
 
-    h->next_args = calloc( 1, sizeof(thread_input_arg_t) );
+    int64_t thread_args_alloc_size = sizeof(thread_input_arg_t);
+    h->next_args = calloc( 1, thread_args_alloc_size );
     if( !h->next_args )
         goto fail;
     h->next_args->h = h;

@@ -128,8 +128,9 @@ static int cli_pic_plane_alloc_size( int csp, int csp_mask, int width, int heigh
     int64_t byte_width = plane_width * depth;
     if( byte_width > INT_MAX - (align - 1) )
         return -1;
-    int aligned_stride = ALIGN( (int)byte_width, align );
-    if( aligned_stride < byte_width || plane_height > INT64_MAX / aligned_stride )
+    int byte_width_int = (int)byte_width;
+    int aligned_stride = ALIGN( byte_width_int, align );
+    if( aligned_stride < byte_width_int || plane_height > INT64_MAX / aligned_stride )
         return -1;
     *stride = aligned_stride;
     *size = (int64_t)plane_height * aligned_stride;
@@ -161,7 +162,8 @@ static int cli_pic_init_internal( cli_pic_t *pic, int csp, int width, int height
 
         if( alloc )
         {
-            pic->img.plane[i] = x264_malloc( size );
+            int64_t plane_alloc_size = size;
+            pic->img.plane[i] = x264_malloc( plane_alloc_size );
             if( !pic->img.plane[i] )
             {
                 x264_cli_pic_clean( pic );
@@ -245,8 +247,8 @@ int x264_cli_mmap_init( cli_mmap_t *h, FILE *fh )
     long page_size = sysconf( _SC_PAGESIZE );
     if( !mmap_alignment_is_valid( page_size ) )
         return -1;
-    int page_alignment = (int)page_size;
-    h->align_mask = page_alignment - 1;
+    int page_size_int = (int)page_size;
+    h->align_mask = page_size_int - 1;
     h->fd = fd;
     return 0;
 #endif

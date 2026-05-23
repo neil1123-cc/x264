@@ -63,12 +63,14 @@ static GF_AVCConfigSlot *new_avc_slot( uint8_t *data, uint32_t size )
     if( !data || !size || size > UINT16_MAX )
         return NULL;
 
-    p_slot = malloc( sizeof(GF_AVCConfigSlot) );
+    int64_t avc_slot_alloc_size = sizeof(GF_AVCConfigSlot);
+    p_slot = malloc( avc_slot_alloc_size );
     if( !p_slot )
         return NULL;
 
     p_slot->size = size;
-    p_slot->data = malloc( p_slot->size );
+    int64_t avc_slot_data_alloc_size = p_slot->size;
+    p_slot->data = malloc( avc_slot_data_alloc_size );
     if( !p_slot->data )
     {
         free_avc_slot( p_slot );
@@ -285,7 +287,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
     FAIL_IF_ERR( fclose( fh ), "mp4", "failed to close output probe file `%s'\n", psz_filename );
     FAIL_IF_ERR( !b_regular, "mp4", "MP4 output is incompatible with non-regular file `%s'\n", psz_filename );
 
-    mp4_hnd_t *p_mp4 = calloc( 1, sizeof(mp4_hnd_t) );
+    int64_t mp4_alloc_size = sizeof(mp4_hnd_t);
+    mp4_hnd_t *p_mp4 = calloc( 1, mp4_alloc_size );
     if( !p_mp4 )
         return -1;
 	
@@ -352,7 +355,8 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
     data_size = (uint64_t)p_param->i_width * p_param->i_height * 3 / 2;
     FAIL_IF_ERR( data_size > UINT32_MAX, "mp4", "MP4 sample buffer size %"PRIu64" exceeds maximum\n", data_size );
     data_size_u32 = (uint32_t)data_size;
-    p_mp4->p_sample->data = malloc( data_size_u32 );
+    int64_t sample_alloc_size = data_size_u32;
+    p_mp4->p_sample->data = malloc( sample_alloc_size );
     if( !p_mp4->p_sample->data )
         return -1;
     p_mp4->i_data_size = data_size_u32;
@@ -394,7 +398,8 @@ static int check_buffer( mp4_hnd_t *p_mp4, uint32_t needed_size )
 
     if( needed_size > p_mp4->i_data_size )
     {
-        void *ptr = realloc( p_mp4->p_sample->data, needed_size );
+        int64_t sample_realloc_size = needed_size;
+        void *ptr = realloc( p_mp4->p_sample->data, sample_realloc_size );
         if( !ptr )
             return -1;
         p_mp4->p_sample->data = ptr;

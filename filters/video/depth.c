@@ -329,7 +329,8 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info,
                        error_buf_count > ((uint64_t)INT64_MAX - sizeof(depth_hnd_t)) / sizeof(int16_t),
                        "input width is too large\n" );
         size_t error_buf_size = (size_t)error_buf_count * sizeof(int16_t);
-        depth_hnd_t *h = x264_malloc( (int64_t)(sizeof(depth_hnd_t) + error_buf_size) );
+        int64_t depth_alloc_size = (int64_t)(sizeof(depth_hnd_t) + error_buf_size);
+        depth_hnd_t *h = x264_malloc( depth_alloc_size );
 
         if( !h )
             return -1;

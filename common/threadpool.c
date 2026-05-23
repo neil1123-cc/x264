@@ -81,12 +81,14 @@ int x264_threadpool_init( x264_threadpool_t **p_pool, int threads )
         return -1;
 
     x264_threadpool_t *pool;
-    CHECKED_MALLOCZERO( pool, sizeof(x264_threadpool_t) );
+    int64_t pool_alloc_size = sizeof(x264_threadpool_t);
+    CHECKED_MALLOCZERO( pool, pool_alloc_size );
     *p_pool = pool;
 
     pool->threads   = threads;
 
-    CHECKED_MALLOC( pool->thread_handle, (int64_t)thread_handle_size );
+    int64_t thread_handle_alloc_size = (int64_t)thread_handle_size;
+    CHECKED_MALLOC( pool->thread_handle, thread_handle_alloc_size );
 
     if( x264_sync_frame_list_init( &pool->uninit, pool->threads ) ||
         x264_sync_frame_list_init( &pool->run, pool->threads ) ||
@@ -96,7 +98,8 @@ int x264_threadpool_init( x264_threadpool_t **p_pool, int threads )
     for( int i = 0; i < pool->threads; i++ )
     {
        x264_threadpool_job_t *job;
-       CHECKED_MALLOC( job, sizeof(x264_threadpool_job_t) );
+       int64_t job_alloc_size = sizeof(x264_threadpool_job_t);
+       CHECKED_MALLOC( job, job_alloc_size );
        x264_sync_frame_list_push( &pool->uninit, (void*)job );
     }
     for( int i = 0; i < pool->threads; i++ )

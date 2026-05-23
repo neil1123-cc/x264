@@ -132,7 +132,8 @@ REALIGN_STACK static void *lookahead_thread( x264_t *h )
 int x264_lookahead_init( x264_t *h, int i_slicetype_length )
 {
     x264_lookahead_t *look;
-    CHECKED_MALLOCZERO( look, sizeof(x264_lookahead_t) );
+    int64_t look_alloc_size = sizeof(x264_lookahead_t);
+    CHECKED_MALLOCZERO( look, look_alloc_size );
     for( int i = 0; i < h->param.i_threads; i++ )
         h->thread[i]->lookahead = look;
 

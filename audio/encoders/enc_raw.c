@@ -41,7 +41,8 @@ static hnd_t init( hnd_t filter_chain, const char *opts )
 {
     if( !filter_chain )
         return NULL;
-    enc_raw_t *h = calloc( 1, sizeof( enc_raw_t ) );
+    int64_t raw_encoder_alloc_size = sizeof( enc_raw_t );
+    enc_raw_t *h = calloc( 1, raw_encoder_alloc_size );
     if( !h )
         return NULL;
     audio_hnd_t *chain = h->filter_chain = filter_chain;
@@ -104,7 +105,8 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     if( !smp )
         return NULL;
 
-    audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
+    int64_t out_packet_alloc_size = sizeof( audio_packet_t );
+    audio_packet_t *out = calloc( 1, out_packet_alloc_size );
     if( !out )
     {
         x264_af_free_packet( smp );

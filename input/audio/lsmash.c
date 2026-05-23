@@ -127,7 +127,8 @@ static int lsmash_init( hnd_t *handle, const char *opt_str )
           || lsmash_check_codec_type_identical( h->summary->sample_type, ISOM_CODEC_TYPE_DTSL_AUDIO ) )
     {
         h->info.codec_name = "dca";
-        audio_dts_info_t *dts_info = malloc( sizeof( audio_dts_info_t ) );
+        int64_t dts_info_alloc_size = sizeof( audio_dts_info_t );
+        audio_dts_info_t *dts_info = malloc( dts_info_alloc_size );
         if( !dts_info )
             goto error;
         dts_info->coding_name = h->summary->sample_type;
@@ -190,7 +191,8 @@ static int lsmash_init( hnd_t *handle, const char *opt_str )
         size_t extradata_size = (size_t)num_extensions * sizeof(lsmash_codec_specific_t *);
         int extradata_size_int = (int)extradata_size;
         h->info.extradata_type = EXTRADATA_TYPE_LSMASH;
-        h->info.extradata = calloc( num_extensions, sizeof(lsmash_codec_specific_t *) );
+        int64_t extradata_alloc_size = (int64_t)num_extensions * sizeof(lsmash_codec_specific_t *);
+        h->info.extradata = calloc( 1, extradata_alloc_size );
         if( !h->info.extradata )
         {
             AF_LOG_ERR( h, "malloc failed!\n" );
@@ -289,7 +291,8 @@ static audio_packet_t *get_next_au( hnd_t handle )
     if( !h || !h->summary || !h->importer ||
         h->info.channels <= 0 || h->info.framelen <= 0 )
         return NULL;
-    audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
+    int64_t packet_alloc_size = sizeof( audio_packet_t );
+    audio_packet_t *out = calloc( 1, packet_alloc_size );
 
     if( !out )
         return NULL;

@@ -99,7 +99,8 @@ char **x264_split_options( const char *opt_str, const char * const *options )
     size_t offset = opt_array_count * sizeof(char*);
     RETURN_IF_ERROR( x264_size_add( &size, offset ) || x264_size_add( &size, opt_str_size ),
                      "options are too long\n" );
-    char **opts = calloc( 1, size );
+    int64_t opts_alloc_size = (int64_t)size;
+    char **opts = calloc( 1, opts_alloc_size );
     RETURN_IF_ERROR( !opts, "malloc failed\n" );
 
     for( size_t i = 0; i < opt_value_count; )

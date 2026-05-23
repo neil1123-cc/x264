@@ -118,7 +118,8 @@ flv_buffer *flv_create_writer( const char *filename )
     if( !filename )
         return NULL;
 
-    flv_buffer *c = calloc( 1, sizeof(flv_buffer) );
+    int64_t writer_alloc_size = sizeof(flv_buffer);
+    flv_buffer *c = calloc( 1, writer_alloc_size );
     if( !c )
         return NULL;
 
@@ -151,7 +152,8 @@ static int flv_reserve_data( flv_buffer *c, unsigned size )
         dn <<= 1;
     }
 
-    void *dp = realloc( c->data, dn );
+    int64_t data_alloc_size = dn;
+    void *dp = realloc( c->data, data_alloc_size );
     if( !dp )
         return -1;
 

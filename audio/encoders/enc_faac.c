@@ -124,7 +124,8 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
         return NULL;
     }
 
-    enc_faac_t *h      = calloc( 1, sizeof( enc_faac_t ) );
+    int64_t faac_alloc_size = sizeof( enc_faac_t );
+    enc_faac_t *h      = calloc( 1, faac_alloc_size );
     if( !h )
     {
         free( opts );
@@ -307,11 +308,13 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     if( !h || !h->filter_chain || !h->faac || !h->bufsize || h->finishing )
         return NULL;
 
-    audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
+    int64_t out_packet_alloc_size = sizeof( audio_packet_t );
+    audio_packet_t *out = calloc( 1, out_packet_alloc_size );
     if( !out )
         return NULL;
     out->info = h->info;
-    out->data = malloc( h->bufsize );
+    int64_t out_data_alloc_size = (int64_t)h->bufsize;
+    out->data = malloc( out_data_alloc_size );
     if( !out->data )
         goto error;
 
@@ -396,11 +399,13 @@ static audio_packet_t *finish( hnd_t encoder )
     if( !h || !h->faac || !h->bufsize )
         return NULL;
 
-    audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
+    int64_t finish_packet_alloc_size = sizeof( audio_packet_t );
+    audio_packet_t *out = calloc( 1, finish_packet_alloc_size );
     if( !out )
         return NULL;
     out->info = h->info;
-    out->data = malloc( h->bufsize );
+    int64_t finish_data_alloc_size = (int64_t)h->bufsize;
+    out->data = malloc( finish_data_alloc_size );
     if( !out->data )
         goto error;
 

@@ -113,7 +113,8 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
         return 0;
     }
 
-    enc_lame_t *h   = calloc( 1, sizeof( enc_lame_t ) );
+    int64_t lame_alloc_size = sizeof( enc_lame_t );
+    enc_lame_t *h   = calloc( 1, lame_alloc_size );
     if( !h )
     {
         free( opts );
@@ -212,7 +213,8 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     h->bufsize = (size_t)125 * (size_t)h->info.framelen / 100 + 7200; // from lame.h, largest frame that the encoding functions may return
     if( h->bufsize > INT_MAX )
         goto error;
-    h->buffer = malloc( h->bufsize );
+    int64_t lame_buffer_alloc_size = (int64_t)h->bufsize;
+    h->buffer = malloc( lame_buffer_alloc_size );
     if( !h->buffer )
         goto error;
     h->buf_index = 0;
@@ -336,11 +338,13 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     if( h->finishing )
         return NULL;
 
-    audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
+    int64_t out_packet_alloc_size = sizeof( audio_packet_t );
+    audio_packet_t *out = calloc( 1, out_packet_alloc_size );
     if( !out )
         return NULL;
     out->info = h->info;
-    out->data = malloc( h->bufsize );
+    int64_t out_data_alloc_size = (int64_t)h->bufsize;
+    out->data = malloc( out_data_alloc_size );
     if( !out->data )
         goto error;
 
@@ -418,11 +422,13 @@ static audio_packet_t *finish( hnd_t encoder )
         return NULL;
     int len;
 
-    audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
+    int64_t finish_packet_alloc_size = sizeof( audio_packet_t );
+    audio_packet_t *out = calloc( 1, finish_packet_alloc_size );
     if( !out )
         return NULL;
     out->info = h->info;
-    out->data = malloc( h->bufsize );
+    int64_t finish_data_alloc_size = (int64_t)h->bufsize;
+    out->data = malloc( finish_data_alloc_size );
     if( !out->data )
         goto error;
 

@@ -192,7 +192,8 @@ int x264_pthread_cond_init( x264_pthread_cond_t *cond, const x264_pthread_condat
     }
 
     /* non native condition variables */
-    x264_win32_cond_t *win32_cond = calloc( 1, sizeof(x264_win32_cond_t) );
+    int64_t cond_alloc_size = sizeof(x264_win32_cond_t);
+    x264_win32_cond_t *win32_cond = calloc( 1, cond_alloc_size );
     if( !win32_cond )
         return -1;
     cond->Ptr = win32_cond;

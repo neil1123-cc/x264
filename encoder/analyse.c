@@ -215,7 +215,8 @@ static int init_costs( x264_t *h, float *logs, int qp )
         return -1;
 
     /* factor of 4 from qpel, 2 from sign, and 2 because mv can be opposite from mvp */
-    CHECKED_MALLOC( h->cost_mv[qp], cost_mv_size );
+    int64_t cost_mv_alloc_size = (int64_t)cost_mv_size;
+    CHECKED_MALLOC( h->cost_mv[qp], cost_mv_alloc_size );
     h->cost_mv[qp] += cost_mv_radius / 2;
     for( int i = 0; i <= cost_mv_radius / 2; i++ )
     {
@@ -229,7 +230,8 @@ static int init_costs( x264_t *h, float *logs, int qp )
     {
         for( int j = 0; j < 4; j++ )
         {
-            CHECKED_MALLOC( h->cost_mv_fpel[qp][j], fpel_size );
+            int64_t fpel_alloc_size = (int64_t)fpel_size;
+            CHECKED_MALLOC( h->cost_mv_fpel[qp][j], fpel_alloc_size );
             h->cost_mv_fpel[qp][j] += fpel_radius / 2;
             for( int i = -fpel_radius / 2; i < fpel_radius / 2; i++ )
                 h->cost_mv_fpel[qp][j][i] = h->cost_mv[qp][i*4+j];
@@ -251,7 +253,8 @@ int x264_analyse_init_costs( x264_t *h )
     if( analyse_mv_range_scale( mv_range, 8, &logs_radius ) ||
         analyse_mv_cost_alloc_size( logs_radius, sizeof(float), &logs_size ) )
         return -1;
-    float *logs = x264_malloc( logs_size );
+    int64_t logs_alloc_size = (int64_t)logs_size;
+    float *logs = x264_malloc( logs_alloc_size );
     if( !logs )
         return -1;
 

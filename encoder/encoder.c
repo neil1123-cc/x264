@@ -207,7 +207,8 @@ static void frame_dump( x264_t *h )
                 checked_int_add( chroma_size, 32, &chroma_plane_offset ) ||
                 checked_int_mul( chroma_plane_offset, 2, &chroma_alloc_size ) )
                 goto fail;
-            pixel *planeu = x264_malloc( chroma_alloc_size );
+            int64_t chroma_alloc_bytes = chroma_alloc_size;
+            pixel *planeu = x264_malloc( chroma_alloc_bytes );
             if( planeu )
             {
                 pixel *planev = planeu + chroma_plane_offset / SIZEOF_PIXEL;
@@ -483,7 +484,8 @@ static int bitstream_check_buffer_internal( x264_t *h, int size, int b_cabac, in
         if( size > INT_MAX - h->out.i_bitstream )
             return -1;
         int buf_size = h->out.i_bitstream + size;
-        uint8_t *buf = x264_malloc( buf_size );
+        int64_t bitstream_alloc_alloc_size = buf_size;
+        uint8_t *buf = x264_malloc( bitstream_alloc_alloc_size );
         if( !buf )
             return -1;
         int aligned_size = h->out.i_bitstream & ~15;
@@ -1310,7 +1312,12 @@ static int validate_parameters( x264_t *h, int b_open )
     }
     float fps = (float)h->param.i_fps_num / h->param.i_fps_den;
     if( h->param.i_keyint_min == X264_KEYINT_MIN_AUTO )
-        h->param.i_keyint_min = X264_MIN( h->param.i_keyint_max / 10, (int)fps );
+    {
+        double fps_keyint = (double)h->param.i_fps_num / h->param.i_fps_den;
+        int fps_keyint_limit = fps_keyint > (double)INT_MAX ? INT_MAX :
+                               fps_keyint < (double)INT_MIN ? INT_MIN : (int)fps_keyint;
+        h->param.i_keyint_min = X264_MIN( h->param.i_keyint_max / 10, fps_keyint_limit );
+    }
     h->param.i_keyint_min = x264_clip3( h->param.i_keyint_min, 1, h->param.i_keyint_max/2+1 );
     h->param.rc.i_lookahead = x264_clip3( h->param.rc.i_lookahead, 0, X264_LOOKAHEAD_MAX );
     {
@@ -1754,10 +1761,11 @@ static void set_aspect_ratio( x264_t *h, x264_param_t *param, int initial )
 x264_t *x264_encoder_open( x264_param_t *param, void *api )
 {
     x264_t *h;
+    int64_t encoder_alloc_size = sizeof(x264_t);
     char buf[1000], *p;
     int i_slicetype_length;
 
-    CHECKED_MALLOCZERO( h, sizeof(x264_t) );
+    CHECKED_MALLOCZERO( h, encoder_alloc_size );
 
     /* Create a copy of param */
     memcpy( &h->param, param, sizeof(x264_param_t) );
@@ -1918,13 +1926,18 @@ x264_t *x264_encoder_open( x264_param_t *param, void *api )
          checked_array_alloc_size( h, "frames.blank_unused", blank_unused_count, sizeof(x264_frame_t *), &blank_unused_size )) )
         goto fail;
 
-    CHECKED_MALLOCZERO( h->cost_table, sizeof(*h->cost_table) );
-    CHECKED_MALLOCZERO( h->frames.unused[0], unused0_size );
+    int64_t cost_table_alloc_size = sizeof(*h->cost_table);
+    int64_t unused0_alloc_size = (int64_t)unused0_size;
+    int64_t unused1_alloc_size = (int64_t)unused1_size;
+    int64_t current_alloc_size = (int64_t)current_size;
+    int64_t blank_unused_alloc_size = (int64_t)blank_unused_size;
+    CHECKED_MALLOCZERO( h->cost_table, cost_table_alloc_size );
+    CHECKED_MALLOCZERO( h->frames.unused[0], unused0_alloc_size );
     /* Allocate room for max refs plus a few extra just in case. */
-    CHECKED_MALLOCZERO( h->frames.unused[1], unused1_size );
-    CHECKED_MALLOCZERO( h->frames.current, current_size );
+    CHECKED_MALLOCZERO( h->frames.unused[1], unused1_alloc_size );
+    CHECKED_MALLOCZERO( h->frames.current, current_alloc_size );
     if( h->param.analyse.i_weighted_pred > 0 )
-        CHECKED_MALLOCZERO( h->frames.blank_unused, blank_unused_size );
+        CHECKED_MALLOCZERO( h->frames.blank_unused, blank_unused_alloc_size );
     h->i_ref[0] = h->i_ref[1] = 0;
     h->i_cpb_delay = h->i_coded_fields = h->i_disp_fields = 0;
     h->i_prev_duration = ((uint64_t)h->param.i_fps_den * h->sps->vui.i_time_scale) / ((uint64_t)h->param.i_fps_num * h->sps->vui.i_num_units_in_tick);
@@ -2024,9 +2037,11 @@ x264_t *x264_encoder_open( x264_param_t *param, void *api )
         goto fail;
     }
     /* +4 for startcode, +64 for nal_escape assembly padding */
-    CHECKED_MALLOC( h->nal_buffer, h->nal_buffer_size );
+    int64_t nal_buffer_alloc_size = h->nal_buffer_size;
+    CHECKED_MALLOC( h->nal_buffer, nal_buffer_alloc_size );
 
-    CHECKED_MALLOC( h->reconfig_h, sizeof(x264_t) );
+    int64_t reconfig_alloc_size = sizeof(x264_t);
+    CHECKED_MALLOC( h->reconfig_h, reconfig_alloc_size );
 
     if( h->param.i_threads > 1 &&
         x264_threadpool_init( &h->threadpool, h->param.i_threads ) )
@@ -2048,12 +2063,13 @@ x264_t *x264_encoder_open( x264_param_t *param, void *api )
 #endif
 
     h->thread[0] = h;
+    int64_t thread_state_alloc_size = sizeof(x264_t);
     for( int i = 1; i < h->param.i_threads + !!h->param.i_sync_lookahead; i++ )
-        CHECKED_MALLOC( h->thread[i], sizeof(x264_t) );
+        CHECKED_MALLOC( h->thread[i], thread_state_alloc_size );
     if( h->param.i_lookahead_threads > 1 )
         for( int i = 0; i < h->param.i_lookahead_threads; i++ )
         {
-            CHECKED_MALLOC( h->lookahead_thread[i], sizeof(x264_t) );
+            CHECKED_MALLOC( h->lookahead_thread[i], thread_state_alloc_size );
             *h->lookahead_thread[i] = *h;
         }
     *h->reconfig_h = *h;
@@ -2087,9 +2103,11 @@ x264_t *x264_encoder_open( x264_param_t *param, void *api )
         else
             h->thread[i]->fdec = h->thread[0]->fdec;
 
-        CHECKED_MALLOC( h->thread[i]->out.p_bitstream, h->out.i_bitstream );
+        int64_t thread_bitstream_alloc_size = h->out.i_bitstream;
+        CHECKED_MALLOC( h->thread[i]->out.p_bitstream, thread_bitstream_alloc_size );
         /* Start each thread with room for init_nal_count NAL units; it'll realloc later if needed. */
-        CHECKED_MALLOC( h->thread[i]->out.nal, init_nal_size );
+        int64_t thread_nal_alloc_size = (int64_t)init_nal_size;
+        CHECKED_MALLOC( h->thread[i]->out.nal, thread_nal_alloc_size );
         h->thread[i]->out.i_nals_allocated = init_nal_count;
 
         if( allocate_threadlocal_data && x264_macroblock_cache_allocate( h->thread[i] ) < 0 )
@@ -2321,7 +2339,8 @@ static int nal_check_buffer( x264_t *h )
         if( checked_int_mul( h->out.i_nals_allocated, 2, &new_count ) ||
             checked_array_alloc_size( h, "output NAL", new_count, sizeof(x264_nal_t), &new_size ) )
             return -1;
-        x264_nal_t *new_out = x264_malloc( new_size );
+        int64_t nal_alloc_alloc_size = (int64_t)new_size;
+        x264_nal_t *new_out = x264_malloc( nal_alloc_alloc_size );
         if( !new_out )
             return -1;
         memcpy( new_out, h->out.nal, sizeof(x264_nal_t) * (h->out.i_nals_allocated) );
@@ -2363,11 +2382,16 @@ static int check_encapsulated_buffer( x264_t *h, x264_t *h0, int start,
         if( necessary_size > INT_MAX / 2 )
             return -1;
         necessary_size *= 2;
-        uint8_t *buf = x264_malloc( necessary_size );
+        int64_t nal_buffer_alloc_size = necessary_size;
+        int nal_buffer_size = (int)nal_buffer_alloc_size;
+        uint8_t *buf = x264_malloc( nal_buffer_alloc_size );
         if( !buf )
             return -1;
         if( previous_nal_size )
-            memcpy( buf, h0->nal_buffer, previous_nal_size );
+        {
+            size_t previous_nal_bytes = (size_t)previous_nal_size;
+            memcpy( buf, h0->nal_buffer, previous_nal_bytes );
+        }
 
         intptr_t delta = buf - h0->nal_buffer;
         for( int i = 0; i < start; i++ )
@@ -2375,7 +2399,7 @@ static int check_encapsulated_buffer( x264_t *h, x264_t *h0, int start,
 
         x264_free( h0->nal_buffer );
         h0->nal_buffer = buf;
-        h0->nal_buffer_size = necessary_size;
+        h0->nal_buffer_size = nal_buffer_size;
     }
 
     return 0;
@@ -4292,7 +4316,7 @@ static int encoder_frame_end( x264_t *h, x264_t *thread_current,
                               x264_nal_t **pp_nal, int *pi_nal,
                               x264_picture_t *pic_out )
 {
-    char psz_message[80];
+    char psz_message[80] = "";
 
     if( !h->param.b_sliced_threads && h->b_thread_active )
     {
@@ -4518,10 +4542,12 @@ static int encoder_frame_end( x264_t *h, x264_t *thread_current,
     {
         pic_out->prop.f_ssim = h->stat.frame.f_ssim / h->stat.frame.i_ssim_cnt;
         h->stat.f_ssim_mean_y[h->sh.i_type] += pic_out->prop.f_ssim * dur;
-        int msg_len = strlen(psz_message);
-        snprintf( psz_message + msg_len, 80 - msg_len, " SSIM Y:%.5f", pic_out->prop.f_ssim );
+        size_t msg_len = strlen( psz_message );
+        if( msg_len >= sizeof(psz_message) )
+            msg_len = sizeof(psz_message) - 1;
+        snprintf( psz_message + msg_len, sizeof(psz_message) - msg_len, " SSIM Y:%.5f", pic_out->prop.f_ssim );
     }
-    psz_message[79] = '\0';
+    psz_message[sizeof(psz_message) - 1] = '\0';
 
     x264_log( h, X264_LOG_DEBUG,
               "frame=%4d QP=%.2f NAL=%d Slice:%c Poc:%-3d I:%-4d P:%-4d SKIP:%-4d size=%d bytes%s\n",
@@ -4726,7 +4752,10 @@ void    x264_encoder_close  ( x264_t *h )
         list_count[2] += h->stat.i_mb_partition[SLICE_TYPE_B][D_BI_8x8];
         i_mb_count[B_DIRECT] += (h->stat.i_mb_partition[SLICE_TYPE_B][D_DIRECT_8x8]+2)/4;
         i_mb_list_count = (list_count[0] + list_count[1] + list_count[2]) / 100.0;
-        char *p = buf + strlen(buf);
+        size_t buf_len = strlen( buf );
+        if( buf_len >= sizeof(buf) )
+            buf_len = sizeof(buf) - 1;
+        char *p = buf + buf_len;
         x264_buf_append( &p, buf + sizeof(buf), "  B16..8: %4.1f%% %4.1f%% %4.1f%%  direct:%4.1f%%  skip:%4.1f%%",
                          i_mb_size[PIXEL_16x16] / (i_count*4),
                          (i_mb_size[PIXEL_16x8] + i_mb_size[PIXEL_8x16]) / (i_count*4),

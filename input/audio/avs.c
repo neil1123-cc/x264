@@ -536,7 +536,8 @@ static struct audio_packet_t *get_samples( hnd_t handle, int64_t first_sample, i
     if( size > h->bufsize )
         return NULL;
 
-    audio_packet_t *pkt = calloc( 1, sizeof( audio_packet_t ) );
+    int64_t packet_alloc_size = sizeof( audio_packet_t );
+    audio_packet_t *pkt = calloc( 1, packet_alloc_size );
     if( !pkt )
         return NULL;
     pkt->info           = h->info;

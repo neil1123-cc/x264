@@ -1078,9 +1078,10 @@ static int macroblock_tree_rescale_init( x264_t *h, x264_ratecontrol_t *rc )
     size_t qp_buffer_size;
     if( ratecontrol_mul_size( &qp_buffer_size, (size_t)rc->mbtree.src_mb_count, sizeof(uint16_t) ) )
         goto fail;
-    CHECKED_MALLOC( rc->mbtree.qp_buffer[0], (int64_t)qp_buffer_size );
+    int64_t qp_buffer_alloc_size = (int64_t)qp_buffer_size;
+    CHECKED_MALLOC( rc->mbtree.qp_buffer[0], qp_buffer_alloc_size );
     if( h->param.i_bframe_pyramid && h->param.rc.b_stat_read )
-        CHECKED_MALLOC( rc->mbtree.qp_buffer[1], (int64_t)qp_buffer_size );
+        CHECKED_MALLOC( rc->mbtree.qp_buffer[1], qp_buffer_alloc_size );
     rc->mbtree.qpbuf_pos = -1;
 
     /* No rescaling to do */
@@ -1097,8 +1098,10 @@ static int macroblock_tree_rescale_init( x264_t *h, x264_ratecontrol_t *rc )
         ratecontrol_mul_size( &scale_buffer1_size, (size_t)dstdimi[0], (size_t)srcdimi[1] ) ||
         ratecontrol_mul_size( &scale_buffer1_size, scale_buffer1_size, sizeof(float) ) )
         goto fail;
-    CHECKED_MALLOC( rc->mbtree.scale_buffer[0], (int64_t)scale_buffer0_size );
-    CHECKED_MALLOC( rc->mbtree.scale_buffer[1], (int64_t)scale_buffer1_size );
+    int64_t scale_buffer0_alloc_size = (int64_t)scale_buffer0_size;
+    int64_t scale_buffer1_alloc_size = (int64_t)scale_buffer1_size;
+    CHECKED_MALLOC( rc->mbtree.scale_buffer[0], scale_buffer0_alloc_size );
+    CHECKED_MALLOC( rc->mbtree.scale_buffer[1], scale_buffer1_alloc_size );
 
     /* Allocate and calculate resize filter parameters and coefficients */
     for( int i = 0; i < 2; i++ )
@@ -1114,8 +1117,10 @@ static int macroblock_tree_rescale_init( x264_t *h, x264_ratecontrol_t *rc )
             ratecontrol_mul_size( &coeffs_size, coeffs_size, sizeof(float) ) ||
             ratecontrol_mul_size( &pos_size, (size_t)dstdimi[i], sizeof(int) ) )
             goto fail;
-        CHECKED_MALLOC( rc->mbtree.coeffs[i], (int64_t)coeffs_size );
-        CHECKED_MALLOC( rc->mbtree.pos[i], (int64_t)pos_size );
+        int64_t coeffs_alloc_size = (int64_t)coeffs_size;
+        int64_t pos_alloc_size = (int64_t)pos_size;
+        CHECKED_MALLOC( rc->mbtree.coeffs[i], coeffs_alloc_size );
+        CHECKED_MALLOC( rc->mbtree.pos[i], pos_alloc_size );
 
         /* Initialize filter coefficients */
         double inc = srcdim[i] / dstdim[i];
@@ -1337,7 +1342,8 @@ static char *strcat_filename( const char *input, const char *suffix )
     size_t suffix_len = strlen( suffix );
     if( input_len > SIZE_MAX - suffix_len - 1 || input_len > (size_t)INT64_MAX - suffix_len - 1 )
         return NULL;
-    char *output = x264_malloc( (int64_t)(input_len + suffix_len + 1) );
+    int64_t output_alloc_size = (int64_t)(input_len + suffix_len + 1);
+    char *output = x264_malloc( output_alloc_size );
     if( !output )
         return NULL;
     memcpy( output, input, input_len );
@@ -1472,7 +1478,8 @@ int x264_ratecontrol_new( x264_t *h )
     size_t rc_size;
     if( ratecontrol_mul_size( &rc_size, (size_t)h->param.i_threads, sizeof(x264_ratecontrol_t) ) )
         goto fail;
-    CHECKED_MALLOC( h->rc, (int64_t)rc_size );
+    int64_t rc_alloc_size = (int64_t)rc_size;
+    CHECKED_MALLOC( h->rc, rc_alloc_size );
     memset( h->rc, 0, rc_size );
     rc = h->rc;
 
@@ -1558,8 +1565,10 @@ int x264_ratecontrol_new( x264_t *h )
     if( ratecontrol_mul_size( &pred_size, (size_t)5, sizeof(predictor_t) ) ||
         ratecontrol_mul_size( &pred_size, pred_size, (size_t)num_preds ) )
         goto fail;
-    CHECKED_MALLOC( rc->pred, (int64_t)pred_size );
-    CHECKED_MALLOC( rc->pred_b_from_p, sizeof(predictor_t) );
+    int64_t pred_alloc_size = (int64_t)pred_size;
+    CHECKED_MALLOC( rc->pred, pred_alloc_size );
+    int64_t pred_b_from_p_alloc_size = sizeof(predictor_t);
+    CHECKED_MALLOC( rc->pred_b_from_p, pred_b_from_p_alloc_size );
     static const float pred_coeff_table[] = { 1.0, 1.0, 1.5 };
     X264_STATIC_ASSERT( ARRAY_ELEMS(pred_coeff_table) == X264_RC_PRED_COEFFS, "ratecontrol predictor coefficient table size must match slice type domain" );
     for( int i = 0; i < X264_RC_PRED_COEFFS; i++ )
@@ -1768,9 +1777,11 @@ int x264_ratecontrol_new( x264_t *h )
         if( ratecontrol_mul_size( &entry_size, (size_t)rc->num_entries, sizeof(ratecontrol_entry_t) ) ||
             ratecontrol_mul_size( &entry_out_size, (size_t)rc->num_entries, sizeof(ratecontrol_entry_t*) ) )
             goto fail;
-        CHECKED_MALLOC( rc->entry, (int64_t)entry_size );
+        int64_t entry_alloc_size = (int64_t)entry_size;
+        int64_t entry_out_alloc_size = (int64_t)entry_out_size;
+        CHECKED_MALLOC( rc->entry, entry_alloc_size );
         memset( rc->entry, 0, entry_size );
-        CHECKED_MALLOC( rc->entry_out, (int64_t)entry_out_size );
+        CHECKED_MALLOC( rc->entry_out, entry_out_alloc_size );
 
         /* init all to skipped p frames */
         for( int i = 0; i < rc->num_entries; i++ )
@@ -2073,7 +2084,8 @@ static int parse_zone( x264_t *h, x264_zone_t *z, char *p )
         x264_log( h, X264_LOG_ERROR, "invalid zone: \"%s\"\n", p );
         return -1;
     }
-    CHECKED_MALLOC( parsed.param, sizeof(x264_param_t) );
+    int64_t zone_param_alloc_size = sizeof(x264_param_t);
+    CHECKED_MALLOC( parsed.param, zone_param_alloc_size );
     memcpy( parsed.param, &h->param, sizeof(x264_param_t) );
     parsed.param->opaque = NULL;
     parsed.param->param_free = x264_free;
@@ -2152,7 +2164,8 @@ static int parse_zones( x264_t *h )
             x264_log( h, X264_LOG_ERROR, "zones string too long\n" );
             goto fail;
         }
-        CHECKED_MALLOC( psz_zones, (int64_t)(psz_zones_len + 1) );
+        int64_t psz_zones_alloc_size = (int64_t)(psz_zones_len + 1);
+        CHECKED_MALLOC( psz_zones, psz_zones_alloc_size );
         memcpy( psz_zones, h->param.rc.psz_zones, psz_zones_len + 1 );
         size_t zone_count = 1;
         for( p = psz_zones; *p; p++ )
@@ -2175,7 +2188,8 @@ static int parse_zones( x264_t *h )
             x264_log( h, X264_LOG_ERROR, "too many zones\n" );
             goto fail;
         }
-        CHECKED_MALLOC( string_zones, (int64_t)string_zones_size );
+        int64_t string_zones_alloc_size = (int64_t)string_zones_size;
+        CHECKED_MALLOC( string_zones, string_zones_alloc_size );
         memset( string_zones, 0, string_zones_size );
         p = psz_zones;
         for( int i = 0; i < i_zones; i++ )
@@ -2229,7 +2243,8 @@ static int parse_zones( x264_t *h )
             x264_log( h, X264_LOG_ERROR, "too many zones\n" );
             goto fail;
         }
-        CHECKED_MALLOC( ratecontrol_zones, (int64_t)ratecontrol_zones_size );
+        int64_t ratecontrol_zones_alloc_size = (int64_t)ratecontrol_zones_size;
+        CHECKED_MALLOC( ratecontrol_zones, ratecontrol_zones_alloc_size );
         memset( ratecontrol_zones, 0, ratecontrol_zones_size );
         memcpy( ratecontrol_zones+1, zones, (size_t)i_zones * sizeof(x264_zone_t) );
 
@@ -2238,7 +2253,8 @@ static int parse_zones( x264_t *h )
         ratecontrol_zones[0].i_end = INT_MAX;
         ratecontrol_zones[0].b_force_qp = 0;
         ratecontrol_zones[0].f_bitrate_factor = 1;
-        CHECKED_MALLOC( ratecontrol_zones[0].param, sizeof(x264_param_t) );
+        int64_t default_zone_param_alloc_size = sizeof(x264_param_t);
+        CHECKED_MALLOC( ratecontrol_zones[0].param, default_zone_param_alloc_size );
         memcpy( ratecontrol_zones[0].param, &h->param, sizeof(x264_param_t) );
         ratecontrol_zones[0].param->opaque = NULL;
         for( int i = 1; i < ratecontrol_i_zones; i++ )
@@ -3930,7 +3946,8 @@ static int vbv_pass2( x264_t *h, double all_available_bits )
     int adj_min, adj_max;
     if( ratecontrol_mul_size( &fills_size, (size_t)rcc->num_entries + 1, sizeof(double) ) )
         goto fail;
-    CHECKED_MALLOC( fills, (int64_t)fills_size );
+    int64_t fills_alloc_size = (int64_t)fills_size;
+    CHECKED_MALLOC( fills, fills_alloc_size );
 
     fills++;
 
@@ -4050,9 +4067,10 @@ static int init_pass2( x264_t *h )
         rce->blurred_complexity = (float)(cplx_sum / weight_sum);
     }
 
-    CHECKED_MALLOC( qscale, (int64_t)qscale_size );
+    int64_t qscale_alloc_size = (int64_t)qscale_size;
+    CHECKED_MALLOC( qscale, qscale_alloc_size );
     if( filter_size > 1 )
-        CHECKED_MALLOC( blurred_qscale, (int64_t)qscale_size );
+        CHECKED_MALLOC( blurred_qscale, qscale_alloc_size );
     else
         blurred_qscale = qscale;
 

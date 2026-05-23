@@ -29,12 +29,14 @@ float **x264_af_get_buffer( unsigned channels, unsigned samplecount )
     if( x264_af_mul_size( channels, sizeof(float*), &channels_size ) ||
         x264_af_mul_size( samplecount, sizeof(float), &sample_size ) )
         return NULL;
-    float **samples = malloc( channels_size );
+    int64_t channels_alloc_size = (int64_t)channels_size;
+    float **samples = malloc( channels_alloc_size );
     if( !samples && channels_size )
         return NULL;
     for( unsigned i = 0; i < channels; i++ )
     {
-        samples[i] = sample_size ? malloc( sample_size ) : NULL;
+        int64_t sample_alloc_size = (int64_t)sample_size;
+        samples[i] = sample_size ? malloc( sample_alloc_size ) : NULL;
         if( !samples[i] && sample_size )
         {
             x264_af_free_buffer( samples, i );
@@ -131,6 +133,7 @@ int x264_af_cat_buffer( float **buf, unsigned bufsamples, float **in, unsigned i
         return -1;
     if( bufsamples > UINT_MAX - insamples )
         return -1;
+    unsigned total_samples = bufsamples + insamples;
     if( channels && !buf )
         return -1;
     if( insamples )
@@ -141,7 +144,7 @@ int x264_af_cat_buffer( float **buf, unsigned bufsamples, float **in, unsigned i
             if( !in[c] )
                 return -1;
     }
-    if( x264_af_resize_buffer( buf, channels, bufsamples, bufsamples + insamples ) < 0 )
+    if( x264_af_resize_buffer( buf, channels, bufsamples, total_samples ) < 0 )
         return -1;
     for( unsigned c = 0; c < channels; c++ )
     {
@@ -194,7 +197,8 @@ float *x264_af_interleave ( float **in, unsigned channels, unsigned samplecount 
     for( unsigned c = 0; c < channels; c++ )
         if( !in[c] )
             return NULL;
-    float *inter = size ? malloc( size ) : NULL;
+    int64_t inter_alloc_size = (int64_t)size;
+    float *inter = size ? malloc( inter_alloc_size ) : NULL;
     if( !inter )
         return NULL;
     for( unsigned c = 0; c < channels; c++ )
@@ -348,7 +352,8 @@ uint8_t *x264_af_convert( enum SampleFmt outfmt, uint8_t *in, enum SampleFmt fmt
         return NULL;
     if( !in )
         return NULL;
-    uint8_t *out = malloc( sz );
+    int64_t convert_alloc_size = (int64_t)sz;
+    uint8_t *out = malloc( convert_alloc_size );
     if( !out )
         return NULL;
 

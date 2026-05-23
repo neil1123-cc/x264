@@ -106,7 +106,7 @@ void x264_sei_write( bs_t *s, uint8_t *payload, int payload_size, int payload_ty
 
 static int sei_version_add_len( int *length, size_t add )
 {
-    if( add > (size_t)(INT_MAX - *length) )
+    if( !length || *length < 0 || add > (size_t)(INT_MAX - *length) )
         return -1;
     int add_length = (int)add;
     *length += add_length;
@@ -115,6 +115,8 @@ static int sei_version_add_len( int *length, size_t add )
 
 static int sei_version_add_strlen( int *length, const char *str, size_t extra )
 {
+    if( !str )
+        return -1;
     size_t len = strlen( str );
     if( len > SIZE_MAX - extra )
         return -1;
@@ -684,7 +686,8 @@ int x264_sei_version_write( x264_t *h, bs_t *s )
             (!h->param.psz_opts[3] || sei_version_add_strlen( &length, h->param.psz_opts[3], 1 )) )
             goto fail;
     }
-    CHECKED_MALLOC( payload, length );
+    int64_t payload_alloc_size = length;
+    CHECKED_MALLOC( payload, payload_alloc_size );
 
     memcpy( payload, uuid, X264_UUID_SIZE );
     if( !h->param.i_opts_write )

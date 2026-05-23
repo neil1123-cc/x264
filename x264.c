@@ -411,7 +411,8 @@ static int get_argv_utf8( int *argc_ptr, char ***argv_ptr )
                 size += (size_t)bytes;
             }
 
-        char **argv = valid ? malloc( size ) : NULL;
+        int64_t argv_alloc_size = (int64_t)size;
+        char **argv = valid ? malloc( argv_alloc_size ) : NULL;
         if( argv )
         {
             for( int i = 0; i < argc; i++ )

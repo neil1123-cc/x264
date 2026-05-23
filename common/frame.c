@@ -111,7 +111,8 @@ static x264_frame_t *frame_new( x264_t *h, int b_fdec )
     int disalign = (1<<10) / SIZEOF_PIXEL;
 #endif
 
-    CHECKED_MALLOCZERO( frame, sizeof(x264_frame_t) );
+    int64_t frame_alloc_size = sizeof(x264_frame_t);
+    CHECKED_MALLOCZERO( frame, frame_alloc_size );
     PREALLOC_INIT
 
     /* allocate frame data (+64 for extra data for me) */
@@ -129,9 +130,10 @@ static x264_frame_t *frame_new( x264_t *h, int b_fdec )
         goto fail;
     int frame_width = (int)width;
     int frame_lines = (int)lines;
+    int stride_width_int = (int)stride_width;
     i_width  = frame_width;
     i_lines  = frame_lines;
-    if( align_stride( (int)stride_width, align, disalign, &i_stride ) )
+    if( align_stride( stride_width_int, align, disalign, &i_stride ) )
         goto fail;
 
     if( i_csp == X264_CSP_NV12 || i_csp == X264_CSP_NV16 )
@@ -175,7 +177,10 @@ static x264_frame_t *frame_new( x264_t *h, int b_fdec )
 
     for( int i = 0; i < h->param.i_bframe + 2; i++ )
         for( int j = 0; j < h->param.i_bframe + 2; j++ )
-            PREALLOC( frame->i_row_satds[i][j], row_int_size );
+        {
+            int64_t i_row_satds_alloc_size = row_int_size;
+            PREALLOC( frame->i_row_satds[i][j], i_row_satds_alloc_size );
+        }
 
     frame->i_poc = -1;
     frame->i_type = X264_TYPE_AUTO;
@@ -206,9 +211,13 @@ static x264_frame_t *frame_new( x264_t *h, int b_fdec )
             frame_size_mul( frame->i_stride[1], chroma_padded_lines, &chroma_plane_size ) ||
             frame_size_mul( chroma_plane_size, SIZEOF_PIXEL, &chroma_buffer_size ) )
             goto fail;
-        PREALLOC( frame->buffer[1], chroma_buffer_size );
+        int64_t buffer1_alloc_size = chroma_buffer_size;
+        PREALLOC( frame->buffer[1], buffer1_alloc_size );
         if( PARAM_INTERLACED )
-            PREALLOC( frame->buffer_fld[1], chroma_buffer_size );
+        {
+            int64_t buffer_fld1_alloc_size = chroma_buffer_size;
+            PREALLOC( frame->buffer_fld[1], buffer_fld1_alloc_size );
+        }
     }
 
     /* all 4 luma planes allocated together, since the cacheline split code
@@ -230,33 +239,47 @@ static x264_frame_t *frame_new( x264_t *h, int b_fdec )
             goto fail;
 
         /* FIXME: Don't allocate both buffers in non-adaptive MBAFF. */
-        PREALLOC( frame->buffer[p], luma_buffer_size );
+        int64_t buffer_alloc_size = luma_buffer_size;
+        PREALLOC( frame->buffer[p], buffer_alloc_size );
         if( PARAM_INTERLACED )
-            PREALLOC( frame->buffer_fld[p], luma_buffer_size );
+        {
+            int64_t buffer_fld_alloc_size = luma_buffer_size;
+            PREALLOC( frame->buffer_fld[p], buffer_fld_alloc_size );
+        }
     }
 
     frame->b_duplicate = 0;
 
     if( b_fdec ) /* fdec frame */
     {
-        PREALLOC( frame->mb_type, (int64_t)i_mb_count * (int64_t)sizeof(int8_t) );
-        PREALLOC( frame->mb_partition, (int64_t)i_mb_count * (int64_t)sizeof(uint8_t) );
-        PREALLOC( frame->mv[0], 2*16 * (int64_t)i_mb_count * (int64_t)sizeof(int16_t) );
-        PREALLOC( frame->mv16x16, 2 * ((int64_t)i_mb_count + 1) * (int64_t)sizeof(int16_t) );
-        PREALLOC( frame->ref[0], 4 * (int64_t)i_mb_count * (int64_t)sizeof(int8_t) );
+        int64_t mb_type_alloc_size = (int64_t)i_mb_count * sizeof(int8_t);
+        int64_t mb_partition_alloc_size = (int64_t)i_mb_count * sizeof(uint8_t);
+        int64_t mv0_alloc_size = 2*16 * (int64_t)i_mb_count * sizeof(int16_t);
+        int64_t mv16x16_alloc_size = 2 * ((int64_t)i_mb_count + 1) * sizeof(int16_t);
+        int64_t ref0_alloc_size = 4 * (int64_t)i_mb_count * sizeof(int8_t);
+        PREALLOC( frame->mb_type, mb_type_alloc_size );
+        PREALLOC( frame->mb_partition, mb_partition_alloc_size );
+        PREALLOC( frame->mv[0], mv0_alloc_size );
+        PREALLOC( frame->mv16x16, mv16x16_alloc_size );
+        PREALLOC( frame->ref[0], ref0_alloc_size );
         if( h->param.i_bframe )
         {
-            PREALLOC( frame->mv[1], 2*16 * (int64_t)i_mb_count * (int64_t)sizeof(int16_t) );
-            PREALLOC( frame->ref[1], 4 * (int64_t)i_mb_count * (int64_t)sizeof(int8_t) );
+            int64_t mv1_alloc_size = 2*16 * (int64_t)i_mb_count * sizeof(int16_t);
+            int64_t ref1_alloc_size = 4 * (int64_t)i_mb_count * sizeof(int8_t);
+            PREALLOC( frame->mv[1], mv1_alloc_size );
+            PREALLOC( frame->ref[1], ref1_alloc_size );
         }
         else
         {
             frame->mv[1]  = NULL;
             frame->ref[1] = NULL;
         }
-        PREALLOC( frame->i_row_bits, row_int_size );
-        PREALLOC( frame->f_row_qp, row_float_size );
-        PREALLOC( frame->f_row_qscale, row_float_size );
+        int64_t i_row_bits_alloc_size = row_int_size;
+        int64_t f_row_qp_alloc_size = row_float_size;
+        int64_t f_row_qscale_alloc_size = row_float_size;
+        PREALLOC( frame->i_row_bits, i_row_bits_alloc_size );
+        PREALLOC( frame->f_row_qp, f_row_qp_alloc_size );
+        PREALLOC( frame->f_row_qscale, f_row_qscale_alloc_size );
         if( h->param.analyse.i_me_method >= X264_ME_ESA )
         {
             int64_t integral_lines;
@@ -265,12 +288,19 @@ static x264_frame_t *frame_new( x264_t *h, int b_fdec )
                 frame_size_mul( frame->i_stride[0], integral_lines, &integral_size ) ||
                 frame_size_mul( integral_size, sizeof(uint16_t) << h->frames.b_have_sub8x8_esa, &integral_size ) )
                 goto fail;
-            PREALLOC( frame->buffer[3], integral_size );
+            int64_t buffer3_alloc_size = integral_size;
+            PREALLOC( frame->buffer[3], buffer3_alloc_size );
         }
         if( PARAM_INTERLACED )
-            PREALLOC( frame->field, (int64_t)i_mb_count * (int64_t)sizeof(uint8_t) );
+        {
+            int64_t field_alloc_size = (int64_t)i_mb_count * sizeof(uint8_t);
+            PREALLOC( frame->field, field_alloc_size );
+        }
         if( h->param.analyse.b_mb_info )
-            PREALLOC( frame->effective_qp, (int64_t)i_mb_count * (int64_t)sizeof(uint8_t) );
+        {
+            int64_t effective_qp_alloc_size = (int64_t)i_mb_count * sizeof(uint8_t);
+            PREALLOC( frame->effective_qp, effective_qp_alloc_size );
+        }
     }
     else /* fenc frame */
     {
@@ -288,28 +318,41 @@ static x264_frame_t *frame_new( x264_t *h, int b_fdec )
 
             PREALLOC( frame->buffer_lowres, lowres_buffer_size );
 
+            int64_t lowres_mvs_alloc_size = 2 * (int64_t)i_mb_count * sizeof(int16_t);
+            int64_t lowres_mv_costs_alloc_size = (int64_t)i_mb_count * sizeof(int);
+            int64_t i_propagate_cost_alloc_size = (int64_t)i_mb_count * sizeof(uint16_t);
             for( int j = 0; j <= !!h->param.i_bframe; j++ )
                 for( int i = 0; i <= h->param.i_bframe; i++ )
                 {
-                    PREALLOC( frame->lowres_mvs[j][i], 2 * (int64_t)i_mb_count * (int64_t)sizeof(int16_t) );
-                    PREALLOC( frame->lowres_mv_costs[j][i], (int64_t)i_mb_count * (int64_t)sizeof(int) );
+                    PREALLOC( frame->lowres_mvs[j][i], lowres_mvs_alloc_size );
+                    PREALLOC( frame->lowres_mv_costs[j][i], lowres_mv_costs_alloc_size );
                 }
-            PREALLOC( frame->i_propagate_cost, (int64_t)i_mb_count * (int64_t)sizeof(uint16_t) );
+            PREALLOC( frame->i_propagate_cost, i_propagate_cost_alloc_size );
             for( int j = 0; j <= h->param.i_bframe+1; j++ )
                 for( int i = 0; i <= h->param.i_bframe+1; i++ )
-                    PREALLOC( frame->lowres_costs[j][i], (int64_t)i_mb_count * (int64_t)sizeof(uint16_t) );
+                {
+                    int64_t lowres_costs_alloc_size = (int64_t)i_mb_count * sizeof(uint16_t);
+                    PREALLOC( frame->lowres_costs[j][i], lowres_costs_alloc_size );
+                }
         }
         if( h->param.rc.i_aq_mode )
         {
-            PREALLOC( frame->f_qp_offset, (int64_t)i_mb_count * (int64_t)sizeof(float) );
-            PREALLOC( frame->f_qp_offset_aq, (int64_t)i_mb_count * (int64_t)sizeof(float) );
+            int64_t f_qp_offset_alloc_size = (int64_t)i_mb_count * sizeof(float);
+            int64_t f_qp_offset_aq_alloc_size = (int64_t)i_mb_count * sizeof(float);
+            PREALLOC( frame->f_qp_offset, f_qp_offset_alloc_size );
+            PREALLOC( frame->f_qp_offset_aq, f_qp_offset_aq_alloc_size );
             if( h->frames.b_have_lowres )
-                PREALLOC( frame->i_inv_qscale_factor, (int64_t)i_mb_count * (int64_t)sizeof(uint16_t) );
+            {
+                int64_t i_inv_qscale_factor_alloc_size = (int64_t)i_mb_count * sizeof(uint16_t);
+                PREALLOC( frame->i_inv_qscale_factor, i_inv_qscale_factor_alloc_size );
+            }
         }
         if( h->param.rc.i_aq3_mode )
         {
-            PREALLOC( frame->f_qp_offset3, (int64_t)i_mb_count * (int64_t)sizeof(float) );
-            PREALLOC( frame->f_qp_offset_aq3, (int64_t)i_mb_count * (int64_t)sizeof(float) );
+            int64_t f_qp_offset3_alloc_size = (int64_t)i_mb_count * sizeof(float);
+            int64_t f_qp_offset_aq3_alloc_size = (int64_t)i_mb_count * sizeof(float);
+            PREALLOC( frame->f_qp_offset3, f_qp_offset3_alloc_size );
+            PREALLOC( frame->f_qp_offset_aq3, f_qp_offset_aq3_alloc_size );
         }
     }
 
@@ -905,10 +948,11 @@ void x264_frame_push_blank_unused( x264_t *h, x264_frame_t *frame )
 x264_frame_t *x264_frame_pop_blank_unused( x264_t *h )
 {
     x264_frame_t *frame;
+    int64_t frame_alloc_size = sizeof(x264_frame_t);
     if( h->frames.blank_unused[0] )
         frame = x264_frame_pop( h->frames.blank_unused );
     else
-        frame = x264_malloc( sizeof(x264_frame_t) );
+        frame = x264_malloc( frame_alloc_size );
     if( !frame )
         return NULL;
     frame->b_duplicate = 1;
@@ -948,9 +992,10 @@ int x264_sync_frame_list_init( x264_sync_frame_list_t *slist, int max_size )
 {
     if( max_size < 0 )
         return -1;
+    int64_t frame_list_alloc_size = ((int64_t)max_size + 1) * sizeof(x264_frame_t*);
     slist->i_max_size = max_size;
     slist->i_size = 0;
-    CHECKED_MALLOCZERO( slist->list, (max_size+1) * sizeof(x264_frame_t*) );
+    CHECKED_MALLOCZERO( slist->list, frame_list_alloc_size );
     if( x264_pthread_mutex_init( &slist->mutex, NULL ) ||
         x264_pthread_cond_init( &slist->cv_fill, NULL ) ||
         x264_pthread_cond_init( &slist->cv_empty, NULL ) )

@@ -77,7 +77,8 @@ REALIGN_STACK x264_t *x264_encoder_open( x264_param_t *param )
 {
     if( !param )
         return NULL;
-    x264_api_t *api = calloc( 1, sizeof( x264_api_t ) );
+    int64_t api_alloc_size = sizeof( x264_api_t );
+    x264_api_t *api = calloc( 1, api_alloc_size );
     if( !api )
         return NULL;
 

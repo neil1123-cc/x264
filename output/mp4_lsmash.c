@@ -611,7 +611,8 @@ static int audio_init( hnd_t handle, cli_output_opt_t *opt, hnd_t filters, char 
     mp4_hnd_t *p_mp4 = handle;
     if( !p_mp4 )
         goto error;
-    mp4_audio_hnd_t *p_audio = p_mp4->audio_hnd = calloc( 1, sizeof( mp4_audio_hnd_t ) );
+    int64_t audio_alloc_size = sizeof( mp4_audio_hnd_t );
+    mp4_audio_hnd_t *p_audio = p_mp4->audio_hnd = calloc( 1, audio_alloc_size );
     if( !p_audio )
     {
         MP4_LOG_ERROR( "failed to allocate memory for audio muxing information.\n" );
@@ -1293,7 +1294,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
         MP4_FAIL_IF_ERR( fclose( fh ), "failed to close output probe file `%s'.\n", psz_filename );
     }
 
-    mp4_hnd_t *p_mp4 = calloc( 1, sizeof(mp4_hnd_t) );
+    int64_t mp4_alloc_size = sizeof(mp4_hnd_t);
+    mp4_hnd_t *p_mp4 = calloc( 1, mp4_alloc_size );
     MP4_FAIL_IF_ERR( !p_mp4, "failed to allocate memory for muxer information.\n" );
 
     p_mp4->b_dts_compress = opt->use_dts_compress;
@@ -1352,7 +1354,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
 #if HAVE_AUDIO
     MP4_FAIL_IF_ERR_EX( audio_init( p_mp4, opt, audio_filters, audio_enc, audio_params ) < 0, "unable to init audio output.\n" );
 #else
-    mp4_audio_hnd_t *p_audio = p_mp4->audio_hnd = (mp4_audio_hnd_t *)malloc( sizeof(mp4_audio_hnd_t) );
+    int64_t audio_alloc_size = sizeof(mp4_audio_hnd_t);
+    mp4_audio_hnd_t *p_audio = p_mp4->audio_hnd = (mp4_audio_hnd_t *)malloc( audio_alloc_size );
     MP4_FAIL_IF_ERR_EX( !p_audio, "failed to allocate memory for audio muxing information.\n" );
     memset( p_audio, 0, sizeof(mp4_audio_hnd_t) );
     p_audio->p_importer = mp4sys_importer_open( "x264_audio_test.adts", "auto" );
@@ -1657,7 +1660,8 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     uint8_t *sei_buffer = NULL;
     if( sei_size )
     {
-        sei_buffer = malloc( sei_size );
+        int64_t sei_alloc_size = sei_size;
+        sei_buffer = malloc( sei_alloc_size );
         MP4_FAIL_IF_ERR( !sei_buffer,
                          "failed to allocate sei transition buffer.\n" );
         memcpy( sei_buffer, sei, sei_size );

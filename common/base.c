@@ -166,7 +166,8 @@ void *x264_malloc( int64_t i_size )
 #endif
         align_buf = memalign( NATIVE_ALIGN, i_size );
 #else
-    uint8_t *buf = malloc( i_size + (NATIVE_ALIGN-1) + sizeof(void **) );
+    int64_t align_alloc_size = i_size + (NATIVE_ALIGN-1) + sizeof(void **);
+    uint8_t *buf = malloc( align_alloc_size );
     if( buf )
     {
         align_buf = buf + (NATIVE_ALIGN-1) + sizeof(void **);
@@ -219,11 +220,13 @@ char *x264_slurp_file( const char *filename )
     if( b_error )
         goto error;
 
-    buf = x264_malloc( i_size + 2 );
+    int64_t slurp_alloc_size = i_size + 2;
+    buf = x264_malloc( slurp_alloc_size );
     if( !buf )
         goto error;
 
-    b_error |= fread( buf, 1, i_size, fh ) != (uint64_t)i_size;
+    size_t file_size = (size_t)i_size;
+    b_error |= fread( buf, 1, file_size, fh ) != file_size;
     b_error |= fclose( fh );
     if( b_error )
     {
@@ -231,9 +234,9 @@ char *x264_slurp_file( const char *filename )
         return NULL;
     }
 
-    if( buf[i_size-1] != '\n' )
-        buf[i_size++] = '\n';
-    buf[i_size] = '\0';
+    if( buf[file_size-1] != '\n' )
+        buf[file_size++] = '\n';
+    buf[file_size] = '\0';
 
     return buf;
 error:
@@ -261,7 +264,8 @@ char *x264_param_strdup( x264_param_t *param, const char *src )
     strdup_buffer *buf = param->opaque;
     if( !buf )
     {
-        buf = malloc( BUFFER_OFFSET + BUFFER_DEFAULT_SIZE * sizeof(void *) );
+        int64_t strdup_buffer_alloc_size = BUFFER_OFFSET + BUFFER_DEFAULT_SIZE * (int64_t)sizeof(void *);
+        buf = malloc( strdup_buffer_alloc_size );
         if( !buf )
             goto fail;
         buf->size = BUFFER_DEFAULT_SIZE;
@@ -273,7 +277,8 @@ char *x264_param_strdup( x264_param_t *param, const char *src )
         if( buf->size > (INT_MAX - BUFFER_OFFSET) / 2 / (int)sizeof(void *) )
             goto fail;
         int new_size = buf->size * 2;
-        buf = realloc( buf, BUFFER_OFFSET + new_size * sizeof(void *) );
+        int64_t strdup_buffer_realloc_size = BUFFER_OFFSET + new_size * (int64_t)sizeof(void *);
+        buf = realloc( buf, strdup_buffer_realloc_size );
         if( !buf )
             goto fail;
         buf->size = new_size;
@@ -379,7 +384,8 @@ REALIGN_STACK int x264_picture_alloc( x264_picture_t *pic, int i_csp, int i_widt
         plane_offset[i] = frame_size;
         frame_size += plane_size;
     }
-    staged_pic.img.plane[0] = x264_malloc( frame_size );
+    int64_t frame_alloc_size = frame_size;
+    staged_pic.img.plane[0] = x264_malloc( frame_alloc_size );
     if( !staged_pic.img.plane[0] )
         return -1;
     for( int i = 1; i < staged_pic.img.i_plane; i++ )
@@ -928,7 +934,8 @@ REALIGN_STACK int x264_param_restrict_device( x264_param_t *param, int i_profile
     size_t device_len = strlen( device );
     if( device_len > INT64_MAX - 1 )
         return -1;
-    char *tmp = x264_malloc( (int64_t)device_len + 1 );
+    int64_t device_alloc_size = (int64_t)device_len + 1;
+    char *tmp = x264_malloc( device_alloc_size );
     if( !tmp )
         return -1;
     memcpy( tmp, device, device_len + 1 );
@@ -2637,7 +2644,8 @@ char *x264_param2string( x264_param_t *p, int b_res )
         int zones_len_int = (int)zones_len;
         len += zones_len_int;
     }
-    buf = s = x264_malloc( len );
+    int64_t param_string_alloc_size = len;
+    buf = s = x264_malloc( param_string_alloc_size );
     if( !buf )
         return NULL;
     end = buf + len;
