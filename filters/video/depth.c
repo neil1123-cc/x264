@@ -75,6 +75,25 @@ static int csp_num_interleaved( int csp, int plane )
            1;
 }
 
+static int depth_image_is_invalid( const cli_image_t *img )
+{
+    if( !img || x264_cli_csp_is_invalid( img->csp ) ||
+        img->width <= 0 || img->height <= 0 ||
+        img->width > MAX_RESOLUTION || img->height > MAX_RESOLUTION )
+        return 1;
+
+    int csp_mask = img->csp & X264_CSP_MASK;
+    if( !depth_filter_csp_is_supported( img->csp ) ||
+        img->planes != x264_cli_csps[csp_mask].planes )
+        return 1;
+
+    for( int i = 0; i < img->planes; i++ )
+        if( x264_cli_pic_plane_size( img->csp, img->width, img->height, i ) && !img->plane[i] )
+            return 1;
+
+    return 0;
+}
+
 /* The dithering algorithm is based on Sierra-2-4A error diffusion. It has been
  * written in such a way so that if the source has been upconverted using the
  * same algorithm as used in scale_image, dithering down to the source bit
@@ -168,18 +187,35 @@ static void scale_image( cli_image_t *output, cli_image_t *img )
 static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 {
     depth_hnd_t *h = handle;
-    if( !h || !output || !h->prev_hnd || !h->prev_filter.get_frame )
+    if( !h || !output || !h->prev_hnd || !h->prev_filter.get_frame ||
+        !h->prev_filter.release_frame || frame < 0 )
         return -1;
 
     if( h->prev_filter.get_frame( h->prev_hnd, output, frame ) )
         return -1;
 
-    if( h->bit_depth < 16 && output->img.csp & X264_CSP_HIGH_DEPTH )
+    int dither = h->bit_depth < 16 && (output->img.csp & X264_CSP_HIGH_DEPTH);
+    int scale = h->bit_depth > 8 && !(output->img.csp & X264_CSP_HIGH_DEPTH);
+    if( dither || scale )
+    {
+        if( depth_image_is_invalid( &output->img ) ||
+            depth_image_is_invalid( &h->buffer.img ) ||
+            (output->img.csp & X264_CSP_MASK) != (h->buffer.img.csp & X264_CSP_MASK) ||
+            output->img.width != h->buffer.img.width ||
+            output->img.height != h->buffer.img.height ||
+            (dither && !h->error_buf) )
+        {
+            h->prev_filter.release_frame( h->prev_hnd, output, frame );
+            return -1;
+        }
+    }
+
+    if( dither )
     {
         dither_image( &h->buffer.img, &output->img, h->error_buf );
         output->img = h->buffer.img;
     }
-    else if( h->bit_depth > 8 && !(output->img.csp & X264_CSP_HIGH_DEPTH) )
+    else if( scale )
     {
         scale_image( &h->buffer.img, &output->img );
         output->img = h->buffer.img;

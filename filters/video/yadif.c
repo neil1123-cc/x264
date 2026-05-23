@@ -260,17 +260,19 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame_out )
     {
         ret |= h->prev_filter.get_frame( h->prev_handle, &prev, frame_in-1 );
         ret |= h->prev_filter.get_frame( h->prev_handle, &cur, frame_in );
-        if ( h->prev_filter.get_frame( h->prev_handle, &next, frame_in+1 ) )
+        if( frame_in == INT_MAX )
+            ret |= h->prev_filter.get_frame( h->prev_handle, &next, frame_in );
+        else if( h->prev_filter.get_frame( h->prev_handle, &next, frame_in+1 ) )
             ret |= h->prev_filter.get_frame( h->prev_handle, &next, frame_in );
     }
     if( ret )
         return ret;
 
+    if( cur.duration < 0 || h->pts > INT64_MAX - cur.duration )
+        return -1;
     *output = h->buffer;
     output->pts = h->pts;
     output->duration = cur.duration;
-    if( cur.duration < 0 || h->pts > INT64_MAX - cur.duration )
-        return -1;
     h->pts += cur.duration;
 
     yctx.mode = h->mode;

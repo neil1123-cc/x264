@@ -760,18 +760,24 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
         x264_cli_log( "avs", X264_LOG_ERROR, "failed to read frame %d\n", i_frame );
         return -1;
     }
-    pic->opaque = frm;
+    uint8_t *pic_plane[X264_AVS_PLANES];
+    int pic_stride[X264_AVS_PLANES];
     for( int i = 0; i < pic->img.planes; i++ )
     {
         /* explicitly cast away the const attribute to avoid a warning */
-        pic->img.plane[i] = (uint8_t*)AVS_GET_READ_PTR_P( frm, plane[i] );
-        if( !pic->img.plane[i] )
+        pic_plane[i] = (uint8_t*)AVS_GET_READ_PTR_P( frm, plane[i] );
+        if( !pic_plane[i] )
         {
             h->func.avs_release_video_frame( frm );
-            pic->opaque = NULL;
             return -1;
         }
-        pic->img.stride[i] = AVS_GET_PITCH_P( frm, plane[i] );
+        pic_stride[i] = AVS_GET_PITCH_P( frm, plane[i] );
+    }
+    pic->opaque = frm;
+    for( int i = 0; i < pic->img.planes; i++ )
+    {
+        pic->img.plane[i] = pic_plane[i];
+        pic->img.stride[i] = pic_stride[i];
     }
     return 0;
 }

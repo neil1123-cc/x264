@@ -74,8 +74,10 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
 static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 {
     fix_vfr_pts_hnd_t *h = handle;
+    cli_pic_t staged;
+    int staged_held = 0;
     if( !h || !output || !h->prev_hnd ||
-        !h->prev_filter.get_frame || !h->prev_filter.release_frame )
+        !h->prev_filter.get_frame || !h->prev_filter.release_frame || frame < 0 )
         return -1;
     /* if we want the holder picture and it errored, return the error. */
     if( frame == h->holder_frame )
@@ -118,27 +120,45 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
         int copy_failed = x264_cli_pic_copy( &h->buffer, &h->holder );
         int release_failed = h->prev_filter.release_frame( h->prev_hnd, &h->holder, frame );
         if( copy_failed || release_failed )
+        {
+            h->holder_frame = -1;
             return -1;
+        }
         h->holder_ret = h->prev_filter.get_frame( h->prev_hnd, &h->holder, h->holder_frame );
         /* suppress non-monotonic pts warnings by setting the duration to be at least 1 */
         if( !h->holder_ret && h->holder.pts > h->buffer.pts )
         {
             if( h->buffer.pts < 0 && h->holder.pts > INT64_MAX + h->buffer.pts )
+            {
+                h->prev_filter.release_frame( h->prev_hnd, &h->holder, h->holder_frame );
+                h->holder_frame = -1;
                 return -1;
+            }
             h->last_duration = h->holder.pts - h->buffer.pts;
         }
         else if( h->last_duration <= 0 )
             h->last_duration = 1;
         h->buffer.duration = h->last_duration;
-        *output = h->buffer;
+        staged = h->buffer;
     }
     else
-        *output = h->holder;
+    {
+        staged = h->holder;
+        staged_held = 1;
+    }
 
-    output->pts = h->pts;
-    if( output->duration < 0 || h->pts > INT64_MAX - output->duration )
+    staged.pts = h->pts;
+    if( staged.duration < 0 || h->pts > INT64_MAX - staged.duration )
+    {
+        if( staged_held )
+            h->prev_filter.release_frame( h->prev_hnd, &h->holder, frame );
+        else if( h->holder_frame >= 0 && !h->holder_ret )
+            h->prev_filter.release_frame( h->prev_hnd, &h->holder, h->holder_frame );
+        h->holder_frame = -1;
         return -1;
-    h->pts += output->duration;
+    }
+    h->pts += staged.duration;
+    *output = staged;
 
     return 0;
 }

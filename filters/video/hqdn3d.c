@@ -383,13 +383,15 @@ static int get_frame(hnd_t handle, cli_pic_t *out, int frame)
     if( ret )
         return -1;
 
-    *out = h->buffer;
-    if( out->img.planes < 0 || out->img.planes > 3 )
+    if( h->buffer.img.planes < 0 || h->buffer.img.planes > 3 )
         return -1;
 
-    for(int i = 0; i < out->img.planes; i++) {
-        if( !h->frame[i] )
+    for(int i = 0; i < h->buffer.img.planes; i++)
+        if( !h->frame[i] || !h->buffer.img.plane[i] )
             return -1;
+
+    *out = h->buffer;
+    for(int i = 0; i < out->img.planes; i++) {
         int width = out->img.width * h->csp->width[i];
         int height = out->img.height * h->csp->height[i];
         int stride = out->img.stride[i];

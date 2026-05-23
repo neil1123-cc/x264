@@ -44,6 +44,7 @@ typedef struct
     int max_size;
     int first_frame; /* first cached frame */
     cli_pic_t **cache;
+    cli_pic_t *scratch;
     int cur_size;
     int eof;         /* frame beyond end of the file */
 } cache_hnd_t;
@@ -70,6 +71,11 @@ static void cache_free_partial( cache_hnd_t *h )
             }
         }
         free( h->cache );
+    }
+    if( h->scratch )
+    {
+        x264_cli_pic_clean( h->scratch );
+        free( h->scratch );
     }
     free( h );
 }
@@ -105,6 +111,12 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
             cache_free_partial( h );
             return -1;
         }
+    }
+    h->scratch = calloc( 1, sizeof(cli_pic_t) );
+    if( !h->scratch || x264_cli_pic_alloc( h->scratch, info->csp, info->width, info->height ) )
+    {
+        cache_free_partial( h );
+        return -1;
     }
 
     h->prev_filter = *filter;
@@ -153,14 +165,12 @@ static void fill_cache( cache_hnd_t *h, int frame )
     while( h->cur_size < h->max_size )
     {
         cli_pic_t temp;
-        /* the old front frame is going to shift off, overwrite it with the new frame */
-        cli_pic_t *cache = h->cache[0];
         if( h->prev_filter.get_frame( h->prev_hnd, &temp, cur_frame ) )
         {
             h->eof = cur_frame;
             return;
         }
-        int copy_failed = x264_cli_pic_copy( cache, &temp );
+        int copy_failed = x264_cli_pic_copy( h->scratch, &temp );
         int release_failed = h->prev_filter.release_frame( h->prev_hnd, &temp, cur_frame );
         if( copy_failed || release_failed )
         {
@@ -168,14 +178,12 @@ static void fill_cache( cache_hnd_t *h, int frame )
             return;
         }
         /* the read was successful, shift the frame off the front to the end */
+        XCHG( cli_pic_t*, h->scratch, h->cache[0] );
         x264_frame_push( (void*)h->cache, x264_frame_shift( (void*)h->cache ) );
-        if( cur_frame == INT_MAX )
-        {
-            h->eof = cur_frame;
-            return;
-        }
-        cur_frame++;
         h->cur_size++;
+        if( cur_frame == INT_MAX )
+            return;
+        cur_frame++;
     }
 }
 

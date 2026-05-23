@@ -482,10 +482,11 @@ static struct audio_packet_t *get_samples( hnd_t handle, int64_t first_sample, i
     }
 
     int64_t nsamples = last_sample - first_sample;
+    int eof = 0;
     if( h->num_samples <= last_sample )
     {
         nsamples = h->num_samples - first_sample;
-        h->eof = 1;
+        eof = 1;
     }
     if( nsamples <= 0 || nsamples > UINT_MAX ||
         nsamples > INT_MAX / h->info.samplesize )
@@ -510,8 +511,11 @@ static struct audio_packet_t *get_samples( hnd_t handle, int64_t first_sample, i
     if( !pkt->samples )
         goto fail;
 
-    if( h->eof )
+    if( eof )
+    {
+        h->eof = 1;
         pkt->flags |= AUDIO_FLAG_EOF;
+    }
 
     return pkt;
 

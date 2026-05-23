@@ -26,6 +26,7 @@
  *****************************************************************************/
 
 #include "input.h"
+#include <limits.h>
 
 #define FAIL_IF_ERROR( cond, ... ) FAIL_IF_ERR( cond, "raw", __VA_ARGS__ )
 #define FAIL_IF_ERROR_CLEANUP( cond, ... )\
@@ -191,7 +192,10 @@ fail:
     if( h->use_mmap )
         x264_cli_mmap_close( &h->mmap );
     if( h->fh && h->fh != stdin )
-        fclose( h->fh );
+    {
+        if( fclose( h->fh ) )
+            x264_cli_log( "raw", X264_LOG_ERROR, "failed to close input file `%s'\n", psz_filename );
+    }
     free( h );
     return -1;
 }
@@ -236,6 +240,7 @@ static int read_frame_internal( cli_pic_t *pic, raw_hnd_t *h, int bit_depth_uc )
 static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
 {
     raw_hnd_t *h = handle;
+    uint8_t *mapped_frame = NULL;
     if( !pic || !h || !h->fh || i_frame < 0 || i_frame == INT_MAX )
         return -1;
 
@@ -246,13 +251,17 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
         pic->img.plane[0] = x264_cli_mmap( &h->mmap, (int64_t)i_frame * h->frame_size, h->frame_size );
         if( !pic->img.plane[0] )
             return -1;
+        mapped_frame = pic->img.plane[0];
     }
     else if( i_frame > h->next_frame )
     {
         if( x264_is_regular_file( h->fh ) )
         {
-            if( h->frame_size <= 0 || i_frame > INT64_MAX / h->frame_size ||
-                fseek( h->fh, (int64_t)i_frame * h->frame_size, SEEK_SET ) )
+            int64_t offset;
+            if( h->frame_size <= 0 || i_frame > INT64_MAX / h->frame_size )
+                return -1;
+            offset = (int64_t)i_frame * h->frame_size;
+            if( offset > LONG_MAX || fseek( h->fh, (long)offset, SEEK_SET ) )
                 return -1;
         }
         else
@@ -265,7 +274,14 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
     }
 
     if( read_frame_internal( pic, h, h->bit_depth & 7 ) )
+    {
+        if( h->use_mmap && mapped_frame )
+        {
+            x264_cli_munmap( &h->mmap, mapped_frame, h->frame_size );
+            memset( pic->img.plane, 0, sizeof(pic->img.plane) );
+        }
         return -1;
+    }
 
     h->next_frame = i_frame+1;
     return 0;

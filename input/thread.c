@@ -115,6 +115,11 @@ static int read_frame( cli_pic_t *p_pic, hnd_t handle, int i_frame )
     {
         x264_threadpool_wait( h->pool, h->next_args );
         ret |= h->next_args->status;
+        if( ret )
+        {
+            h->next_frame = -1;
+            return ret;
+        }
     }
 
     if( h->next_frame == i_frame )
@@ -122,8 +127,21 @@ static int read_frame( cli_pic_t *p_pic, hnd_t handle, int i_frame )
     else
     {
         if( h->next_frame >= 0 )
-            ret |= thread_input.release_frame( &h->pic, handle );
-        ret |= h->input.read_frame( p_pic, h->p_handle, i_frame );
+        {
+            ret = thread_input.release_frame( &h->pic, handle );
+            if( ret )
+            {
+                h->next_frame = -1;
+                return ret;
+            }
+        }
+        ret = h->input.read_frame( p_pic, h->p_handle, i_frame );
+    }
+
+    if( ret )
+    {
+        h->next_frame = -1;
+        return ret;
     }
 
     if( i_frame < INT_MAX && (!h->frame_total || i_frame+1 < h->frame_total) )
@@ -172,12 +190,24 @@ static int close_file( hnd_t handle )
     int ret = 0;
     if( !h )
         return 0;
+    if( h->pool && h->next_frame >= 0 )
+    {
+        x264_threadpool_wait( h->pool, h->next_args );
+        if( !h->next_args->status && h->p_handle && h->input.release_frame &&
+            h->input.release_frame( &h->pic, h->p_handle ) )
+            ret = -1;
+        h->next_frame = -1;
+    }
     if( h->pool )
         x264_threadpool_delete( h->pool );
     if( h->p_handle && h->input.picture_clean )
         h->input.picture_clean( &h->pic, h->p_handle );
     if( h->p_handle && h->input.close_file )
-        ret = h->input.close_file( h->p_handle );
+    {
+        int close_ret = h->input.close_file( h->p_handle );
+        if( !ret )
+            ret = close_ret;
+    }
     free( h->next_args );
     free( h );
     return ret;

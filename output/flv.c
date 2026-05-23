@@ -140,6 +140,8 @@ static int flv_get_raw_audio_framelen( int *dst, audio_info_t *info, x264_param_
 
 static int audio_init( hnd_t handle, hnd_t filters, char *audio_enc, char *audio_parameters )
 {
+    if( !audio_enc )
+        return -1;
     if( !strcmp( audio_enc, "none" ) || !filters )
         return 0;
 
@@ -156,7 +158,8 @@ static int audio_init( hnd_t handle, hnd_t filters, char *audio_enc, char *audio
         const audio_encoder_t *encoder = x264_select_audio_encoder( audio_enc, (char*[]){ "mp3", "aac", "raw", NULL }, &used_enc );
         FAIL_IF_ERR( !encoder, "flv", "unable to select audio encoder\n" );
 
-        int audio_params_len = snprintf( audio_params, sizeof(audio_params), "%s,codec=%s", audio_parameters, used_enc );
+        int audio_params_len = snprintf( audio_params, sizeof(audio_params), "%s,codec=%s",
+                                         audio_parameters ? audio_parameters : "", used_enc );
         FAIL_IF_ERR( audio_params_len < 0 || (size_t)audio_params_len >= sizeof(audio_params), "flv", "audio encoder parameters are too long\n" );
         henc = x264_audio_encoder_open( encoder, filters, audio_params );
     }
@@ -317,7 +320,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
 #if HAVE_AUDIO
             flv_close_audio( p_flv );
 #endif
-            fclose( c->fp );
+            if( c->fp == stdout ? fflush( c->fp ) : fclose( c->fp ) )
+                x264_cli_log( "flv", X264_LOG_ERROR, "failed to close output file `%s'\n", psz_filename );
             free( c->data );
             free( c );
         }
@@ -444,6 +448,9 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     flv_audio_hnd_t *a_flv = p_flv->a_flv;
 #endif
     flv_buffer *c = p_flv->c;
+#if HAVE_AUDIO && HAVE_LSMASH
+    lsmash_codec_specific_t *conv = NULL;
+#endif
 
     int sps_size = p_nal[0].i_payload;
     int pps_size = p_nal[1].i_payload;
@@ -457,13 +464,12 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     /* It is within the spec to write this as-is but for
      * mplayer/ffmpeg playback this is deferred until before the first frame */
 
-    p_flv->sei = sei_size ? malloc( (size_t)sei_size ) : NULL;
-    if( sei_size && !p_flv->sei )
+    uint8_t *sei = sei_size ? malloc( (size_t)sei_size ) : NULL;
+    if( sei_size && !sei )
         return -1;
-    p_flv->sei_len = sei_size;
 
     if( sei_size )
-        memcpy( p_flv->sei, p_nal[2].p_payload, (size_t)sei_size );
+        memcpy( sei, p_nal[2].p_payload, (size_t)sei_size );
 
     // SPS
     uint8_t *sps = p_nal[0].p_payload + 4;
@@ -487,12 +493,14 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     flv_put_byte( c, 0xe1 );   // 3 bits reserved (111) + 5 bits number of sps (00001)
 
     flv_put_be16( c, (uint16_t)(sps_size - 4) );
-    CHECK( flv_append_data( c, sps, (unsigned)(sps_size - 4) ) );
+    if( flv_append_data( c, sps, (unsigned)(sps_size - 4) ) )
+        goto fail;
 
     // PPS
     flv_put_byte( c, 1 ); // number of pps
     flv_put_be16( c, (uint16_t)(pps_size - 4) );
-    CHECK( flv_append_data( c, p_nal[1].p_payload + 4, (unsigned)(pps_size - 4) ) );
+    if( flv_append_data( c, p_nal[1].p_payload + 4, (unsigned)(pps_size - 4) ) )
+        goto fail;
 	
     // FRExt fields
     if( sps[1] == 100 || sps[1] == 110 || sps[1] == 122 || sps[1] == 144 )
@@ -506,23 +514,28 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     // rewrite data length info
     unsigned length = c->d_cur - p_flv->start;
     if( length > 0xFFFFFF || length > UINT32_MAX - 11 )
-        return -1;
+        goto fail;
     flv_rewrite_amf_be24( c, length, p_flv->start - 10 );
     flv_put_be32( c, length + 11 ); // Last tag size
 
 #if HAVE_AUDIO
     if( a_flv && a_flv->codecid == FLV_CODECID_AAC )
     {
-        FAIL_IF_ERR( !a_flv->info->extradata, "flv", "audio codec is AAC but extradata is NULL\n" );
+        if( !a_flv->info->extradata )
+        {
+            x264_cli_log( "flv", X264_LOG_ERROR, "audio codec is AAC but extradata is NULL\n" );
+            goto fail;
+        }
 
         uint8_t *extradata;
         uint32_t extradata_size;
-#if HAVE_LSMASH
-        lsmash_codec_specific_t *conv = NULL;
-#endif
         if( a_flv->info->extradata_type == EXTRADATA_TYPE_LIBAVCODEC )
         {
-            FAIL_IF_ERR( a_flv->info->extradata_size <= 0, "flv", "invalid AAC extradata size\n" );
+            if( a_flv->info->extradata_size <= 0 )
+            {
+                x264_cli_log( "flv", X264_LOG_ERROR, "invalid AAC extradata size\n" );
+                goto fail;
+            }
             extradata = a_flv->info->extradata;
             extradata_size = (uint32_t)a_flv->info->extradata_size;
         }
@@ -530,9 +543,12 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
         else if( a_flv->info->extradata_type == EXTRADATA_TYPE_LSMASH )
         {
             lsmash_codec_specific_t *orig = NULL;
-            FAIL_IF_ERR( a_flv->info->extradata_size <= 0 ||
-                         (size_t)a_flv->info->extradata_size % sizeof(lsmash_codec_specific_t *),
-                         "flv", "invalid AAC extradata extension list\n" );
+            if( a_flv->info->extradata_size <= 0 ||
+                (size_t)a_flv->info->extradata_size % sizeof(lsmash_codec_specific_t *) )
+            {
+                x264_cli_log( "flv", X264_LOG_ERROR, "invalid AAC extradata extension list\n" );
+                goto fail;
+            }
             uint32_t num_extensions = a_flv->info->extradata_size / sizeof(lsmash_codec_specific_t *);
             for( uint32_t i = 0; i < num_extensions; i++ )
             {
@@ -540,38 +556,50 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
                 if( orig && orig->type == LSMASH_CODEC_SPECIFIC_DATA_TYPE_MP4SYS_DECODER_CONFIG )
                     break;
             }
-            FAIL_IF_ERR( !orig, "flv", "no extradata for AAC found!\n" );
-            FAIL_IF_ERR( orig->format != LSMASH_CODEC_SPECIFIC_FORMAT_UNSTRUCTURED,
-                         "flv", "unexpected AAC extradata format\n" );
+            if( !orig )
+            {
+                x264_cli_log( "flv", X264_LOG_ERROR, "no extradata for AAC found!\n" );
+                goto fail;
+            }
+            if( orig->format != LSMASH_CODEC_SPECIFIC_FORMAT_UNSTRUCTURED )
+            {
+                x264_cli_log( "flv", X264_LOG_ERROR, "unexpected AAC extradata format\n" );
+                goto fail;
+            }
 
             conv = lsmash_convert_codec_specific_format( orig, LSMASH_CODEC_SPECIFIC_FORMAT_STRUCTURED );
-            FAIL_IF_ERR( !conv, "flv", "failed to convert format of AAC specific info.\n" );
+            if( !conv )
+            {
+                x264_cli_log( "flv", X264_LOG_ERROR, "failed to convert format of AAC specific info.\n" );
+                goto fail;
+            }
 
             lsmash_mp4sys_decoder_parameters_t *param = (lsmash_mp4sys_decoder_parameters_t *)conv->data.structured;
             if( !param || param->objectTypeIndication != MP4SYS_OBJECT_TYPE_Audio_ISO_14496_3 )
             {
-                lsmash_destroy_codec_specific_data( conv );
                 x264_cli_log( "flv", X264_LOG_ERROR, "unexpected AAC object type\n" );
-                return -1;
+                goto fail;
             }
 
             int err = lsmash_get_mp4sys_decoder_specific_info( param, &extradata, &extradata_size );
             if( err )
             {
-                lsmash_destroy_codec_specific_data( conv );
                 x264_cli_log( "flv", X264_LOG_ERROR, "failed to get AAC specific info.\n" );
-                return -1;
+                goto fail;
             }
         }
 #endif
         else
         {
             x264_cli_log( "flv", X264_LOG_ERROR, "unknown extradata type.\n" );
-            return -1;
+            goto fail;
         }
 
-        FAIL_IF_ERR( extradata_size > 0xFFFFFF - 2 || extradata_size > UINT32_MAX - 13,
-                     "flv", "AAC extradata is too large\n" );
+        if( extradata_size > 0xFFFFFF - 2 || extradata_size > UINT32_MAX - 13 )
+        {
+            x264_cli_log( "flv", X264_LOG_ERROR, "AAC extradata is too large\n" );
+            goto fail;
+        }
         flv_put_byte( c, FLV_TAG_TYPE_AUDIO );
         flv_put_be24( c, 2 + extradata_size );
         flv_put_be24( c, 0 );
@@ -584,16 +612,30 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
         flv_put_be32( c, 11 + 2 + extradata_size );
 #if HAVE_LSMASH
         if( conv )
+        {
             lsmash_destroy_codec_specific_data( conv );
+            conv = NULL;
+        }
 #endif
         if( append_failed )
-            return -1;
+            goto fail;
     }
 #endif
 
-    CHECK( flv_flush_data( c ) );
+    if( flv_flush_data( c ) )
+        goto fail;
 
+    p_flv->sei = sei;
+    p_flv->sei_len = sei_size;
     return sei_size + sps_size + pps_size;
+
+fail:
+#if HAVE_AUDIO && HAVE_LSMASH
+    if( conv )
+        lsmash_destroy_codec_specific_data( conv );
+#endif
+    free( sei );
+    return -1;
 }
 
 #if HAVE_AUDIO
@@ -619,7 +661,6 @@ static int write_audio( flv_hnd_t *p_flv, int64_t video_dts, int finish )
         a_flv->lastdts = video_dts; // first frame (nonzero if --seek is used)
     }
     audio_packet_t *frame;
-    int frames = 0;
     while( a_flv->lastdts <= video_dts || video_dts < 0 )
     {
         if( finish )
@@ -639,8 +680,8 @@ static int write_audio( flv_hnd_t *p_flv, int64_t video_dts, int finish )
             x264_audio_free_frame( a_flv->encoder, frame );
             return -1;
         }
-        a_flv->lastdts = x264_from_timebase( frame->dts, frame->info.timebase, 1000 );
-        if( a_flv->lastdts < 0 || a_flv->lastdts > UINT32_MAX )
+        int64_t audio_dts = x264_from_timebase( frame->dts, frame->info.timebase, 1000 );
+        if( audio_dts < 0 || audio_dts > UINT32_MAX )
         {
             x264_audio_free_frame( a_flv->encoder, frame );
             return -1;
@@ -648,7 +689,7 @@ static int write_audio( flv_hnd_t *p_flv, int64_t video_dts, int finish )
 
         flv_put_byte( c, FLV_TAG_TYPE_AUDIO );
         flv_put_be24( c, (uint32_t)(1 + aac + frame->size) );
-        if( flv_write_timestamp( c, a_flv->lastdts ) )
+        if( flv_write_timestamp( c, audio_dts ) )
         {
             x264_audio_free_frame( a_flv->encoder, frame );
             return -1;
@@ -669,29 +710,32 @@ static int write_audio( flv_hnd_t *p_flv, int64_t video_dts, int finish )
         x264_audio_free_frame( a_flv->encoder, frame );
 
         CHECK( flv_flush_data( c ) );
-        ++frames;
+        a_flv->lastdts = audio_dts;
     }
-    return frames;
+    return 0;
 }
 #endif
 
 static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_t *p_picture )
 {
     flv_hnd_t *p_flv = handle;
-    if( !p_flv || !p_flv->c || !p_picture || i_size < 0 || (i_size && !p_nalu) )
+    if( !p_flv || !p_flv->c || !p_picture || i_size < 0 || (i_size && !p_nalu) ||
+        p_flv->i_framenum == INT64_MAX )
         return -1;
     flv_buffer *c = p_flv->c;
     int64_t dts_ts, cts_ts;
+    int64_t delay_time = p_flv->i_delay_time;
+    int64_t init_delta = p_flv->i_init_delta;
 
     if( !p_flv->i_framenum )
     {
         if( p_picture->i_dts == INT64_MIN )
             return -1;
-        p_flv->i_delay_time = -p_picture->i_dts;
-        if( !p_flv->b_dts_compress && p_flv->i_delay_time )
+        delay_time = -p_picture->i_dts;
+        if( !p_flv->b_dts_compress && delay_time )
         {
             int64_t initial_delay_ts, initial_delay_ms;
-            if( flv_add_i64( &initial_delay_ts, p_picture->i_pts, p_flv->i_delay_time ) ||
+            if( flv_add_i64( &initial_delay_ts, p_picture->i_pts, delay_time ) ||
                 flv_timebase_to_ms( &initial_delay_ms, initial_delay_ts, p_flv->d_timebase ) )
                 return -1;
             x264_cli_log( "flv", X264_LOG_INFO, "initial delay %"PRId64" ms\n",
@@ -707,8 +751,8 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
     {
         if( p_flv->i_framenum == 1 )
         {
-            if( flv_add_i64( &dts_ts, p_picture->i_dts, p_flv->i_delay_time ) ||
-                flv_timebase_to_ms( &p_flv->i_init_delta, dts_ts, p_flv->d_timebase ) )
+            if( flv_add_i64( &dts_ts, p_picture->i_dts, delay_time ) ||
+                flv_timebase_to_ms( &init_delta, dts_ts, p_flv->d_timebase ) )
                 return -1;
         }
         if( p_flv->i_framenum > p_flv->i_delay_frames )
@@ -718,17 +762,17 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
         }
         else
         {
-            if( p_flv->i_init_delta && p_flv->i_framenum > INT64_MAX / p_flv->i_init_delta )
+            if( init_delta && p_flv->i_framenum > INT64_MAX / init_delta )
                 return -1;
-            dts = p_flv->i_framenum * p_flv->i_init_delta / (p_flv->i_delay_frames + 1);
+            dts = p_flv->i_framenum * init_delta / (p_flv->i_delay_frames + 1);
         }
         if( flv_timebase_to_ms( &cts, p_picture->i_pts, p_flv->d_timebase ) )
             return -1;
     }
     else
     {
-        if( flv_add_i64( &dts_ts, p_picture->i_dts, p_flv->i_delay_time ) ||
-            flv_add_i64( &cts_ts, p_picture->i_pts, p_flv->i_delay_time ) ||
+        if( flv_add_i64( &dts_ts, p_picture->i_dts, delay_time ) ||
+            flv_add_i64( &cts_ts, p_picture->i_pts, delay_time ) ||
             flv_timebase_to_ms( &dts, dts_ts, p_flv->d_timebase ) ||
             flv_timebase_to_ms( &cts, cts_ts, p_flv->d_timebase ) )
             return -1;
@@ -748,9 +792,6 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
             x264_cli_log( "flv", X264_LOG_WARNING, "duplicate CTS %"PRId64" generated by rounding\n"
                           "               composition framerate cannot exceed 1000fps\n", cts );
     }
-    p_flv->i_prev_dts = dts;
-    p_flv->i_prev_cts = cts;
-
     // A new frame - write packet header
     flv_put_byte( c, FLV_TAG_TYPE_VIDEO );
     flv_put_be24( c, 0 ); // calculated later
@@ -763,11 +804,10 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
     flv_put_byte( c, 1 ); // AVC NALU
     flv_put_be24( c, (uint32_t)offset );
 
-    if( p_flv->sei )
+    int frame_has_sei = p_flv->sei != NULL;
+    if( frame_has_sei )
     {
         CHECK( flv_append_data( c, p_flv->sei, (unsigned)p_flv->sei_len ) );
-        free( p_flv->sei );
-        p_flv->sei = NULL;
     }
     CHECK( flv_append_data( c, p_nalu, (unsigned)i_size ) );
 
@@ -782,6 +822,16 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
     FAIL_IF_ERR( p_flv->a_flv && write_audio( p_flv, dts, 0 ) < 0, "flv", "error writing audio\n" );
 #endif
 
+    if( frame_has_sei )
+    {
+        free( p_flv->sei );
+        p_flv->sei = NULL;
+        p_flv->sei_len = 0;
+    }
+    p_flv->i_delay_time = delay_time;
+    p_flv->i_init_delta = init_delta;
+    p_flv->i_prev_dts = dts;
+    p_flv->i_prev_cts = cts;
     p_flv->i_framenum++;
 
     return i_size;
@@ -855,7 +905,7 @@ static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest
     ret = 0;
 
 error:
-    if( fclose( c->fp ) )
+    if( c->fp == stdout ? fflush( c->fp ) : fclose( c->fp ) )
         ret = -1;
     free( c->data );
     free( c );

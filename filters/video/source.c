@@ -34,6 +34,7 @@ typedef struct
     cli_pic_t pic;
     hnd_t hin;
     int cur_frame;
+    int have_frame;
 } source_hnd_t;
 
 cli_vid_filter_t source_filter;
@@ -58,6 +59,7 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
     }
 
     h->hin = *handle;
+    h->have_frame = 0;
     *handle = h;
     *filter = source_filter;
 
@@ -73,6 +75,7 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
         cli_input.read_frame( &h->pic, h->hin, frame ) )
         return -1;
     h->cur_frame = frame;
+    h->have_frame = 1;
     *output = h->pic;
     return 0;
 }
@@ -80,11 +83,15 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 static int release_frame( hnd_t handle, cli_pic_t *pic, int frame )
 {
     source_hnd_t *h = handle;
+    int ret = 0;
     if( !h || !h->hin || !pic )
         return -1;
+    if( !h->have_frame )
+        return 0;
     if( cli_input.release_frame && cli_input.release_frame( &h->pic, h->hin ) )
-        return -1;
-    return 0;
+        ret = -1;
+    h->have_frame = 0;
+    return ret;
 }
 
 static void free_filter( hnd_t handle )
@@ -92,7 +99,9 @@ static void free_filter( hnd_t handle )
     source_hnd_t *h = handle;
     if( !h )
         return;
-    if( cli_input.picture_clean )
+    if( h->have_frame && cli_input.release_frame )
+        cli_input.release_frame( &h->pic, h->hin );
+    if( h->hin && cli_input.picture_clean )
         cli_input.picture_clean( &h->pic, h->hin );
     if( h->hin && cli_input.close_file )
         cli_input.close_file( h->hin );

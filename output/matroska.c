@@ -82,6 +82,8 @@ static int mkv_default_duration_from_fps( int64_t *dst, uint32_t fps_num, uint32
 #if HAVE_AUDIO
 static int audio_init( hnd_t handle, hnd_t filters, char *audio_enc, char *audio_parameters )
 {
+    if( !audio_enc )
+        return -1;
     if( !strcmp( audio_enc, "none" ) || !filters )
         return 0;
 
@@ -96,7 +98,8 @@ static int audio_init( hnd_t handle, hnd_t filters, char *audio_enc, char *audio
         const audio_encoder_t *encoder = x264_select_audio_encoder( audio_enc, (char*[]){ "ac3", "aac", "vorbis", "mp3", "raw", NULL }, &used_enc );
         FAIL_IF_ERR( !encoder, "mkv", "unable to select audio encoder\n" );
 
-        int audio_params_len = snprintf( audio_params, sizeof(audio_params), "%s,codec=%s", audio_parameters, used_enc );
+        int audio_params_len = snprintf( audio_params, sizeof(audio_params), "%s,codec=%s",
+                                         audio_parameters ? audio_parameters : "", used_enc );
         FAIL_IF_ERR( audio_params_len < 0 || (size_t)audio_params_len >= sizeof(audio_params), "mkv", "audio encoder parameters are too long\n" );
         henc = x264_audio_encoder_open( encoder, filters, audio_params );
     }
@@ -421,13 +424,12 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     uint8_t *sei = p_nal[2].p_payload;
 
     int ret;
-    uint8_t *avcC;
+    unsigned codec_private_size = 5 + 1 + 2 + (unsigned)sps_size + 1 + 2 + (unsigned)pps_size;
+    uint8_t *codec_private = malloc( codec_private_size );
 
-    vtrack->codec_private_size = 5 + 1 + 2 + (unsigned)sps_size + 1 + 2 + (unsigned)pps_size;
-    vtrack->codec_private = malloc( vtrack->codec_private_size );
-    if( !vtrack->codec_private )
+    if( !codec_private )
         return -1;
-    avcC = vtrack->codec_private;
+    uint8_t *avcC = codec_private;
 
     avcC[0] = 1;
     avcC[1] = sps[1];
@@ -447,21 +449,37 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
 
     memcpy( avcC+11+sps_size, pps, (size_t)pps_size );
 
-    ret = mk_write_header( p_mkv->w, "x264 "X264_COREVER, MKV_TIMECODE_SCALE,
-                           p_mkv->tracks, (int)p_mkv->i_track_count );
+    mk_track_t header_tracks[MK_MAX_TRACKS];
+    memcpy( header_tracks, p_mkv->tracks, sizeof(header_tracks) );
+    header_tracks[p_mkv->i_video_track].codec_private_size = codec_private_size;
+    header_tracks[p_mkv->i_video_track].codec_private = codec_private;
 
+    ret = mk_write_header( p_mkv->w, "x264 "X264_COREVER, MKV_TIMECODE_SCALE,
+                           header_tracks, (int)p_mkv->i_track_count );
 
     if( ret < 0 )
+    {
+        free( codec_private );
         return ret;
+    }
 
     // SEI
 
     if( mk_start_frame( p_mkv->w ) < 0 )
-            return -1;
-    p_mkv->b_writing_frame = 1;
+    {
+        free( codec_private );
+        return -1;
+    }
 
     if( mk_add_frame_data( p_mkv->w, sei, (unsigned)sei_size ) < 0 )
+    {
+        free( codec_private );
         return -1;
+    }
+
+    vtrack->codec_private_size = codec_private_size;
+    vtrack->codec_private = codec_private;
+    p_mkv->b_writing_frame = 1;
 
     return sei_size + sps_size + pps_size;
 }
@@ -488,7 +506,6 @@ static int write_audio( mkv_hnd_t *p_mkv, int64_t video_dts, int finish )
     }
 
     audio_packet_t *frame;
-    int frames = 0;
     while( a_mkv->lastdts <= video_dts || video_dts < 0 )
     {
         if( finish )
@@ -507,8 +524,8 @@ static int write_audio( mkv_hnd_t *p_mkv, int64_t video_dts, int finish )
             x264_audio_free_frame( a_mkv->encoder, frame );
             return -1;
         }
-        a_mkv->lastdts = x264_from_timebase( frame->dts, frame->info.timebase, MKV_NANOSECONDS );
-        if( a_mkv->lastdts < 0 || a_mkv->lastdts == INT64_MAX )
+        int64_t audio_dts = x264_from_timebase( frame->dts, frame->info.timebase, MKV_NANOSECONDS );
+        if( audio_dts < 0 || audio_dts == INT64_MAX )
         {
             x264_audio_free_frame( a_mkv->encoder, frame );
             return -1;
@@ -526,7 +543,7 @@ static int write_audio( mkv_hnd_t *p_mkv, int64_t video_dts, int finish )
             return -1;
         }
 
-        if( mk_set_frame_flags( p_mkv->w, a_mkv->lastdts, 1, 0, p_mkv->i_audio_track ) < 0 )
+        if( mk_set_frame_flags( p_mkv->w, audio_dts, 1, 0, p_mkv->i_audio_track ) < 0 )
         {
             x264_audio_free_frame( a_mkv->encoder, frame );
             return -1;
@@ -540,10 +557,10 @@ static int write_audio( mkv_hnd_t *p_mkv, int64_t video_dts, int finish )
 
         x264_audio_free_frame( a_mkv->encoder, frame );
 
-        ++frames;
+        a_mkv->lastdts = audio_dts;
     }
 
-    return frames;
+    return 0;
 }
 #endif
 

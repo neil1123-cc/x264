@@ -96,7 +96,7 @@ int main( int argc, char **argv )
     x264_picture_t pic;
     x264_picture_t pic_out;
     x264_t *h;
-    int i_frame = 0;
+    int64_t i_frame = 0;
     int i_frame_size;
     x264_nal_t *nal;
     int i_nal;
@@ -141,7 +141,7 @@ int main( int argc, char **argv )
     size_t luma_size = (size_t)width * (size_t)height;
     size_t chroma_size = luma_size / 4;
     /* Encode frames */
-    for( ;; i_frame++ )
+    for( ;; )
     {
         /* Read input frame */
         if( fread( pic.img.plane[0], 1, luma_size, stdin ) != (unsigned)luma_size )
@@ -151,6 +151,7 @@ int main( int argc, char **argv )
         if( fread( pic.img.plane[2], 1, chroma_size, stdin ) != (unsigned)chroma_size )
             break;
 
+        FAIL_IF_ERROR( i_frame == INT64_MAX, "too many input frames\n" );
         pic.i_pts = i_frame;
         i_frame_size = x264_encoder_encode( h, &nal, &i_nal, &pic, &pic_out );
         if( i_frame_size < 0 )
@@ -160,6 +161,7 @@ int main( int argc, char **argv )
             if( !fwrite( nal->p_payload, i_frame_size, 1, stdout ) )
                 goto fail;
         }
+        i_frame++;
     }
     /* Flush delayed frames */
     while( x264_encoder_delayed_frames( h ) )
@@ -173,6 +175,8 @@ int main( int argc, char **argv )
                 goto fail;
         }
     }
+    if( fflush( stdout ) )
+        goto fail;
 
     x264_encoder_close( h );
     x264_picture_clean( &pic );

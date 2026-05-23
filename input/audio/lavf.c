@@ -29,6 +29,8 @@ typedef struct lavf_source_t
     audio_packet_t *out;
     int copy;
     int eof;
+    int decode_error;
+    uint8_t desync_warn;
     AVFrame *decode_frame;
 } lavf_source_t;
 
@@ -40,7 +42,7 @@ typedef struct lavf_source_t
 #define DEFAULT_BUFSIZE AVCODEC_MAX_AUDIO_FRAME_SIZE * 2
 
 static int buffer_next_frame( lavf_source_t *h );
-static audio_packet_t *convert_to_audio_packet( hnd_t handle, AVPacket *pkt );
+static audio_packet_t *convert_to_audio_packet( hnd_t handle, AVPacket *pkt, uint32_t last_delta );
 
 const audio_filter_t audio_filter_lavf;
 
@@ -103,13 +105,18 @@ static int init( hnd_t *handle, const char *opt_str )
         AF_LOG_ERR( h, "could not find stream info\n" );
         goto fail;
     }
+    if( h->lavf->nb_streams > INT_MAX )
+    {
+        AF_LOG_ERR( h, "too many input streams\n" );
+        goto fail;
+    }
 
     unsigned tid = UINT_MAX;
     if( track >= 0 )
     {
         unsigned requested_track = (unsigned)track;
-        if( requested_track < h->lavf->nb_streams &&
-            h->lavf->streams[requested_track]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO )
+        AVStream *stream = requested_track < h->lavf->nb_streams ? h->lavf->streams[requested_track] : NULL;
+        if( stream && stream->codecpar && stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO )
             tid = requested_track;
         else
             AF_LOG_ERR( h, "requested track %d is unavailable "
@@ -119,7 +126,8 @@ static int init( hnd_t *handle, const char *opt_str )
     {
         for( unsigned i = 0; i < h->lavf->nb_streams; i++ )
         {
-            if( h->lavf->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO )
+            AVStream *stream = h->lavf->streams[i];
+            if( stream && stream->codecpar && stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO )
             {
                 tid = i;
                 break;
@@ -137,7 +145,10 @@ static int init( hnd_t *handle, const char *opt_str )
     h->track = tid;
 
     // FFmpeg 8.x: Use codecpar instead of stream->codec
-    AVCodecParameters *codecpar = h->lavf->streams[tid]->codecpar;
+    AVStream *stream = h->lavf->streams[tid];
+    if( !stream || !stream->codecpar )
+        goto codecnotfound;
+    AVCodecParameters *codecpar = stream->codecpar;
     h->codec = avcodec_find_decoder( codecpar->codec_id );
     if( !h->codec )
         goto codecnotfound;
@@ -167,7 +178,7 @@ static int init( hnd_t *handle, const char *opt_str )
     else if( h->ctx->ch_layout.order == AV_CHANNEL_ORDER_UNSPEC )
         chanlayout_mask = av_channel_layout_subset( &h->ctx->ch_layout, UINT64_MAX );
 
-    AVRational stream_timebase = h->lavf->streams[tid]->time_base;
+    AVRational stream_timebase = stream->time_base;
     int bytes_per_sample = av_get_bytes_per_sample( h->samplefmt );
     if( channels <= 0 || bytes_per_sample <= 0 || h->ctx->sample_rate <= 0 ||
         h->ctx->frame_size < 0 || h->ctx->extradata_size < 0 ||
@@ -292,7 +303,6 @@ static hnd_t copy_init( hnd_t filter_chain, const char *opts )
         lavf_source_t *h = filter_chain;
         if( !h->ctx )
             return NULL;
-        h->copy = 1;
 
         if( !h->pkt )
         {
@@ -300,6 +310,7 @@ static hnd_t copy_init( hnd_t filter_chain, const char *opts )
             return NULL;
         }
 
+        audio_packet_t *out = NULL;
         if( ( h->ctx->codec_id == AV_CODEC_ID_AAC ) && !h->ctx->extradata )
         {
             const AVBitStreamFilter *bsf = av_bsf_get_by_name( "aac_adtstoasc" );
@@ -315,10 +326,13 @@ static hnd_t copy_init( hnd_t filter_chain, const char *opts )
                 av_bsf_free( &h->bsfs );
                 return NULL;
             }
-            h->out = convert_to_audio_packet( h, h->pkt );
-            h->info.extradata = h->ctx->extradata;
-            h->info.extradata_size = h->ctx->extradata_size;
-            h->info.codec_name = "aac";
+            out = convert_to_audio_packet( h, h->pkt, h->info.last_delta );
+            if( out )
+            {
+                h->info.extradata = h->ctx->extradata;
+                h->info.extradata_size = h->ctx->extradata_size;
+                h->info.codec_name = "aac";
+            }
         }
         else if( ( h->ctx->codec_id == AV_CODEC_ID_AC3 ) && !h->ctx->extradata )
         {
@@ -335,22 +349,30 @@ static hnd_t copy_init( hnd_t filter_chain, const char *opts )
                 return NULL;
             }
             memcpy( extradata, h->pkt->data, (size_t)extradata_size );
-            h->ctx->extradata_size = extradata_size;
-            h->ctx->extradata = extradata;
-            h->out = convert_to_audio_packet( h, h->pkt );
-            h->info.extradata = h->ctx->extradata;
-            h->info.extradata_size = h->ctx->extradata_size;
-            h->info.codec_name = "ac3";
+            out = convert_to_audio_packet( h, h->pkt, h->info.last_delta );
+            if( out )
+            {
+                h->ctx->extradata_size = extradata_size;
+                h->ctx->extradata = extradata;
+                h->info.extradata = h->ctx->extradata;
+                h->info.extradata_size = h->ctx->extradata_size;
+                h->info.codec_name = "ac3";
+            }
+            else
+                av_free( extradata );
         }
         else
-            h->out = convert_to_audio_packet( h, h->pkt );
+            out = convert_to_audio_packet( h, h->pkt, h->info.last_delta );
 
         h->pkt = NULL;
-        if( !h->out )
+        if( !out )
         {
+            av_bsf_free( &h->bsfs );
             fprintf( stderr, "lavf [error]: failed to convert initial audio packet!\n" );
             return NULL;
         }
+        h->out = out;
+        h->copy = 1;
         return chain;
     }
     fprintf( stderr, "lavf [error]: attempted to enter copy mode with a non-empty filter chain!" ); // as far as CLI users see, lavf isn't a filter
@@ -365,11 +387,11 @@ static audio_info_t *get_info( hnd_t handle )
     return &h->info;
 }
 
-static int copy_packet_payload( lavf_source_t *h, audio_packet_t *out, const uint8_t *data, int size )
+static int copy_packet_payload( lavf_source_t *h, audio_packet_t *out, const uint8_t *data, int size, uint32_t last_delta )
 {
     if( !h || !out || size < 0 || h->info.samplesize < 0 || (size && !data) )
         return -1;
-    out->samplecount = h->info.last_delta;
+    out->samplecount = last_delta;
     if( !out->samplecount && h->info.framelen > 0 )
         out->samplecount = (unsigned)h->info.framelen;
     out->size        = size;
@@ -384,7 +406,7 @@ static int copy_packet_payload( lavf_source_t *h, audio_packet_t *out, const uin
     return 0;
 }
 
-static audio_packet_t *convert_to_audio_packet( hnd_t handle, AVPacket *pkt )
+static audio_packet_t *convert_to_audio_packet( hnd_t handle, AVPacket *pkt, uint32_t last_delta )
 {
     lavf_source_t *h = handle;
     audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
@@ -404,6 +426,7 @@ static audio_packet_t *convert_to_audio_packet( hnd_t handle, AVPacket *pkt )
                                       pkt->pts != AV_NOPTS_VALUE ? pkt->pts : INVALID_DTS,
                                       h->origtb, h->info.timebase );
     out->info        = h->info;
+    out->info.last_delta = last_delta;
     out->channels    = (unsigned)h->info.channels;
 
     if( h->bsfs )
@@ -426,7 +449,7 @@ static audio_packet_t *convert_to_audio_packet( hnd_t handle, AVPacket *pkt )
         av_packet_free( &in_pkt );
         if( ret >= 0 )
         {
-            if( copy_packet_payload( h, out, out_pkt->data, out_pkt->size ) )
+            if( copy_packet_payload( h, out, out_pkt->data, out_pkt->size, last_delta ) )
             {
                 av_packet_free( &out_pkt );
                 free_avpacket( pkt );
@@ -444,7 +467,7 @@ static audio_packet_t *convert_to_audio_packet( hnd_t handle, AVPacket *pkt )
     }
     else
     {
-        if( copy_packet_payload( h, out, pkt->data, pkt->size ) )
+        if( copy_packet_payload( h, out, pkt->data, pkt->size, last_delta ) )
         {
             free_avpacket( pkt );
             x264_af_free_packet( out );
@@ -474,13 +497,17 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     AVPacket *pkt = next_packet( h );
     if( !pkt )
         return NULL;
+    uint32_t last_delta = h->info.last_delta;
     if( pkt->duration )
     {
-        int64_t last_delta = x264_from_timebase( pkt->duration, h->origtb, h->info.timebase.den );
-        if( h->info.framelen != last_delta )
-            h->info.last_delta = last_delta > 0 && last_delta <= UINT32_MAX ? (uint32_t)last_delta : 0;
+        int64_t duration_delta = x264_from_timebase( pkt->duration, h->origtb, h->info.timebase.den );
+        if( h->info.framelen != duration_delta )
+            last_delta = duration_delta > 0 && duration_delta <= UINT32_MAX ? (uint32_t)duration_delta : 0;
     }
-    return convert_to_audio_packet( h, pkt );
+    audio_packet_t *out = convert_to_audio_packet( h, pkt, last_delta );
+    if( out )
+        h->info.last_delta = last_delta;
+    return out;
 }
 
 static audio_packet_t *copy_finish( hnd_t handle )
@@ -563,7 +590,6 @@ static int decode_audio_frame( lavf_source_t *h, uint8_t *buf, intptr_t buflen )
 
 static int low_decode_audio( lavf_source_t *h, uint8_t *buf, intptr_t buflen )
 {
-    static uint8_t desync_warn = 0;
     int ret;
     if( !h || !h->ctx || !h->decode_frame || !buf || buflen <= 0 )
         return -1;
@@ -574,7 +600,7 @@ static int low_decode_audio( lavf_source_t *h, uint8_t *buf, intptr_t buflen )
         return ret;
     if( ret < 0 && ret != AVERROR( EAGAIN ) )
     {
-        if( !desync_warn++ )
+        if( !h->desync_warn++ )
             AF_LOG_WARN( h, "Decoding errors may cause audio desync\n" );
     }
 
@@ -591,7 +617,7 @@ static int low_decode_audio( lavf_source_t *h, uint8_t *buf, intptr_t buflen )
         ret = avcodec_send_packet( h->ctx, h->pkt );
         if( ret < 0 && ret != AVERROR( EAGAIN ) )
         {
-            if( !desync_warn++ )
+            if( !h->desync_warn++ )
                 AF_LOG_WARN( h, "Decoding errors may cause audio desync\n" );
             free_avpacket( h->pkt );
             h->pkt = NULL;
@@ -611,7 +637,7 @@ static int low_decode_audio( lavf_source_t *h, uint8_t *buf, intptr_t buflen )
             return ret;
         if( ret < 0 && ret != AVERROR( EAGAIN ) )
         {
-            if( !desync_warn++ )
+            if( !h->desync_warn++ )
                 AF_LOG_WARN( h, "Decoding errors may cause audio desync\n" );
         }
     }
@@ -708,8 +734,7 @@ static inline int not_in_cache( lavf_source_t *h, int64_t sample )
 
 static int64_t fill_buffer_until( lavf_source_t *h, int64_t lastsample )
 {
-    static int errored = 0;
-    if( errored )
+    if( h->decode_error )
         return -1;
     if( not_in_cache( h, lastsample ) < 0 )
     {
@@ -724,7 +749,7 @@ static int64_t fill_buffer_until( lavf_source_t *h, int64_t lastsample )
         if( !buffer_next_frame( h ) )
         {
             // libavcodec already warns for us
-            errored = 1;
+            h->decode_error = 1;
             break;
         }
     }

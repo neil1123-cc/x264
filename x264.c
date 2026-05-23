@@ -2318,7 +2318,9 @@ static int parse( int argc, char **argv, x264_param_t *param, cli_opt_t *opt )
                 if( !x264_is_regular_file( opt->qpfile ) )
                 {
                     x264_cli_log( "x264", X264_LOG_ERROR, "qpfile incompatible with non-regular file `%s'\n", optarg );
-                    fclose( opt->qpfile );
+                    if( fclose( opt->qpfile ) )
+                        x264_cli_log( "x264", X264_LOG_ERROR, "failed to close qpfile\n" );
+                    opt->qpfile = NULL;
                     return -1;
                 }
                 break;
@@ -2801,11 +2803,13 @@ generic_option:
      * if the user didn't explicitly set a reference frame count. */
     if( !b_user_ref )
     {
-        int mbs = (((param->i_width)+15)>>4) * (((param->i_height)+15)>>4);
+        int64_t mb_width = ((int64_t)param->i_width + 15) >> 4;
+        int64_t mb_height = ((int64_t)param->i_height + 15) >> 4;
+        int64_t mbs = mb_width > 0 && mb_height > 0 && mb_width <= INT64_MAX / mb_height ? mb_width * mb_height : INT64_MAX;
         for( int i = 0; x264_levels[i].level_idc != 0; i++ )
             if( param->i_level_idc == x264_levels[i].level_idc )
             {
-                while( mbs * param->i_frame_reference > x264_levels[i].dpb && param->i_frame_reference > 1 )
+                while( param->i_frame_reference > 1 && mbs > x264_levels[i].dpb / param->i_frame_reference )
                     param->i_frame_reference--;
                 break;
             }
@@ -2875,7 +2879,8 @@ static void parse_qpfile( cli_opt_t *opt, x264_picture_t *pic, int i_frame )
             {
                 if( ret != EOF )
                     x264_cli_log( "x264", X264_LOG_ERROR, "qpfile seeking failed\n" );
-                fclose( opt->qpfile );
+                if( fclose( opt->qpfile ) )
+                    x264_cli_log( "x264", X264_LOG_ERROR, "failed to close qpfile\n" );
                 opt->qpfile = NULL;
             }
             break;
@@ -2892,7 +2897,8 @@ static void parse_qpfile( cli_opt_t *opt, x264_picture_t *pic, int i_frame )
         if( ret < 2 || qp < -1 || qp > QP_MAX )
         {
             x264_cli_log( "x264", X264_LOG_ERROR, "can't parse qpfile for frame %d\n", i_frame );
-            fclose( opt->qpfile );
+            if( fclose( opt->qpfile ) )
+                x264_cli_log( "x264", X264_LOG_ERROR, "failed to close qpfile\n" );
             opt->qpfile = NULL;
             break;
         }
@@ -2915,7 +2921,8 @@ static int encode_frame( x264_t *h, hnd_t hout, x264_picture_t *pic, int64_t *la
     if( i_frame_size )
     {
         i_frame_size = cli_output.write_frame( hout, nal[0].p_payload, i_frame_size, &pic_out );
-        *last_dts = pic_out.i_dts;
+        if( i_frame_size >= 0 )
+            *last_dts = pic_out.i_dts;
     }
 
     return i_frame_size;
@@ -3084,11 +3091,14 @@ static int encode( x264_param_t *param, cli_opt_t *opt )
         int i_nal;
 
         FAIL_IF_ERROR2( x264_encoder_headers( h, &headers, &i_nal ) < 0, "x264_encoder_headers failed\n" );
-        FAIL_IF_ERROR2( (i_file = cli_output.write_headers( opt->hout, headers )) < 0, "error writing headers to output file\n" );
+        int header_size = cli_output.write_headers( opt->hout, headers );
+        FAIL_IF_ERROR2( header_size < 0, "error writing headers to output file\n" );
+        i_file = header_size;
     }
 
     if( opt->tcfile_out )
-        fprintf( opt->tcfile_out, "# timecode format v2\n" );
+        FAIL_IF_ERROR2( fprintf( opt->tcfile_out, "# timecode format v2\n" ) < 0,
+                        "error writing timecode output file\n" );
 
     tm1 = time(NULL);
     x264_cli_log( "x264", X264_LOG_INFO, "started at %s", ctime(&tm1) );
@@ -3105,7 +3115,9 @@ static int encode( x264_param_t *param, cli_opt_t *opt )
     /* Encode frames */
     for( ; !b_ctrl_c && (i_frame < param->i_frame_total || !param->i_frame_total); i_frame++ )
     {
-        if( filter.get_frame( opt->hin, &cli_pic, i_frame + opt->i_seek ) )
+        FAIL_IF_ERROR2( i_frame > INT_MAX - opt->i_seek, "input frame index overflow\n" );
+        int input_frame = i_frame + opt->i_seek;
+        if( filter.get_frame( opt->hin, &cli_pic, input_frame ) )
             break;
         x264_picture_init( &pic );
         convert_cli_to_lib_pic( &pic, &cli_pic );
@@ -3133,34 +3145,40 @@ static int encode( x264_param_t *param, cli_opt_t *opt )
             pic.i_pts = largest_pts + ticks_per_frame;
         }
 
-        second_largest_pts = largest_pts;
-        largest_pts = pic.i_pts;
-        if( opt->tcfile_out )
-            fprintf( opt->tcfile_out, "%.6f\n", pic.i_pts * ((double)param->i_timebase_num / param->i_timebase_den) * 1e3 );
-
         if( opt->qpfile )
-            parse_qpfile( opt, &pic, i_frame + opt->i_seek );
+            parse_qpfile( opt, &pic, input_frame );
 
         prev_dts = last_dts;
+        const int64_t current_pts = pic.i_pts;
         i_frame_size = encode_frame( h, opt->hout, &pic, &last_dts );
         if( i_frame_size < 0 )
         {
             b_ctrl_c = 1; /* lie to exit the loop */
             retval = -1;
         }
-        else if( i_frame_size )
+        else
         {
-            i_file += i_frame_size;
-            i_frame_output++;
-            if( i_frame_output == 1 )
-                first_dts = prev_dts = last_dts;
+            second_largest_pts = largest_pts;
+            largest_pts = current_pts;
+            if( i_frame_size )
+            {
+                i_file += i_frame_size;
+                i_frame_output++;
+                if( i_frame_output == 1 )
+                    first_dts = prev_dts = last_dts;
+            }
         }
 
-        if( filter.release_frame( opt->hin, &cli_pic, i_frame + opt->i_seek ) )
+        if( filter.release_frame( opt->hin, &cli_pic, input_frame ) )
         {
             retval = -1;
             break;
         }
+
+        if( opt->tcfile_out )
+            FAIL_IF_ERROR2( fprintf( opt->tcfile_out, "%.6f\n",
+                                     pic.i_pts * ((double)param->i_timebase_num / param->i_timebase_den) * 1e3 ) < 0,
+                            "error writing timecode output file\n" );
 
         /* update status line (up to 1000 times per input file) */
         if( opt->b_progress && i_frame_output )
@@ -3217,7 +3235,8 @@ fail:
     fprintf( stderr, "\n" );
 
     if( b_ctrl_c )
-		x264_cli_printf( X264_LOG_INFO, "aborted at input frame %d, output frame %d\n", opt->i_seek + i_frame, i_frame_output );
+        x264_cli_printf( X264_LOG_INFO, "aborted at input frame %"PRId64", output frame %d\n",
+                         (int64_t)opt->i_seek + i_frame, i_frame_output );
 
     if( cli_output.close_file( opt->hout, largest_pts, second_largest_pts ) )
         retval = -1;

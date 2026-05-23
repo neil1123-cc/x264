@@ -272,6 +272,15 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 		fr.planes[2] = 0;
 		fr.strides[1] = output->img.stride[1];
 		break;
+	default:
+		h->prev_filter.release_frame( h->prev_hnd, output, frame );
+		return -1;
+	}
+	if( !fr.planes[0] || !fr.planes[1] || !fr.strides[0] || !fr.strides[1] ||
+	    (h->csp != X264_CSP_NV12 && !fr.planes[2]) )
+	{
+		h->prev_filter.release_frame( h->prev_hnd, output, frame );
+		return -1;
 	}
 	fr.pixfmt = h->fmt;
 	csri_render(h->subrenderinst, &fr, (h->vfr ? output->pts : frame) * h->scale_factor);

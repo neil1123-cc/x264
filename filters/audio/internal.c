@@ -299,6 +299,41 @@ CLIPFUN( 16, int16_t, INT16_MIN, INT16_MAX )
 CLIPFUN( 32, int32_t, INT32_MIN, INT32_MAX )
 #undef CLIPFUN
 
+static inline int64_t x264_af_round_clip_float( float value, float scale, int64_t min, int64_t max )
+{
+    if( value != value )
+        return 0;
+    float scaled = value * scale;
+    if( scaled <= (float)min )
+        return min;
+    if( scaled >= (float)max )
+        return max;
+    return (int64_t)llrintf( scaled );
+}
+
+static inline int64_t x264_af_round_clip_double( double value, double scale, int64_t min, int64_t max )
+{
+    if( value != value )
+        return 0;
+    double scaled = value * scale;
+    if( scaled <= (double)min )
+        return min;
+    if( scaled >= (double)max )
+        return max;
+    return (int64_t)llrint( scaled );
+}
+
+static inline int32_t x264_af_floor_shift_i32( int32_t value, unsigned shift )
+{
+    if( !shift )
+        return value;
+    if( shift >= 31 )
+        return value < 0 ? -1 : 0;
+    if( value >= 0 )
+        return value >> shift;
+    return -1 - (int32_t)(((int64_t)-1 - value) >> shift);
+}
+
 uint8_t *x264_af_convert( enum SampleFmt outfmt, uint8_t *in, enum SampleFmt fmt, unsigned channels, unsigned samplecount )
 {
     size_t totalsamples;
@@ -340,21 +375,21 @@ uint8_t *x264_af_convert( enum SampleFmt outfmt, uint8_t *in, enum SampleFmt fmt
     CONVERT( SMPFMT_U8,  SMPFMT_S32, int32_t, ((int)INPUT( uint8_t ) - 0x80) * 16777216 );
     CONVERT( SMPFMT_U8,  SMPFMT_FLT, float,   (INPUT( uint8_t ) - 0x80) * (1.0f / 128.0f) );
     CONVERT( SMPFMT_U8,  SMPFMT_DBL, double,  (INPUT( uint8_t ) - 0x80) * (1.0 / 128.0) );
-    CONVERT( SMPFMT_S16, SMPFMT_U8,  uint8_t, (INPUT( int16_t ) >> 8) + 0x80 );
+    CONVERT( SMPFMT_S16, SMPFMT_U8,  uint8_t, x264_af_floor_shift_i32( INPUT( int16_t ), 8 ) + 0x80 );
     CONVERT( SMPFMT_S16, SMPFMT_S32, int32_t,  (int32_t)INPUT( int16_t ) * 65536 );
     CONVERT( SMPFMT_S16, SMPFMT_FLT, float,    INPUT( int16_t ) * (1.0f / 32768.0f) );
     CONVERT( SMPFMT_S16, SMPFMT_DBL, double,   INPUT( int16_t ) * (1.0 / 32768.0) );
-    CONVERT( SMPFMT_S32, SMPFMT_U8,  uint8_t, (INPUT( int32_t ) >> 24) + 0x80 );
-    CONVERT( SMPFMT_S32, SMPFMT_S16, int16_t,  INPUT( int32_t ) >> 16 );
+    CONVERT( SMPFMT_S32, SMPFMT_U8,  uint8_t, x264_af_floor_shift_i32( INPUT( int32_t ), 24 ) + 0x80 );
+    CONVERT( SMPFMT_S32, SMPFMT_S16, int16_t,  x264_af_floor_shift_i32( INPUT( int32_t ), 16 ) );
     CONVERT( SMPFMT_S32, SMPFMT_FLT, float,    INPUT( int32_t ) * (1.0f / 2147483648.0f) );
     CONVERT( SMPFMT_S32, SMPFMT_DBL, double,   INPUT( int32_t ) * (1.0 / 2147483648.0) );
-    CONVERT( SMPFMT_FLT, SMPFMT_U8,  uint8_t,  clip8( (int64_t)lrintf(  INPUT( float )  * 128.0f ) + 0x80 ) );
-    CONVERT( SMPFMT_FLT, SMPFMT_S16, int16_t, clip16( (int64_t)lrintf(  INPUT( float )  * 32768.0f ) ) );
-    CONVERT( SMPFMT_FLT, SMPFMT_S32, int32_t, clip32( (int64_t)llrintf( INPUT( float )  * 2147483648.0f ) ) );
+    CONVERT( SMPFMT_FLT, SMPFMT_U8,  uint8_t,  clip8(  x264_af_round_clip_float( INPUT( float ), 128.0f, -0x80, 0x7f ) + 0x80 ) );
+    CONVERT( SMPFMT_FLT, SMPFMT_S16, int16_t, clip16( x264_af_round_clip_float( INPUT( float ), 32768.0f, INT16_MIN, INT16_MAX ) ) );
+    CONVERT( SMPFMT_FLT, SMPFMT_S32, int32_t, clip32( x264_af_round_clip_float( INPUT( float ), 2147483648.0f, INT32_MIN, INT32_MAX ) ) );
     CONVERT( SMPFMT_FLT, SMPFMT_DBL, double,   INPUT( float ) );
-    CONVERT( SMPFMT_DBL, SMPFMT_U8,  uint8_t,  clip8( (int64_t)lrint(  INPUT( double ) * 128.0 ) + 0x80 ) );
-    CONVERT( SMPFMT_DBL, SMPFMT_S16, int16_t, clip16( (int64_t)lrint(  INPUT( double ) * 32768.0 ) ) );
-    CONVERT( SMPFMT_DBL, SMPFMT_S32, int32_t, clip32( (int64_t)llrint( INPUT( double ) * 2147483648.0 ) ) );
+    CONVERT( SMPFMT_DBL, SMPFMT_U8,  uint8_t,  clip8(  x264_af_round_clip_double( INPUT( double ), 128.0, -0x80, 0x7f ) + 0x80 ) );
+    CONVERT( SMPFMT_DBL, SMPFMT_S16, int16_t, clip16( x264_af_round_clip_double( INPUT( double ), 32768.0, INT16_MIN, INT16_MAX ) ) );
+    CONVERT( SMPFMT_DBL, SMPFMT_S32, int32_t, clip32( x264_af_round_clip_double( INPUT( double ), 2147483648.0, INT32_MIN, INT32_MAX ) ) );
     CONVERT( SMPFMT_DBL, SMPFMT_FLT, float,    INPUT( double ) );
 #undef INPUT
 #undef CONVERT

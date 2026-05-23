@@ -313,12 +313,11 @@ static audio_packet_t *get_next_packet( hnd_t handle )
 
         if( !( h->in = x264_af_get_samples( h->filter_chain, h->last_sample, last_sample ) ) )
             goto error;
-        if( h->last_dts == INVALID_DTS )
-            h->last_dts = h->last_sample;
-        h->last_sample += h->in->samplecount;
-
-        if( h->info.channels <= 0 || h->in->samplecount > (unsigned)(INT_MAX / h->info.channels) )
+        if( h->info.channels <= 0 ||
+            h->in->samplecount > (unsigned)(INT_MAX / h->info.channels) ||
+            h->in->samplecount > (uint64_t)(INT64_MAX - h->last_sample) )
             goto error;
+        int64_t staged_last_sample = h->last_sample + h->in->samplecount;
         int input_samples = h->in->samplecount * h->info.channels;
 
         free( h->samplebuffer );
@@ -336,6 +335,10 @@ static audio_packet_t *get_next_packet( hnd_t handle )
             goto error;
         }
         out->size = ret;
+
+        if( h->last_dts == INVALID_DTS )
+            h->last_dts = h->last_sample;
+        h->last_sample = staged_last_sample;
 
     } while( ret <= 0 );
 

@@ -847,6 +847,8 @@ static OSStatus pcmInputDataProc( ComponentInstance ci,
     if( !h || !ioNumberDataPackets || !ioData || ioData->mNumberBuffers < 1 )
         return -1;
     UInt32 requested_packets = *ioNumberDataPackets;
+    audio_packet_t *in = NULL;
+    uint8_t *samplebuffer = NULL;
 
     if( !h->filter_chain || h->info.channels <= 0 ||
         h->info.channels > (int)(sizeof(qt_channel_map) / sizeof(qt_channel_map[0])) ||
@@ -864,26 +866,35 @@ static OSStatus pcmInputDataProc( ComponentInstance ci,
     if( get_sample_end( h->last_sample, h->info.framelen, &last_sample ) )
         goto error;
 
-    if( !( h->in = x264_af_get_samples( h->filter_chain, h->last_sample, last_sample ) ) )
+    if( !( in = x264_af_get_samples( h->filter_chain, h->last_sample, last_sample ) ) )
         goto eof_reached;
 
-    if( h->in->samplecount < requested_packets )
-        h->in->flags |= AUDIO_FLAG_EOF;
+    if( in->samplecount < requested_packets )
+        in->flags |= AUDIO_FLAG_EOF;
 
-    if( h->last_dts == INVALID_DTS )
-        h->last_dts = h->last_sample;
-    h->last_sample += h->in->samplecount;
+    int64_t staged_last_dts = h->last_dts;
+    if( staged_last_dts == INVALID_DTS )
+        staged_last_dts = h->last_sample;
+    if( in->samplecount > (uint64_t)INT64_MAX - (uint64_t)h->last_sample )
+        goto error;
+    int64_t staged_last_sample = h->last_sample + in->samplecount;
 
     if( h->info.samplesize <= 0 ||
-        h->in->samplecount > UINT32_MAX / (unsigned)h->info.samplesize )
+        in->samplecount > UINT32_MAX / (unsigned)h->info.samplesize )
         goto error;
-    UInt32 data_size = h->in->samplecount * h->info.samplesize;
+    UInt32 data_size = in->samplecount * h->info.samplesize;
+
+    samplebuffer = x264_af_interleave3( SMPFMT_FLT, in->samples, h->info.channels, in->samplecount, qt_channel_map[h->info.channels-1] );
+    if( in->samplecount && !samplebuffer )
+        goto error;
 
     free( h->samplebuffer );
-    h->samplebuffer = NULL;
-    h->samplebuffer = x264_af_interleave3( SMPFMT_FLT, h->in->samples, h->info.channels, h->in->samplecount, qt_channel_map[h->info.channels-1] );
-    if( h->in->samplecount && !h->samplebuffer )
-        goto error;
+    h->samplebuffer = samplebuffer;
+    samplebuffer = NULL;
+    h->in = in;
+    in = NULL;
+    h->last_dts = staged_last_dts;
+    h->last_sample = staged_last_sample;
 
     ioData->mNumberBuffers = 1;
     ioData->mBuffers[0].mNumberChannels = h->info.channels;
@@ -895,6 +906,9 @@ static OSStatus pcmInputDataProc( ComponentInstance ci,
     return noErr;
 
 error:
+    if( in )
+        x264_af_free_packet( in );
+    free( samplebuffer );
     if( h->in )
         x264_af_free_packet( h->in );
     h->in = NULL;

@@ -132,19 +132,37 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
 static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 {
     crop_hnd_t *h = handle;
-    if( !h || !output || !h->csp || !h->prev_hnd || !h->prev_filter.get_frame )
+    if( !h || !output || !h->csp || !h->prev_hnd ||
+        !h->prev_filter.get_frame || !h->prev_filter.release_frame || frame < 0 )
         return -1;
     if( h->prev_filter.get_frame( h->prev_hnd, output, frame ) )
         return -1;
-    output->img.width  = h->dims[2];
-    output->img.height = h->dims[3];
-    /* shift the plane pointers down 'top' rows and right 'left' columns. */
-    for( int i = 0; i < output->img.planes; i++ )
+
+    cli_image_t img = output->img;
+    if( x264_cli_csp_is_invalid( img.csp ) || img.planes != h->csp->planes ||
+        img.width < h->dims[0] + h->dims[2] ||
+        img.height < h->dims[1] + h->dims[3] )
     {
-        intptr_t offset = output->img.stride[i] * h->dims[1] * h->csp->height[i];
-        offset += h->dims[0] * h->csp->width[i] * x264_cli_csp_depth_factor( output->img.csp );
-        output->img.plane[i] += offset;
+        h->prev_filter.release_frame( h->prev_hnd, output, frame );
+        return -1;
     }
+    for( int i = 0; i < img.planes; i++ )
+        if( !img.plane[i] )
+        {
+            h->prev_filter.release_frame( h->prev_hnd, output, frame );
+            return -1;
+        }
+
+    img.width  = h->dims[2];
+    img.height = h->dims[3];
+    /* shift the plane pointers down 'top' rows and right 'left' columns. */
+    for( int i = 0; i < img.planes; i++ )
+    {
+        intptr_t offset = img.stride[i] * h->dims[1] * h->csp->height[i];
+        offset += h->dims[0] * h->csp->width[i] * x264_cli_csp_depth_factor( img.csp );
+        img.plane[i] += offset;
+    }
+    output->img = img;
     return 0;
 }
 

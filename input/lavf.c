@@ -93,6 +93,8 @@ static int handle_jpeg( int csp, int *fullrange )
 
 static AVCodecContext *codec_from_stream( AVStream *stream )
 {
+    if( !stream || !stream->codecpar )
+        return NULL;
     const AVCodec *codec = avcodec_find_decoder( stream->codecpar->codec_id );
     if( !codec )
         return NULL;
@@ -112,7 +114,7 @@ static AVCodecContext *codec_from_stream( AVStream *stream )
 
 static int read_frame_internal( cli_pic_t *p_pic, lavf_hnd_t *h, int i_frame, video_info_t *info )
 {
-    if( !p_pic || !h || !h->lavf || !h->lavc || !h->frame || !h->pkt || i_frame < 0 )
+    if( !p_pic || !h || !h->lavf || !h->lavc || !h->frame || !h->pkt || i_frame < 0 || i_frame == INT_MAX )
         return -1;
     if( h->first_pic && !info )
     {
@@ -164,11 +166,11 @@ static int read_frame_internal( cli_pic_t *p_pic, lavf_hnd_t *h, int i_frame, vi
         h->next_frame++;
     }
 
+    FAIL_IF_ERROR( invalid_dimensions( h->lavc->width, h->lavc->height ),
+                   "invalid video dimensions\n" );
     memcpy( p_pic->img.stride, h->frame->linesize, sizeof(p_pic->img.stride) );
     memcpy( p_pic->img.plane, h->frame->data, sizeof(p_pic->img.plane) );
     int is_fullrange   = 0;
-    FAIL_IF_ERROR( invalid_dimensions( h->lavc->width, h->lavc->height ),
-                   "invalid video dimensions\n" );
     p_pic->img.width   = h->lavc->width;
     p_pic->img.height  = h->lavc->height;
     p_pic->img.csp     = handle_jpeg( h->lavc->pix_fmt, &is_fullrange ) | X264_CSP_OTHER;
@@ -243,18 +245,27 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     if( options )
         av_dict_free( &options );
     FAIL_IF_ERROR_CLEANUP( avformat_find_stream_info( h->lavf, NULL ) < 0, "could not find input stream info\n" );
+    FAIL_IF_ERROR_CLEANUP( h->lavf->nb_streams > INT_MAX, "too many input streams\n" );
 	
 #if HAVE_AUDIO
     h->filename = strdup( psz_filename );
     FAIL_IF_ERROR_CLEANUP( !h->filename, "malloc failed\n" );
     int j = 0;
     while( j < h->lavf->nb_streams )
-        h->has_audio |= !!(h->lavf->streams[j++]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO );
+    {
+        AVStream *stream = h->lavf->streams[j++];
+        h->has_audio |= !!( stream && stream->codecpar && stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO );
+    }
 #endif
 
     int i = 0;
-    while( i < h->lavf->nb_streams && h->lavf->streams[i]->codecpar->codec_type != AVMEDIA_TYPE_VIDEO )
+    while( i < h->lavf->nb_streams )
+    {
+        AVStream *stream = h->lavf->streams[i];
+        if( stream && stream->codecpar && stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO )
+            break;
         i++;
+    }
     FAIL_IF_ERROR_CLEANUP( i == h->lavf->nb_streams, "could not find video stream\n" );
     h->stream_id       = i;
     h->next_frame      = 0;
@@ -345,6 +356,9 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     double duration = s->duration > 0 ? (double)s->duration * av_q2d(s->time_base) : 0;
     int duration_log = duration > INT_MAX ? INT_MAX : (int)X264_MAX( duration, 0 );
     const AVPixFmtDescriptor *pix_desc = av_pix_fmt_desc_get(h->lavc->pix_fmt);
+    const char *format_name = format ? format->name : (h->lavf->iformat ? h->lavf->iformat->name : "unknown");
+    const char *codec_name = p->name ? p->name : "unknown";
+    const char *codec_long_name = p->long_name ? p->long_name : "unknown";
     x264_cli_log( "lavf", X264_LOG_INFO,
                   "\n Format    : %s"
                   "\n Codec     : %s ( %s )"
@@ -352,8 +366,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
                   "\n Framerate : %d/%d"
                   "\n Timebase  : %d/%d"
                   "\n Duration  : %d:%02d:%02d\n",
-                  format ? format->name : h->lavf->iformat->name,
-                  p->name, p->long_name,
+                  format_name,
+                  codec_name, codec_long_name,
                   pix_desc ? pix_desc->name : "unknown",
                   s->avg_frame_rate.num, s->avg_frame_rate.den,
                   s->time_base.num, s->time_base.den,

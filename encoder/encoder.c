@@ -26,6 +26,7 @@
  *****************************************************************************/
 
 #include "common/common.h"
+#include <limits.h>
 
 #include "set.h"
 #include "analyse.h"
@@ -167,7 +168,8 @@ static void frame_dump( x264_t *h )
 
     /* Write the frame in display order */
     int frame_size = FRAME_SIZE( h->param.i_height * h->param.i_width * SIZEOF_PIXEL );
-    if( !fseek( f, (int64_t)h->fdec->i_frame * frame_size, SEEK_SET ) )
+    int64_t offset = (int64_t)h->fdec->i_frame * frame_size;
+    if( offset <= LONG_MAX && !fseek( f, (long)offset, SEEK_SET ) )
     {
         for( int p = 0; p < (CHROMA444 ? 3 : 1); p++ )
             for( int y = 0; y < h->param.i_height; y++ )
@@ -187,7 +189,10 @@ static void frame_dump( x264_t *h )
             }
         }
     }
-    fclose( f );
+    if( ferror( f ) )
+        x264_log( h, X264_LOG_ERROR, "dump_yuv: failed to write %s\n", h->param.psz_dump_yuv );
+    if( fclose( f ) )
+        x264_log( h, X264_LOG_ERROR, "dump_yuv: failed to close %s\n", h->param.psz_dump_yuv );
 }
 
 /* Fill "default" values */
@@ -2073,10 +2078,15 @@ x264_t *x264_encoder_open( x264_param_t *param, void *api )
         else if( !x264_is_regular_file( f ) )
         {
             x264_log( h, X264_LOG_ERROR, "dump_yuv: incompatible with non-regular file %s\n", h->param.psz_dump_yuv );
-            fclose( f );
+            if( fclose( f ) )
+                x264_log( h, X264_LOG_ERROR, "dump_yuv: failed to close %s\n", h->param.psz_dump_yuv );
             goto fail;
         }
-        fclose( f );
+        if( fclose( f ) )
+        {
+            x264_log( h, X264_LOG_ERROR, "dump_yuv: failed to close %s\n", h->param.psz_dump_yuv );
+            goto fail;
+        }
     }
 
     const char *profile = h->sps->i_profile_idc == PROFILE_BASELINE ? "Constrained Baseline" :

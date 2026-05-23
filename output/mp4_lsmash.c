@@ -1032,6 +1032,7 @@ static int write_audio_frames( mp4_hnd_t *p_mp4, double video_dts, int finish )
         x264_audio_free_frame( p_audio->encoder, frame );
         p_sample->prop.pre_roll.distance = p_audio->b_mdct;
 #else
+        uint32_t audio_last_delta = 0;
         /* FIXME: mp4sys_importer_get_access_unit() returns 1 if there're any changes in stream's properties.
            If you want to support them, you have to retrieve summary again, and make some operation accordingly. */
         lsmash_sample_t *p_sample = lsmash_create_sample( p_audio->summary->max_au_length );
@@ -1050,7 +1051,7 @@ static int write_audio_frames( mp4_hnd_t *p_mp4, double video_dts, int finish )
             break; /* end of stream */
         }
         else
-            p_audio->last_delta = p_audio->summary->samples_in_frame;
+            audio_last_delta = p_audio->summary->samples_in_frame;
 #endif
         p_sample->dts = p_sample->cts = audio_timestamp;
         p_sample->prop.ra_flags = ISOM_SAMPLE_RANDOM_ACCESS_FLAG_SYNC;
@@ -1061,6 +1062,9 @@ static int write_audio_frames( mp4_hnd_t *p_mp4, double video_dts, int finish )
             return -1;
         }
 
+#if !HAVE_AUDIO
+        p_audio->last_delta = audio_last_delta;
+#endif
         p_audio->i_numframe++;
     }
     return 0;
@@ -1436,7 +1440,7 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
     p_mp4->i_track = lsmash_create_track( p_mp4->p_root, ISOM_MEDIA_HANDLER_TYPE_VIDEO_TRACK );
     MP4_FAIL_IF_ERR( !p_mp4->i_track, "failed to create a video track.\n" );
 
-    MP4_FAIL_IF_ERR( p_param->i_width < 0 || p_param->i_height < 0,
+    MP4_FAIL_IF_ERR( p_param->i_width <= 0 || p_param->i_height <= 0,
                      "invalid video dimensions.\n" );
     p_mp4->summary->width = (uint32_t)p_param->i_width;
     p_mp4->summary->height = (uint32_t)p_param->i_height;
@@ -1614,16 +1618,18 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     int video_sample_entry = lsmash_add_sample_entry( p_mp4->p_root, p_mp4->i_track, p_mp4->summary );
     MP4_FAIL_IF_ERR( video_sample_entry <= 0,
                      "failed to add sample entry for video.\n" );
-    p_mp4->i_sample_entry = (uint32_t)video_sample_entry;
 
     /* SEI */
+    uint8_t *sei_buffer = NULL;
     if( sei_size )
     {
-        p_mp4->p_sei_buffer = malloc( sei_size );
-        MP4_FAIL_IF_ERR( !p_mp4->p_sei_buffer,
+        sei_buffer = malloc( sei_size );
+        MP4_FAIL_IF_ERR( !sei_buffer,
                          "failed to allocate sei transition buffer.\n" );
-        memcpy( p_mp4->p_sei_buffer, sei, sei_size );
+        memcpy( sei_buffer, sei, sei_size );
     }
+    p_mp4->i_sample_entry = (uint32_t)video_sample_entry;
+    p_mp4->p_sei_buffer = sei_buffer;
     p_mp4->i_sei_size = sei_size;
 
     return (int)(sei_size + sps_size + pps_size);
@@ -1634,6 +1640,9 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
     mp4_hnd_t *p_mp4 = handle;
     uint64_t dts = 0;
     uint64_t cts = 0;
+    int64_t start_offset;
+    uint64_t first_cts;
+    int64_t init_delta_state;
 
     if( !p_mp4 || !p_mp4->p_root || !p_mp4->i_track || !p_mp4->i_sample_entry ||
         !p_picture || i_size < 0 || (i_size && !p_nalu) ||
@@ -1641,16 +1650,19 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
         p_mp4->i_sei_size > UINT32_MAX - (uint32_t)i_size )
         return -1;
 
+    start_offset = p_mp4->i_start_offset;
+    first_cts = p_mp4->i_first_cts;
+    init_delta_state = p_mp4->i_init_delta;
+
     if( !p_mp4->i_numframe )
     {
-        uint64_t first_cts = 0;
         MP4_FAIL_IF_ERR( p_picture->i_dts > 0 || p_picture->i_dts == INT64_MIN,
                          "video DTS start offset is out of range.\n" );
-        p_mp4->i_start_offset = -p_picture->i_dts;
+        start_offset = -p_picture->i_dts;
         MP4_FAIL_IF_ERR( !p_mp4->b_dts_compress &&
-                         mp4_u64_mul_overflow( (uint64_t)p_mp4->i_start_offset, p_mp4->i_time_inc, &first_cts ),
+                         mp4_u64_mul_overflow( (uint64_t)start_offset, p_mp4->i_time_inc, &first_cts ),
                          "video CTS start offset is out of range.\n" );
-        p_mp4->i_first_cts = p_mp4->b_dts_compress ? 0 : first_cts;
+        first_cts = p_mp4->b_dts_compress ? 0 : first_cts;
         if( p_mp4->psz_chapter && (p_mp4->b_brand_qt || p_mp4->b_brand_m4a) )
             MP4_FAIL_IF_ERR( lsmash_create_reference_chapter_track( p_mp4->p_root, p_mp4->i_track, p_mp4->psz_chapter ),
                              "failed to create reference chapter track.\n" );
@@ -1658,8 +1670,8 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
         {
             lsmash_edit_t edit;
             edit.duration   = ISOM_EDIT_DURATION_UNKNOWN32;     /* QuickTime doesn't support 64bit duration. */
-            MP4_FAIL_IF_ERR( p_mp4->i_first_cts > INT64_MAX, "video edit start time is out of range.\n" );
-            edit.start_time = (int64_t)p_mp4->i_first_cts;
+            MP4_FAIL_IF_ERR( first_cts > INT64_MAX, "video edit start time is out of range.\n" );
+            edit.start_time = (int64_t)first_cts;
             edit.rate       = ISOM_EDIT_MODE_NORMAL;
             MP4_LOG_IF_ERR( lsmash_create_explicit_timeline_map( p_mp4->p_root, p_mp4->i_track, edit ),
                             "failed to set timeline map for video.\n" );
@@ -1683,13 +1695,12 @@ do\
     MP4_SAMPLE_FAIL_IF_ERR( sample_size && !p_sample->data,
                             "failed to create a video sample data.\n" );
 
-    if( p_mp4->p_sei_buffer )
+    int sample_has_sei = p_mp4->p_sei_buffer != NULL;
+    if( sample_has_sei )
     {
         MP4_SAMPLE_FAIL_IF_ERR( !p_mp4->i_sei_size,
                                 "invalid SEI transition buffer.\n" );
         memcpy( p_sample->data, p_mp4->p_sei_buffer, p_mp4->i_sei_size );
-        free( p_mp4->p_sei_buffer );
-        p_mp4->p_sei_buffer = NULL;
     }
     else
         MP4_SAMPLE_FAIL_IF_ERR( p_mp4->i_sei_size,
@@ -1697,7 +1708,6 @@ do\
 
     if( i_size )
         memcpy( p_sample->data + p_mp4->i_sei_size, p_nalu, (size_t)i_size );
-    p_mp4->i_sei_size = 0;
 
     if( p_mp4->b_dts_compress )
     {
@@ -1705,14 +1715,14 @@ do\
         {
             int64_t init_delta_ts;
             uint64_t init_delta;
-            MP4_SAMPLE_FAIL_IF_ERR( p_picture->i_dts > INT64_MAX - p_mp4->i_start_offset,
+            MP4_SAMPLE_FAIL_IF_ERR( p_picture->i_dts > INT64_MAX - start_offset,
                                     "video DTS initial delta is out of range.\n" );
-            init_delta_ts = p_picture->i_dts + p_mp4->i_start_offset;
+            init_delta_ts = p_picture->i_dts + start_offset;
             MP4_SAMPLE_FAIL_IF_ERR( init_delta_ts < 0 ||
                                     mp4_u64_mul_overflow( (uint64_t)init_delta_ts, p_mp4->i_time_inc, &init_delta ) ||
                                     init_delta > INT64_MAX,
                                     "video DTS initial delta is out of range.\n" );
-            p_mp4->i_init_delta = (int64_t)init_delta;
+            init_delta_state = (int64_t)init_delta;
         }
         if( p_mp4->i_numframe > p_mp4->i_delay_frames )
         {
@@ -1722,7 +1732,7 @@ do\
         }
         else
         {
-            uint64_t init_delta_step = (uint64_t)p_mp4->i_init_delta / (uint64_t)p_mp4->i_dts_compress_multiplier;
+            uint64_t init_delta_step = (uint64_t)init_delta_state / (uint64_t)p_mp4->i_dts_compress_multiplier;
             MP4_SAMPLE_FAIL_IF_ERR( mp4_u64_mul_overflow( (uint64_t)p_mp4->i_numframe, init_delta_step, &dts ),
                                     "video DTS is out of range.\n" );
         }
@@ -1733,11 +1743,11 @@ do\
     else
     {
         int64_t dts_ts, cts_ts;
-        MP4_SAMPLE_FAIL_IF_ERR( p_picture->i_dts > INT64_MAX - p_mp4->i_start_offset ||
-                                p_picture->i_pts > INT64_MAX - p_mp4->i_start_offset,
+        MP4_SAMPLE_FAIL_IF_ERR( p_picture->i_dts > INT64_MAX - start_offset ||
+                                p_picture->i_pts > INT64_MAX - start_offset,
                                 "video timestamp is out of range.\n" );
-        dts_ts = p_picture->i_dts + p_mp4->i_start_offset;
-        cts_ts = p_picture->i_pts + p_mp4->i_start_offset;
+        dts_ts = p_picture->i_dts + start_offset;
+        cts_ts = p_picture->i_pts + start_offset;
         MP4_SAMPLE_FAIL_IF_ERR( dts_ts < 0 || cts_ts < 0 ||
                                 mp4_u64_mul_overflow( (uint64_t)dts_ts, p_mp4->i_time_inc, &dts ) ||
                                 mp4_u64_mul_overflow( (uint64_t)cts_ts, p_mp4->i_time_inc, &cts ),
@@ -1748,6 +1758,7 @@ do\
     p_sample->cts = cts;
     p_sample->index = p_mp4->i_sample_entry;
     p_sample->prop.ra_flags = p_picture->i_type == X264_TYPE_IDR ? ISOM_SAMPLE_RANDOM_ACCESS_FLAG_SYNC : ISOM_SAMPLE_RANDOM_ACCESS_FLAG_NONE;
+    uint64_t last_intra_cts = p_mp4->i_last_intra_cts;
     if( p_mp4->b_use_recovery || p_mp4->b_brand_qt )
     {
         p_sample->prop.independent = IS_X264_TYPE_I( p_picture->i_type ) ? ISOM_SAMPLE_IS_INDEPENDENT : ISOM_SAMPLE_IS_NOT_INDEPENDENT;
@@ -1755,10 +1766,10 @@ do\
         p_sample->prop.redundant = ISOM_SAMPLE_HAS_NO_REDUNDANCY;
         if( p_mp4->b_use_recovery )
         {
-            p_sample->prop.leading = !IS_X264_TYPE_B( p_picture->i_type ) || p_sample->cts >= p_mp4->i_last_intra_cts
+            p_sample->prop.leading = !IS_X264_TYPE_B( p_picture->i_type ) || p_sample->cts >= last_intra_cts
                                    ? ISOM_SAMPLE_IS_NOT_LEADING : ISOM_SAMPLE_IS_UNDECODABLE_LEADING;
             if( p_sample->prop.independent == ISOM_SAMPLE_IS_INDEPENDENT )
-                p_mp4->i_last_intra_cts = p_sample->cts;
+                last_intra_cts = p_sample->cts;
             MP4_SAMPLE_FAIL_IF_ERR( p_mp4->i_max_frame_num <= 0 || p_picture->i_frame_num < 0 ||
                                     p_mp4->i_recovery_frame_cnt < 0,
                                     "invalid post-roll metadata.\n" );
@@ -1818,6 +1829,16 @@ do\
         return -1;
     }
 
+    p_mp4->i_last_intra_cts = last_intra_cts;
+    p_mp4->i_start_offset = start_offset;
+    p_mp4->i_first_cts = first_cts;
+    p_mp4->i_init_delta = init_delta_state;
+    if( sample_has_sei )
+    {
+        free( p_mp4->p_sei_buffer );
+        p_mp4->p_sei_buffer = NULL;
+        p_mp4->i_sei_size = 0;
+    }
     p_mp4->i_prev_dts = dts;
     p_mp4->i_numframe++;
 

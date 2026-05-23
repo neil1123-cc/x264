@@ -517,8 +517,9 @@ static int mk_flush_frame( mk_writer *w, uint32_t track_id )
     CHECK( mk_write_size( w->cluster, fsize + 4 ) ); // Size
 	CHECK( mk_write_size( w->cluster, track_id ) ); // TrackNumber
 
-    c_delta_flags[0] = (uint8_t)(delta >> 8);
-    c_delta_flags[1] = (uint8_t)delta;
+    uint16_t delta_bits = (uint16_t)(int16_t)delta;
+    c_delta_flags[0] = (uint8_t)(delta_bits >> 8);
+    c_delta_flags[1] = (uint8_t)delta_bits;
     c_delta_flags[2] = (uint8_t)((w->keyframe << 7) | w->skippable);
     CHECK( mk_append_context_data( w->cluster, c_delta_flags, 3 ) ); // Timecode, Flags
     if( w->frame )
@@ -531,6 +532,9 @@ static int mk_flush_frame( mk_writer *w, uint32_t track_id )
 
     if( w->cluster->d_cur > CLSIZE )
         CHECK( mk_close_cluster( w ) );
+
+    if( w->max_frame_tc[track_id] < w->frame_tc )
+        w->max_frame_tc[track_id] = w->frame_tc;
 
     return 0;
 }
@@ -549,9 +553,10 @@ int mk_end_frame( mk_writer *w, uint32_t track_id )
 
 int mk_start_frame( mk_writer *w )
 {
-    if( !w )
+    if( !w || w->in_frame )
         return -1;
     w->in_frame  = 1;
+    w->frame_tc  = -1;
     w->keyframe  = 0;
     w->skippable = 0;
 
@@ -568,9 +573,6 @@ int mk_set_frame_flags( mk_writer *w, int64_t timestamp, int keyframe, int skipp
     w->frame_tc  = timestamp;
     w->keyframe  = keyframe  != 0;
     w->skippable = skippable != 0;
-
-    if( w->max_frame_tc[track_id] < timestamp )
-        w->max_frame_tc[track_id] = timestamp;
 
     return 0;
 }
@@ -633,7 +635,7 @@ int mk_close( mk_writer *w, int64_t *last_delta )
         }
     }
     mk_destroy_contexts( w );
-    if( fclose( w->fp ) )
+    if( w->fp == stdout ? fflush( w->fp ) : fclose( w->fp ) )
         ret = -1;
     free( w );
     return ret;

@@ -39,16 +39,29 @@ void x264_cli_plane_copy( uint8_t *dst, int i_dst, uint8_t *src, int i_src, int 
 
 int x264_cli_pic_copy( cli_pic_t *out, cli_pic_t *in )
 {
+    if( !out || !in )
+        return -1;
     int csp = in->img.csp & X264_CSP_MASK;
+    int planes = in->img.planes;
     FAIL_IF_ERROR( x264_cli_csp_is_invalid( in->img.csp ), "invalid colorspace arg %d\n", in->img.csp );
     FAIL_IF_ERROR( in->img.csp != out->img.csp || in->img.height != out->img.height
                 || in->img.width != out->img.width, "incompatible frame properties\n" );
-    /* copy data */
+    FAIL_IF_ERROR( planes != x264_cli_csps[csp].planes || planes != out->img.planes, "invalid frame plane count\n" );
+    for( int i = 0; i < planes; i++ )
+    {
+        int height = in->img.height * x264_cli_csps[csp].height[i];
+        int width =  in->img.width  * x264_cli_csps[csp].width[i];
+        width *= x264_cli_csp_depth_factor( in->img.csp );
+        FAIL_IF_ERROR( width < 0 || height < 0 ||
+                       (width && height && (!out->img.plane[i] || !in->img.plane[i])),
+                       "invalid frame plane data\n" );
+    }
+
     out->duration = in->duration;
     out->pts = in->pts;
     out->opaque = in->opaque;
 
-    for( int i = 0; i < out->img.planes; i++ )
+    for( int i = 0; i < planes; i++ )
     {
         int height = in->img.height * x264_cli_csps[csp].height[i];
         int width =  in->img.width  * x264_cli_csps[csp].width[i];

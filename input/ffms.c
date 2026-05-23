@@ -176,6 +176,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     FAIL_IF_ERROR_CLEANUP( !h->video_source, "could not create video source\n" );
 
     const FFMS_VideoProperties *videop = FFMS_GetVideoProperties( h->video_source );
+    FAIL_IF_ERROR_CLEANUP( !videop, "could not get video properties\n" );
     FAIL_IF_ERROR_CLEANUP( videop->NumFrames < 0 || videop->NumFrames > INT_MAX, "invalid frame count\n" );
     FAIL_IF_ERROR_CLEANUP( videop->SARDen < 0 || (uint64_t)videop->SARDen > UINT32_MAX ||
                            videop->SARNum < 0 || (uint64_t)videop->SARNum > UINT32_MAX,
@@ -242,6 +243,10 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     idxer                  = FFMS_CreateIndexer( psz_filename, &e );
     const char *format     = idxer ? FFMS_GetFormatNameI( idxer ) : "unknown";
     const char *codec      = idxer ? FFMS_GetCodecNameI( idxer, trackno ) : "unknown";
+    if( !format )
+        format = "unknown";
+    if( !codec )
+        codec = "unknown";
     double duration        = videop->FPSNumerator > 0 && videop->FPSDenominator >= 0 ?
                              (double)videop->NumFrames * videop->FPSDenominator / videop->FPSNumerator : 0;
     int duration_log       = duration > INT_MAX ? INT_MAX : (int)X264_MAX( duration, 0 );
@@ -309,12 +314,10 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
     FAIL_IF_ERROR( invalid_dimensions( frame->EncodedWidth, frame->EncodedHeight ),
                    "invalid video dimensions\n" );
 
-    memcpy( pic->img.stride, frame->Linesize, sizeof(pic->img.stride) );
-    memcpy( pic->img.plane, frame->Data, sizeof(pic->img.plane) );
     int is_fullrange = 0;
-    pic->img.width   = frame->EncodedWidth;
-    pic->img.height  = frame->EncodedHeight;
-    pic->img.csp     = handle_jpeg( frame->EncodedPixelFormat, &is_fullrange ) | X264_CSP_OTHER;
+    int csp = handle_jpeg( frame->EncodedPixelFormat, &is_fullrange ) | X264_CSP_OTHER;
+    int64_t pts = 0;
+    int64_t duration = 0;
 
     if( h->vfr_input )
     {
@@ -322,8 +325,17 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
         FAIL_IF_ERROR( !info || info->PTS == AV_NOPTS_VALUE, "invalid timestamp. "
                        "Use --force-cfr and specify a framerate with --fps\n" );
 
-        pic->pts = reduce_pts_floor( info->PTS, h->reduce_pts );
-        pic->duration = 0;
+        pts = reduce_pts_floor( info->PTS, h->reduce_pts );
+    }
+    memcpy( pic->img.stride, frame->Linesize, sizeof(pic->img.stride) );
+    memcpy( pic->img.plane, frame->Data, sizeof(pic->img.plane) );
+    pic->img.width   = frame->EncodedWidth;
+    pic->img.height  = frame->EncodedHeight;
+    pic->img.csp     = csp;
+    if( h->vfr_input )
+    {
+        pic->pts = pts;
+        pic->duration = duration;
     }
     return 0;
 }

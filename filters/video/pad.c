@@ -415,6 +415,7 @@ static int get_frame( hnd_t handle, cli_pic_t *out, int frame )
     pad_handle_t *h = handle;
     int depth_factor;
     cli_pic_t in;
+    cli_pic_t staged;
 
     if( !h || !out || !h->csp || !h->prev_handle ||
         !h->prev_filter.get_frame || !h->prev_filter.release_frame || frame < 0 )
@@ -424,25 +425,29 @@ static int get_frame( hnd_t handle, cli_pic_t *out, int frame )
 
     depth_factor = x264_cli_csp_depth_factor( in.img.csp );
 
-    *out = h->buffer;
-    out->pts = in.pts;
-    out->duration = in.duration;
+    staged = h->buffer;
+    staged.pts = in.pts;
+    staged.duration = in.duration;
 
     for( int i = 0; i < in.img.planes; i++ )
     {
         float scale[2] = { h->csp->width[i] * depth_factor,
                            h->csp->height[i] };
         int stride[2]  = { in.img.stride[i],
-                           out->img.stride[i] };
+                           staged.img.stride[i] };
         int in_dim[2]  = { in.img.width * scale[0],
                            in.img.height * scale[1] };
         int offset = h->cols*scale[0] + h->rows*scale[1]*stride[1];
 
-        x264_cli_plane_copy( out->img.plane[i]+offset, stride[1],
+        x264_cli_plane_copy( staged.img.plane[i]+offset, stride[1],
                              in.img.plane[i], stride[0], in_dim[0], in_dim[1] );
     }
 
-    return h->prev_filter.release_frame( h->prev_handle, &in, frame );
+    if( h->prev_filter.release_frame( h->prev_handle, &in, frame ) )
+        return -1;
+
+    *out = staged;
+    return 0;
 }
 
 static int release_frame( hnd_t handle, cli_pic_t *pic, int frame )

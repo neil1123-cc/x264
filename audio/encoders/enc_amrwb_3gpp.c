@@ -234,6 +234,8 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     if( !( in = x264_af_get_samples( h->filter_chain, h->last_sample, last_sample ) ) )
         goto error;
     /* ensure buffer length */
+    unsigned input_samplecount = in->samplecount;
+    int finishing = 0;
     if( in->samplecount < h->info.framelen )
     {
         if( !(in->flags & AUDIO_FLAG_EOF) )
@@ -241,16 +243,13 @@ static audio_packet_t *get_next_packet( hnd_t handle )
             x264_cli_log( "amrwb_3gpp", X264_LOG_ERROR, "samples too few but not EOF???\n" );
             goto error;
         }
-        h->finishing = 1;
+        finishing = 1;
         if( x264_af_resize_fill_buffer( in->samples, h->info.framelen, h->info.channels, in->samplecount, 0.0f ) )
         {
             x264_cli_log( "amrwb_3gpp", X264_LOG_ERROR, "failed to expand buffer.\n" );
             goto error;
         }
     }
-    if( h->last_dts == INVALID_DTS )
-        h->last_dts = h->last_sample;
-    h->last_sample += in->samplecount;
     in->samplecount = h->info.framelen;
 
     /* convert to integer */
@@ -268,6 +267,10 @@ static audio_packet_t *get_next_packet( hnd_t handle )
         goto error;
     }
 
+    h->finishing = finishing;
+    if( h->last_dts == INVALID_DTS )
+        h->last_dts = h->last_sample;
+    h->last_sample += input_samplecount;
     out->dts = h->last_dts;
     if( add_frame_dts( &h->last_dts, h->info.framelen ) )
         goto error;

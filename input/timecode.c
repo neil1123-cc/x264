@@ -801,7 +801,10 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
 
 fail:
     if( tcfile_in )
-        fclose( tcfile_in );
+    {
+        if( fclose( tcfile_in ) )
+            x264_cli_log( "timecode", X264_LOG_ERROR, "failed to close timecode file `%s'\n", psz_filename );
+    }
     if( h )
     {
         free( h->pts );
@@ -853,7 +856,11 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int frame )
     if( get_frame_pts( h, frame, 1, &pic->pts ) ||
         get_frame_pts( h, frame + 1, 0, &next_pts ) ||
         next_pts <= pic->pts )
+    {
+        if( h->input.release_frame )
+            h->input.release_frame( pic, h->p_handle );
         return -1;
+    }
     pic->duration = next_pts - pic->pts;
 
     return 0;

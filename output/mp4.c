@@ -87,6 +87,15 @@ static int mp4_i64_mul_overflow( int64_t a, int64_t b, int64_t *dst )
     return 0;
 }
 
+static int mp4_i64_add_overflow( int64_t a, int64_t b, int64_t *dst )
+{
+    if( (b > 0 && a > INT64_MAX - b) ||
+        (b < 0 && a < INT64_MIN - b) )
+        return -1;
+    *dst = a + b;
+    return 0;
+}
+
 static void recompute_bitrate_mp4( GF_ISOFile *p_file, int i_track )
 {
     u32 count, di, timescale, time_wnd, rate;
@@ -296,8 +305,8 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
 
     if( p_param->vui.i_sar_width && p_param->vui.i_sar_height )
     {
-        uint64_t dw = p_param->i_width << 16;
-        uint64_t dh = p_param->i_height << 16;
+        uint64_t dw = (uint64_t)p_param->i_width << 16;
+        uint64_t dh = (uint64_t)p_param->i_height << 16;
         double sar = (double)p_param->vui.i_sar_width / p_param->vui.i_sar_height;
         if( sar > 1.0 )
             dw *= sar;
@@ -425,19 +434,21 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
     mp4_hnd_t *p_mp4 = handle;
     int64_t dts;
     int64_t cts;
+    int64_t delay_time;
+    int64_t init_delta;
 
     if( !p_mp4 || !p_mp4->p_file || !p_mp4->p_sample || !p_picture ||
         i_size < 0 || (i_size && !p_nalu) || p_mp4->i_numframe == INT_MAX )
         return -1;
 
-    if( append_sample_data( p_mp4, p_nalu, (uint32_t)i_size ) )
-        return -1;
+    delay_time = p_mp4->i_delay_time;
+    init_delta = p_mp4->i_init_delta;
 
     if( !p_mp4->i_numframe )
     {
         if( p_picture->i_dts == INT64_MIN )
-            goto fail;
-        p_mp4->i_delay_time = p_picture->i_dts * -1;
+            return -1;
+        delay_time = p_picture->i_dts * -1;
     }
 
     if( p_mp4->b_dts_compress )
@@ -445,35 +456,33 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
         if( p_mp4->i_numframe == 1 )
         {
             int64_t init_ts;
-            if( p_picture->i_dts > INT64_MAX - p_mp4->i_delay_time )
-                goto fail;
-            init_ts = p_picture->i_dts + p_mp4->i_delay_time;
-            if( mp4_i64_mul_overflow( init_ts, p_mp4->i_time_inc, &p_mp4->i_init_delta ) )
-                goto fail;
+            if( mp4_i64_add_overflow( p_picture->i_dts, delay_time, &init_ts ) ||
+                mp4_i64_mul_overflow( init_ts, p_mp4->i_time_inc, &init_delta ) )
+                return -1;
         }
         dts = p_mp4->i_numframe > p_mp4->i_delay_frames
             ? 0
-            : p_mp4->i_numframe * (p_mp4->i_init_delta / p_mp4->i_dts_compress_multiplier);
+            : p_mp4->i_numframe * (init_delta / p_mp4->i_dts_compress_multiplier);
         if( p_mp4->i_numframe > p_mp4->i_delay_frames &&
             mp4_i64_mul_overflow( p_picture->i_dts, p_mp4->i_time_inc, &dts ) )
-            goto fail;
+            return -1;
         if( mp4_i64_mul_overflow( p_picture->i_pts, p_mp4->i_time_inc, &cts ) )
-            goto fail;
+            return -1;
     }
     else
     {
         int64_t dts_ts, cts_ts;
-        if( p_picture->i_dts > INT64_MAX - p_mp4->i_delay_time ||
-            p_picture->i_pts > INT64_MAX - p_mp4->i_delay_time )
-            goto fail;
-        dts_ts = p_picture->i_dts + p_mp4->i_delay_time;
-        cts_ts = p_picture->i_pts + p_mp4->i_delay_time;
-        if( mp4_i64_mul_overflow( dts_ts, p_mp4->i_time_inc, &dts ) ||
+        if( mp4_i64_add_overflow( p_picture->i_dts, delay_time, &dts_ts ) ||
+            mp4_i64_add_overflow( p_picture->i_pts, delay_time, &cts_ts ) ||
+            mp4_i64_mul_overflow( dts_ts, p_mp4->i_time_inc, &dts ) ||
             mp4_i64_mul_overflow( cts_ts, p_mp4->i_time_inc, &cts ) )
-            goto fail;
+            return -1;
     }
     if( cts < dts || cts - dts > INT32_MAX )
-        goto fail;
+        return -1;
+
+    if( append_sample_data( p_mp4, p_nalu, (uint32_t)i_size ) )
+        return -1;
 
     p_mp4->p_sample->IsRAP = p_picture->b_keyframe;
     p_mp4->p_sample->DTS = dts;
@@ -485,13 +494,11 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
     }
 
     p_mp4->p_sample->dataLength = 0;
+    p_mp4->i_delay_time = delay_time;
+    p_mp4->i_init_delta = init_delta;
     p_mp4->i_numframe++;
 
     return i_size;
-
-fail:
-    p_mp4->p_sample->dataLength = 0;
-    return -1;
 }
 
 const cli_output_t mp4_output = { open_file, set_param, write_headers, write_frame, close_file };

@@ -571,6 +571,10 @@ static audio_packet_t *get_next_packet( hnd_t handle )
 
         out->samplecount = smp->samplecount;
         out->channels    = smp->channels;
+        int staged_finishing = h->finishing;
+        uint32_t staged_last_delta = h->info.last_delta;
+        int original_frame_size = h->ctx->frame_size;
+        int staged_frame_size = original_frame_size;
 
         /* x264_af_interleave2 allocates only samplecount * channels * bytes per sample per single channel, */
         /* but lavc expects sample buffer contains h->ctx->frame_size samples (at least, alac encoder does). */
@@ -578,7 +582,7 @@ static audio_packet_t *get_next_packet( hnd_t handle )
         /* specify real sample counts in sample buffer, and if not, need to padding buffer. */
         if( smp->samplecount < h->info.framelen )
         {
-            h->finishing = 1;
+            staged_finishing = 1;
             if( !(smp->flags & AUDIO_FLAG_EOF) )
             {
                 x264_cli_log( "lavc", X264_LOG_ERROR, "samples too few but not EOF???\n" );
@@ -586,7 +590,10 @@ static audio_packet_t *get_next_packet( hnd_t handle )
             }
 
             if( h->ctx->codec->capabilities & AV_CODEC_CAP_SMALL_LAST_FRAME )
-                h->ctx->frame_size = h->info.last_delta = smp->samplecount;
+            {
+                staged_frame_size = (int)smp->samplecount;
+                staged_last_delta = smp->samplecount;
+            }
             else
             {
                 if( x264_af_resize_fill_buffer( smp->samples, h->info.framelen, h->info.channels, smp->samplecount, 0.0f ) )
@@ -594,27 +601,37 @@ static audio_packet_t *get_next_packet( hnd_t handle )
                     x264_cli_log( "lavc", X264_LOG_ERROR, "failed to expand buffer.\n" );
                     goto error;
                 }
-                smp->samplecount = h->info.last_delta = h->info.framelen;
+                smp->samplecount = h->info.framelen;
+                staged_last_delta = h->info.framelen;
             }
         }
 
-        if( h->last_dts == INVALID_DTS )
-            h->last_dts = h->last_sample;
-        h->last_sample += smp->samplecount;
-
+        if( smp->samplecount > (uint64_t)(INT64_MAX - h->last_sample) )
+            goto error;
+        int64_t staged_last_sample = h->last_sample + smp->samplecount;
+        h->ctx->frame_size = staged_frame_size;
         h->frame->nb_samples  = smp->samplecount;
 
         if( resample_audio( h->avr, h->frame, smp ) < 0 )
         {
             x264_cli_log( "lavc", X264_LOG_ERROR, "error resampling audio!\n" );
+            h->ctx->frame_size = original_frame_size;
             goto error;
         }
 
         if( encode_audio( h->ctx, out, h->buf_size, h->frame ) < 0 )
         {
             x264_cli_log( "lavc", X264_LOG_ERROR, "error encoding audio! (%s)\n", strerror( -out->size ) );
+            h->ctx->frame_size = original_frame_size;
             goto error;
         }
+
+        h->finishing = staged_finishing;
+        h->info.last_delta = staged_last_delta;
+        h->ctx->frame_size = staged_frame_size;
+        if( h->last_dts == INVALID_DTS )
+            h->last_dts = h->last_sample;
+        h->last_sample = staged_last_sample;
 
         x264_af_free_packet( smp );
         smp = NULL;

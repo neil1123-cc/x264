@@ -204,11 +204,12 @@ char *x264_slurp_file( const char *filename )
     b_error |= ( i_size = ftell( fh ) ) <= 0;
     if( WORD_SIZE == 4 )
         b_error |= i_size > INT32_MAX;
+    b_error |= i_size > INT64_MAX - 2;
     b_error |= fseek( fh, 0, SEEK_SET ) < 0;
     if( b_error )
         goto error;
 
-    buf = x264_malloc( i_size+2 );
+    buf = x264_malloc( i_size + 2 );
     if( !buf )
         goto error;
 
@@ -333,7 +334,8 @@ REALIGN_STACK int x264_picture_alloc( x264_picture_t *pic, int i_csp, int i_widt
     };
 
     int csp = i_csp & X264_CSP_MASK;
-    if( csp <= X264_CSP_NONE || csp >= X264_CSP_MAX || csp == X264_CSP_V210 )
+    if( !pic || i_width <= 0 || i_height <= 0 ||
+        csp <= X264_CSP_NONE || csp >= X264_CSP_MAX || csp == X264_CSP_V210 )
         return -1;
     x264_picture_init( pic );
     pic->img.i_csp = i_csp;
@@ -343,9 +345,17 @@ REALIGN_STACK int x264_picture_alloc( x264_picture_t *pic, int i_csp, int i_widt
     int64_t frame_size = 0;
     for( int i = 0; i < pic->img.i_plane; i++ )
     {
-        int stride = (((int64_t)i_width * csp_tab[csp].width_fix8[i]) >> 8) * depth_factor;
-        int64_t plane_size = (((int64_t)i_height * csp_tab[csp].height_fix8[i]) >> 8) * stride;
-        pic->img.i_stride[i] = stride;
+        int64_t plane_width = ((int64_t)i_width * csp_tab[csp].width_fix8[i]) >> 8;
+        int64_t plane_height = ((int64_t)i_height * csp_tab[csp].height_fix8[i]) >> 8;
+        if( plane_width > INT64_MAX / depth_factor )
+            return -1;
+        int64_t stride = plane_width * depth_factor;
+        if( stride > INT_MAX || (plane_height && stride > INT64_MAX / plane_height) )
+            return -1;
+        int64_t plane_size = plane_height * stride;
+        if( frame_size > INT64_MAX - plane_size )
+            return -1;
+        pic->img.i_stride[i] = (int)stride;
         plane_offset[i] = frame_size;
         frame_size += plane_size;
     }

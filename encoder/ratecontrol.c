@@ -1140,12 +1140,12 @@ static void ratecontrol_init_fail_cleanup( x264_t *h, char *stats_buf )
     if( !rc )
         return;
 
-    if( rc->p_stat_file_out )
-        fclose( rc->p_stat_file_out );
-    if( rc->p_mbtree_stat_file_out )
-        fclose( rc->p_mbtree_stat_file_out );
-    if( rc->p_mbtree_stat_file_in )
-        fclose( rc->p_mbtree_stat_file_in );
+    if( rc->p_stat_file_out && fclose( rc->p_stat_file_out ) )
+        x264_log( h, X264_LOG_ERROR, "failed to close stats output file\n" );
+    if( rc->p_mbtree_stat_file_out && fclose( rc->p_mbtree_stat_file_out ) )
+        x264_log( h, X264_LOG_ERROR, "failed to close mbtree stats output file\n" );
+    if( rc->p_mbtree_stat_file_in && fclose( rc->p_mbtree_stat_file_in ) )
+        x264_log( h, X264_LOG_ERROR, "failed to close mbtree stats input file\n" );
 
     x264_free( rc->psz_stat_file_tmpname );
     x264_free( rc->psz_mbtree_stat_file_tmpname );
@@ -1894,8 +1894,11 @@ parse_error:
         }
 
         p = x264_param2string( &h->param, 1 );
-        if( p )
-            fprintf( rc->p_stat_file_out, "#options: %s\n", p );
+        if( p && fprintf( rc->p_stat_file_out, "#options: %s\n", p ) < 0 )
+        {
+            x264_free( p );
+            goto fail;
+        }
         x264_free( p );
         if( h->param.rc.b_mb_tree && !h->param.rc.b_stat_read )
         {
@@ -2234,7 +2237,11 @@ void x264_ratecontrol_delete( x264_t *h )
     if( rc->p_stat_file_out )
     {
         b_regular_file = x264_is_regular_file( rc->p_stat_file_out );
-        fclose( rc->p_stat_file_out );
+        if( fclose( rc->p_stat_file_out ) )
+        {
+            x264_log( h, X264_LOG_ERROR, "failed to close stats output file\n" );
+            b_regular_file = 0;
+        }
         if( h->i_frame >= rc->num_entries && b_regular_file )
 		{
 			remove( h->param.rc.psz_stat_out );
@@ -2249,7 +2256,11 @@ void x264_ratecontrol_delete( x264_t *h )
     if( rc->p_mbtree_stat_file_out )
     {
         b_regular_file = x264_is_regular_file( rc->p_mbtree_stat_file_out );
-        fclose( rc->p_mbtree_stat_file_out );
+        if( fclose( rc->p_mbtree_stat_file_out ) )
+        {
+            x264_log( h, X264_LOG_ERROR, "failed to close mbtree stats output file\n" );
+            b_regular_file = 0;
+        }
         if( h->i_frame >= rc->num_entries && b_regular_file )
 		{
 			remove( rc->psz_mbtree_stat_file_name );
@@ -2262,8 +2273,8 @@ void x264_ratecontrol_delete( x264_t *h )
         x264_free( rc->psz_mbtree_stat_file_tmpname );
         x264_free( rc->psz_mbtree_stat_file_name );
     }
-    if( rc->p_mbtree_stat_file_in )
-        fclose( rc->p_mbtree_stat_file_in );
+    if( rc->p_mbtree_stat_file_in && fclose( rc->p_mbtree_stat_file_in ) )
+        x264_log( h, X264_LOG_ERROR, "failed to close mbtree stats input file\n" );
     x264_free( rc->pred );
     x264_free( rc->pred_b_from_p );
     x264_free( rc->entry );

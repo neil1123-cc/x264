@@ -149,6 +149,27 @@ static FILE* gop_open_file_for_write( const char *fname, int retry, gop_hnd_t *h
     return NULL;
 }
 
+static int gop_mark_fail( gop_hnd_t *hnd )
+{
+    if( hnd )
+        hnd->b_fail = 1;
+    return -1;
+}
+
+static int gop_close_file( FILE **file, const char *name )
+{
+    if( !file || !*file )
+        return 0;
+    if( fclose( *file ) )
+    {
+        x264_cli_log( "gop", X264_LOG_ERROR, "failed to close %s\n", name );
+        *file = NULL;
+        return -1;
+    }
+    *file = NULL;
+    return 0;
+}
+
 static int gop_clean_up( gop_hnd_t *hnd )
 {
     int ret = 0;
@@ -156,16 +177,10 @@ static int gop_clean_up( gop_hnd_t *hnd )
     if( !hnd )
         return 0;
 
-    if( hnd->data_file )
-    {
-        ret |= fclose( hnd->data_file );
-        hnd->data_file = NULL;
-    }
-    if( hnd->gop_file )
-    {
-        ret |= fclose( hnd->gop_file );
-        hnd->gop_file = NULL;
-    }
+    if( gop_close_file( &hnd->data_file, "GOP data file" ) )
+        ret = -1;
+    if( gop_close_file( &hnd->gop_file, "GOP index file" ) )
+        ret = -1;
     if( hnd->filename_prefix )
     {
         free( hnd->filename_prefix );
@@ -177,7 +192,7 @@ static int gop_clean_up( gop_hnd_t *hnd )
         hnd->dir_prefix = NULL;
     }
 
-    return ret ? -1 : 0;
+    return ret;
 }
 
 static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt, hnd_t audio_filters, char *audio_encoder, char *audio_parameters )
@@ -275,40 +290,37 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
     /* Build options filename */
     char *opt_filename = gop_alloc_prefixed_filename( hnd, ".options" );
     if( !opt_filename )
-        return -1;
+        return gop_mark_fail( hnd );
 
     FILE *opt_file = gop_open_file_for_write( opt_filename, 0, hnd );
     free( opt_filename );
     if( !opt_file )
         return -1;
 
-    if( fprintf( hnd->gop_file, "#options %s.options\n", hnd->filename_prefix ) < 0 )
-    {
-        fclose( opt_file );
-        return -1;
-    }
+    int opt_error = 0;
+    opt_error |= fprintf( opt_file, "b-frames %d\n", adjusted_param.i_bframe ) < 0;
+    opt_error |= fprintf( opt_file, "b-pyramid %d\n", adjusted_param.i_bframe_pyramid ) < 0;
+    opt_error |= fprintf( opt_file, "input-timebase-num %d\n", adjusted_param.i_timebase_num ) < 0;
+    opt_error |= fprintf( opt_file, "input-timebase-den %d\n", adjusted_param.i_timebase_den ) < 0;
+    opt_error |= fprintf( opt_file, "output-fps-num %d\n", adjusted_param.i_fps_num ) < 0;
+    opt_error |= fprintf( opt_file, "output-fps-den %d\n", adjusted_param.i_fps_den ) < 0;
+    opt_error |= fprintf( opt_file, "source-width %d\n", adjusted_param.i_width ) < 0;
+    opt_error |= fprintf( opt_file, "source-height %d\n", adjusted_param.i_height ) < 0;
+    opt_error |= fprintf( opt_file, "sar-width %d\n", adjusted_param.vui.i_sar_width ) < 0;
+    opt_error |= fprintf( opt_file, "sar-height %d\n", adjusted_param.vui.i_sar_height ) < 0;
+    opt_error |= fprintf( opt_file, "primaries-index %d\n", adjusted_param.vui.i_colorprim ) < 0;
+    opt_error |= fprintf( opt_file, "transfer-index %d\n", adjusted_param.vui.i_transfer ) < 0;
+    opt_error |= fprintf( opt_file, "matrix-index %d\n",
+                          adjusted_param.vui.i_colmatrix >= 0 ? adjusted_param.vui.i_colmatrix : GOP_ISOM_MATRIX_INDEX_UNSPECIFIED ) < 0;
+    opt_error |= fprintf( opt_file, "full-range %d\n",
+                          adjusted_param.vui.b_fullrange >= 0 ? adjusted_param.vui.b_fullrange : 0 ) < 0;
 
-    fprintf( opt_file, "b-frames %d\n", adjusted_param.i_bframe );
-    fprintf( opt_file, "b-pyramid %d\n", adjusted_param.i_bframe_pyramid );
-    fprintf( opt_file, "input-timebase-num %d\n", adjusted_param.i_timebase_num );
-    fprintf( opt_file, "input-timebase-den %d\n", adjusted_param.i_timebase_den );
-    fprintf( opt_file, "output-fps-num %d\n", adjusted_param.i_fps_num );
-    fprintf( opt_file, "output-fps-den %d\n", adjusted_param.i_fps_den );
-    fprintf( opt_file, "source-width %d\n", adjusted_param.i_width );
-    fprintf( opt_file, "source-height %d\n", adjusted_param.i_height );
-    fprintf( opt_file, "sar-width %d\n", adjusted_param.vui.i_sar_width );
-    fprintf( opt_file, "sar-height %d\n", adjusted_param.vui.i_sar_height );
-    fprintf( opt_file, "primaries-index %d\n", adjusted_param.vui.i_colorprim );
-    fprintf( opt_file, "transfer-index %d\n", adjusted_param.vui.i_transfer );
-    fprintf( opt_file, "matrix-index %d\n",
-             adjusted_param.vui.i_colmatrix >= 0 ? adjusted_param.vui.i_colmatrix : GOP_ISOM_MATRIX_INDEX_UNSPECIFIED );
-    fprintf( opt_file, "full-range %d\n",
-             adjusted_param.vui.b_fullrange >= 0 ? adjusted_param.vui.b_fullrange : 0 );
-
-    int opt_error = ferror( opt_file );
-    opt_error |= fclose( opt_file );
+    opt_error |= ferror( opt_file );
+    opt_error |= gop_close_file( &opt_file, "GOP options file" );
     if( opt_error )
-        return -1;
+        return gop_mark_fail( hnd );
+    if( fprintf( hnd->gop_file, "#options %s.options\n", hnd->filename_prefix ) < 0 || fflush( hnd->gop_file ) )
+        return gop_mark_fail( hnd );
     *p_param = adjusted_param;
     return 0;
 }
@@ -323,18 +335,12 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     /* Build headers filename */
     char *hdr_filename = gop_alloc_prefixed_filename( hnd, ".headers" );
     if( !hdr_filename )
-        return -1;
+        return gop_mark_fail( hnd );
 
     FILE *hdr_file = gop_open_file_for_write( hdr_filename, 0, hnd );
     free( hdr_filename );
     if( !hdr_file )
         return -1;
-
-    if( fprintf( hnd->gop_file, "#headers %s.headers\n", hnd->filename_prefix ) < 0 )
-    {
-        fclose( hdr_file );
-        return -1;
-    }
 
     /* Write all NALs (SPS, PPS, etc) */
     int nal_count = 3; /* SPS, PPS, and potentially SEI */
@@ -344,14 +350,16 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
         if( payload < 0 || (payload && !p_nal[i].p_payload) || size > INT_MAX - payload ||
             (payload > 0 && fwrite( p_nal[i].p_payload, (size_t)payload, 1, hdr_file ) != 1) )
         {
-            fclose( hdr_file );
-            return -1;
+            gop_close_file( &hdr_file, "GOP headers file" );
+            return gop_mark_fail( hnd );
         }
         size += payload;
     }
 
-    if( fclose( hdr_file ) )
-        return -1;
+    if( gop_close_file( &hdr_file, "GOP headers file" ) )
+        return gop_mark_fail( hnd );
+    if( fprintf( hnd->gop_file, "#headers %s.headers\n", hnd->filename_prefix ) < 0 || fflush( hnd->gop_file ) )
+        return gop_mark_fail( hnd );
     return size;
 }
 
@@ -369,18 +377,14 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
         /* Close previous data file if exists */
         if( hnd->data_file )
         {
-            if( fclose( hnd->data_file ) )
-            {
-                hnd->data_file = NULL;
-                return -1;
-            }
-            hnd->data_file = NULL;
+            if( gop_close_file( &hnd->data_file, "GOP data file" ) )
+                return gop_mark_fail( hnd );
         }
 
         /* Create new data file for this GOP */
         char *data_filename = gop_alloc_data_filename( hnd );
         if( !data_filename )
-            return -1;
+            return gop_mark_fail( hnd );
 
         hnd->data_file = gop_open_file_for_write( data_filename, hnd->i_numframe > 0, hnd );
         if( !hnd->data_file )
@@ -397,24 +401,23 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
 
         if( fprintf( hnd->gop_file, "%s\n", basename ) < 0 || fflush( hnd->gop_file ) )
         {
-            fclose( hnd->data_file );
-            hnd->data_file = NULL;
+            gop_close_file( &hnd->data_file, "GOP data file" );
             free( data_filename );
-            return -1;
+            return gop_mark_fail( hnd );
         }
 
         free( data_filename );
     }
 
     if( !hnd->data_file )
-        return -1;
+        return gop_mark_fail( hnd );
 
     /* Write timestamp header (PTS + DTS) */
     const uint8_t ts_header[4] = { 0, 0, 0, GOP_TIMESTAMP_PAYLOAD_SIZE };
     if( fwrite( ts_header, sizeof(ts_header), 1, hnd->data_file ) != 1 ||
         fwrite( &p_picture->i_pts, sizeof(int64_t), 1, hnd->data_file ) != 1 ||
         fwrite( &p_picture->i_dts, sizeof(int64_t), 1, hnd->data_file ) != 1 )
-        return -1;
+        return gop_mark_fail( hnd );
 
     /* Write NAL data */
     if( !i_size || fwrite( p_nalu, (size_t)i_size, 1, hnd->data_file ) == 1 )
@@ -423,7 +426,7 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
         return i_size;
     }
 
-    return -1;
+    return gop_mark_fail( hnd );
 }
 
 static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest_pts )

@@ -24,6 +24,7 @@
  *****************************************************************************/
 
 #include <errno.h>
+#include <math.h>
 #include "video.h"
 
 #define NAME "resize"
@@ -180,6 +181,40 @@ static int pix_number_of_planes( const AVPixFmtDescriptor *pix_desc )
     return num_planes;
 }
 
+static int resize_image_is_invalid( const cli_image_t *img )
+{
+    if( !img || img->width <= 0 || img->height <= 0 ||
+        img->width > MAX_RESOLUTION || img->height > MAX_RESOLUTION ||
+        img->planes <= 0 || img->planes > 4 )
+        return 1;
+
+    if( img->csp & X264_CSP_OTHER )
+    {
+        const AVPixFmtDescriptor *pix_desc = av_pix_fmt_desc_get( convert_csp_to_pix_fmt( img->csp ) );
+        if( !pix_desc )
+            return 1;
+        int planes = pix_number_of_planes( pix_desc );
+        if( planes <= 0 || img->planes < planes )
+            return 1;
+        for( int i = 0; i < planes; i++ )
+            if( !img->plane[i] )
+                return 1;
+        return 0;
+    }
+
+    if( x264_cli_csp_is_invalid( img->csp ) )
+        return 1;
+
+    int csp_mask = img->csp & X264_CSP_MASK;
+    if( img->planes != x264_cli_csps[csp_mask].planes )
+        return 1;
+    for( int i = 0; i < img->planes; i++ )
+        if( x264_cli_pic_plane_size( img->csp, img->width, img->height, i ) && !img->plane[i] )
+            return 1;
+
+    return 0;
+}
+
 static int pick_closest_supported_csp( int csp )
 {
     int pix_fmt = convert_csp_to_pix_fmt( csp );
@@ -251,6 +286,17 @@ static int parse_resize_ratio( const char *arg, uint32_t *w, uint32_t *h )
 
     *w = parsed_w;
     *h = parsed_h;
+    return 0;
+}
+
+static int resize_round_mod( int *dst, double value, int mod )
+{
+    if( !dst || mod <= 0 || value != value || value < 0.0 || value > (double)(INT_MAX / mod) )
+        return -1;
+    int rounded = (int)round( value );
+    if( rounded > INT_MAX / mod )
+        return -1;
+    *dst = rounded * mod;
     return 0;
 }
 
@@ -344,14 +390,16 @@ static int handle_opts( const char * const *optlist, char **opts, video_info_t *
         height = height / csp->mod_height * csp->mod_height;
         if( width * width_units > height * height_units )
         {
-            int new_width = round( height * height_units / (width_units * csp->mod_width) );
-            new_width *= csp->mod_width;
+            int new_width;
+            FAIL_IF_ERROR( resize_round_mod( &new_width, height * height_units / (width_units * csp->mod_width), csp->mod_width ),
+                           "resize width is out of range\n" );
             width = X264_MIN( new_width, width );
         }
         else
         {
-            int new_height = round( width * width_units / (height_units * csp->mod_height) );
-            new_height *= csp->mod_height;
+            int new_height;
+            FAIL_IF_ERROR( resize_round_mod( &new_height, width * width_units / (height_units * csp->mod_height), csp->mod_height ),
+                           "resize height is out of range\n" );
             height = X264_MIN( new_height, height );
         }
     }
@@ -380,15 +428,11 @@ static int handle_opts( const char * const *optlist, char **opts, video_info_t *
              width  = info->width;
              height = info->height;
              if( width_units > height_units ) // SAR got wider, decrease width
-             {
-                 width = round( info->width * height_units / (width_units * csp->mod_width) );
-                 width *= csp->mod_width;
-             }
+                 FAIL_IF_ERROR( resize_round_mod( &width, info->width * height_units / (width_units * csp->mod_width), csp->mod_width ),
+                                "resize width is out of range\n" );
              else // SAR got thinner, decrease height
-             {
-                 height = round( info->height * width_units / (height_units * csp->mod_height) );
-                 height *= csp->mod_height;
-             }
+                 FAIL_IF_ERROR( resize_round_mod( &height, info->height * width_units / (height_units * csp->mod_height), csp->mod_height ),
+                                "resize height is out of range\n" );
         }
         else /* csp only */
         {
@@ -632,6 +676,13 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
     if( h->prev_filter.get_frame( h->prev_hnd, output, frame ) )
         return -1;
     if( h->variable_input && check_resizer( h, output ) )
+    {
+        h->prev_filter.release_frame( h->prev_hnd, output, frame );
+        return -1;
+    }
+    if( resize_image_is_invalid( &output->img ) ||
+        (h->pre_swap_chroma && output->img.planes < 3) ||
+        (h->ctx && !h->fast_mono && resize_image_is_invalid( &h->buffer.img )) )
     {
         h->prev_filter.release_frame( h->prev_hnd, output, frame );
         return -1;

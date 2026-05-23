@@ -255,7 +255,7 @@ static int const mode_tab[4] = {
 
 static int mp3len( uint8_t *data )
 {
-    uint32_t header       = ((data[0]<<24) | (data[1] << 16) | (data[2] << 8) | data[3]);
+    uint32_t header       = ((uint32_t)data[0] << 24) | ((uint32_t)data[1] << 16) | ((uint32_t)data[2] << 8) | data[3];
     int layer_id          = 3 - ((header >> 17) & 0x03);
     int bitrate_id        = ((header >> 12) & 0x0f);
     int samplerate_id     = ((header >> 10) & 0x03);
@@ -330,9 +330,6 @@ static audio_packet_t *get_next_packet( hnd_t handle )
 
         if( !( h->in = x264_af_get_samples( h->filter_chain, h->last_sample, last_sample ) ) )
             goto error;
-        if( h->last_dts == INVALID_DTS )
-            h->last_dts = h->last_sample;
-        h->last_sample += h->in->samplecount;
 
         if( h->buf_index > h->bufsize )
             goto error;
@@ -340,6 +337,9 @@ static audio_packet_t *get_next_packet( hnd_t handle )
             !h->in->samples || !h->in->samples[0] ||
             (h->info.channels > 1 && !h->in->samples[1]) )
             goto error;
+        if( h->in->samplecount > (uint64_t)(INT64_MAX - h->last_sample) )
+            goto error;
+        int64_t staged_last_sample = h->last_sample + h->in->samplecount;
         float *right = h->info.channels > 1 ? h->in->samples[1] : h->in->samples[0];
         len = lame_encode_buffer_float( h->lame, h->in->samples[0], right,
                                         h->in->samplecount, h->buffer + h->buf_index, h->bufsize - h->buf_index );
@@ -348,6 +348,9 @@ static audio_packet_t *get_next_packet( hnd_t handle )
             goto error;
 
         h->buf_index += len;
+        if( h->last_dts == INVALID_DTS )
+            h->last_dts = h->last_sample;
+        h->last_sample = staged_last_sample;
 
         out->size = get_next_mp3frame( h, out->data );
     } while( !out->size );

@@ -217,7 +217,8 @@ fail:
 static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 {
     selvry_hnd_t *h = handle;
-    if( !h || !output || !h->prev_hnd || !h->prev_filter.get_frame )
+    if( !h || !output || !h->prev_hnd || !h->prev_filter.get_frame ||
+        (h->vfr && !h->prev_filter.release_frame) )
         return -1;
     int pat_frame;
     if( select_every_frame_number( h, frame, &pat_frame ) )
@@ -226,10 +227,14 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
         return -1;
     if( h->vfr )
     {
-        output->pts = h->pts;
-        if( output->duration < 0 || h->pts > INT64_MAX - output->duration )
+        int64_t duration = output->duration;
+        if( duration < 0 || h->pts > INT64_MAX - duration )
+        {
+            h->prev_filter.release_frame( h->prev_hnd, output, pat_frame );
             return -1;
-        h->pts += output->duration;
+        }
+        output->pts = h->pts;
+        h->pts += duration;
     }
     return 0;
 }
