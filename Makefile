@@ -477,7 +477,7 @@ endif
 endif
 
 clean:
-	rm -f $(OBJS) $(OBJASM) $(OBJCLI) $(OBJSO) $(GENERATED) TAGS
+	rm -f $(OBJS) $(OBJASM) $(OBJCLI) $(OBJSO) $(sort $(GENERATED) common/oclobj.h) TAGS
 	rm -f $(SONAME) *.a *.lib *.exp *.pdb x264$(EXE) x264_lookahead.clbin
 	rm -f checkasm8$(EXE) checkasm10$(EXE) $(OBJCHK) $(OBJCHK_8) $(OBJCHK_10)
 	rm -f example$(EXE) $(OBJEXAMPLE)

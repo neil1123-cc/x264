@@ -40,6 +40,12 @@
 
 #define bs_write_ue bs_write_ue_big
 
+#define X264_LOOKAHEAD_THREAD_B_ADAPT_MODES 2
+#define X264_LOOKAHEAD_THREAD_SUBME_CLASSES 5
+#define X264_LOOKAHEAD_THREAD_BFRAME_CLASSES 4
+#define X264_SUBSAMPLING_FORMAT_COUNT 4
+#define X264_SLICE_ORDER_COUNT 3
+
 // forward declaration needed for template usage
 void x264_nal_encode( x264_t *h, uint8_t *dst, x264_nal_t *nal );
 void x264_macroblock_cache_load_progressive( x264_t *h, int i_mb_x, int i_mb_y );
@@ -680,9 +686,9 @@ static int validate_parameters( x264_t *h, int b_open )
         score += h->param.rc.i_qp_max[SLICE_TYPE_I] == 31 ||
                  h->param.rc.i_qp_max[SLICE_TYPE_P] == 31 ||
                  h->param.rc.i_qp_max[SLICE_TYPE_B] == 31;
-        score += h->param.rc.f_qcompress == 0.5;
-        score += fabs(h->param.rc.f_ip_factor - 1.25) < 0.01;
-        score += fabs(h->param.rc.f_pb_factor - 1.25) < 0.01;
+        score += h->param.rc.f_qcompress == 0.5f;
+        score += fabsf(h->param.rc.f_ip_factor - 1.25f) < 0.01f;
+        score += fabsf(h->param.rc.f_pb_factor - 1.25f) < 0.01f;
         score += h->param.analyse.inter == 0 && h->param.analyse.i_subpel_refine == 8;
         if( score >= 5 )
         {
@@ -697,7 +703,7 @@ static int validate_parameters( x264_t *h, int b_open )
 
     h->param.i_frame_reference = x264_clip3( h->param.i_frame_reference, 1, X264_REF_MAX );
 
-    if( b_open )	
+    if( b_open )
     {
         const x264_level_t *l = x264_levels;
         if( h->param.i_level_idc == X264_LEVEL_IDC_AUTO )
@@ -834,6 +840,9 @@ static int validate_parameters( x264_t *h, int b_open )
               {    25,    1, 0, 15700, x264_cqm_avci300_2160p_4iy, x264_cqm_avci300_2160p_4ic, x264_cqm_avci300_2160p_8iy },
               { 24000, 1001, 0, 15700, x264_cqm_avci300_2160p_4iy, x264_cqm_avci300_2160p_4ic, x264_cqm_avci300_2160p_8iy }}}
         };
+        X264_STATIC_ASSERT( ARRAY_ELEMS(avcintra_lut) == 5, "AVC-Intra class table height must match supported classes" );
+        X264_STATIC_ASSERT( ARRAY_ELEMS(avcintra_lut[0]) == 2, "AVC-Intra class table width must match resolution classes" );
+        X264_STATIC_ASSERT( ARRAY_ELEMS(avcintra_lut[0][0]) == 7, "AVC-Intra frame-rate table width must match supported rates" );
 
         int res = -1;
         if( i_csp >= X264_CSP_I420 && i_csp < X264_CSP_I422 && !type )
@@ -1297,7 +1306,7 @@ static int validate_parameters( x264_t *h, int b_open )
         h->param.rc.i_aq3_boundary[1] = (h->param.vui.b_fullrange == 1 ?  56 :  64) << (BIT_DEPTH - 8);
         h->param.rc.i_aq3_boundary[2] = (h->param.vui.b_fullrange == 1 ?   9 :  24) << (BIT_DEPTH - 8);
     }
-	
+
     if( h->param.i_log_level < X264_LOG_INFO && (!h->param.psz_log_file || h->param.i_log_file_level < X264_LOG_INFO) )
     {
         h->param.analyse.b_psnr = 0;
@@ -1336,7 +1345,7 @@ static int validate_parameters( x264_t *h, int b_open )
     h->param.analyse.f_psy_rd = x264_clip3f( h->param.analyse.f_psy_rd, 0, 10 );
     h->param.analyse.f_psy_trellis = x264_clip3f( h->param.analyse.f_psy_trellis, 0, 10 );
     h->mb.i_psy_rd = h->param.analyse.i_subpel_refine >= 6 ? FIX8( h->param.analyse.f_psy_rd ) : 0;
-    h->mb.i_psy_trellis = h->param.analyse.i_trellis ? FIX8( h->param.analyse.f_psy_trellis / 4 ) : 0;
+    h->mb.i_psy_trellis = h->param.analyse.i_trellis ? FIX8( h->param.analyse.f_psy_trellis / 4.0f ) : 0;
     h->param.analyse.i_chroma_qp_offset = x264_clip3(h->param.analyse.i_chroma_qp_offset, -32, 32);
     /* In 4:4:4 mode, chroma gets twice as much resolution, so we can halve its quality. */
     if( b_open && i_csp >= X264_CSP_I444 && i_csp < X264_CSP_BGR && h->param.analyse.b_psy )
@@ -1344,10 +1353,10 @@ static int validate_parameters( x264_t *h, int b_open )
     /* Psy RDO increases overall quantizers to improve the quality of luma--this indirectly hurts chroma quality */
     /* so we lower the chroma QP offset to compensate */
     if( b_open && h->mb.i_psy_rd && !h->param.i_avcintra_class )
-        h->param.analyse.i_chroma_qp_offset -= h->param.analyse.f_psy_rd < 0.25 ? 1 : 2;
+        h->param.analyse.i_chroma_qp_offset -= h->param.analyse.f_psy_rd < 0.25f ? 1 : 2;
     /* Psy trellis has a similar effect. */
     if( b_open && h->mb.i_psy_trellis && !h->param.i_avcintra_class )
-        h->param.analyse.i_chroma_qp_offset -= h->param.analyse.f_psy_trellis < 0.25 ? 1 : 2;
+        h->param.analyse.i_chroma_qp_offset -= h->param.analyse.f_psy_trellis < 0.25f ? 1 : 2;
     h->param.analyse.i_chroma_qp_offset = x264_clip3(h->param.analyse.i_chroma_qp_offset, -12, 12);
     /* MB-tree requires AQ to be on, even if the strength is zero. */
     if( !h->param.rc.i_aq_mode && h->param.rc.b_mb_tree )
@@ -1377,9 +1386,12 @@ static int validate_parameters( x264_t *h, int b_open )
             int bframes = X264_MIN( (h->param.i_bframe - 1) / 3, 3 );
 
             /* [b-adapt 0/1 vs 2][quantized subme][quantized bframes] */
-            static const uint8_t lookahead_thread_div[2][5][4] =
+            static const uint8_t lookahead_thread_div[][X264_LOOKAHEAD_THREAD_SUBME_CLASSES][X264_LOOKAHEAD_THREAD_BFRAME_CLASSES] =
             {{{6,6,6,6}, {3,3,3,3}, {4,4,4,4}, {6,6,6,6}, {12,12,12,12}},
              {{3,2,1,1}, {2,1,1,1}, {4,3,2,1}, {6,4,3,2}, {12, 9, 6, 4}}};
+            X264_STATIC_ASSERT( ARRAY_ELEMS(lookahead_thread_div) == X264_LOOKAHEAD_THREAD_B_ADAPT_MODES, "lookahead thread divisor table size must match b-adapt classes" );
+            X264_STATIC_ASSERT( ARRAY_ELEMS(lookahead_thread_div[0]) == X264_LOOKAHEAD_THREAD_SUBME_CLASSES, "lookahead thread divisor table height must match subme classes" );
+            X264_STATIC_ASSERT( ARRAY_ELEMS(lookahead_thread_div[0][0]) == X264_LOOKAHEAD_THREAD_BFRAME_CLASSES, "lookahead thread divisor table width must match b-frame classes" );
 
             h->param.i_lookahead_threads = h->param.i_threads / lookahead_thread_div[badapt][subme][bframes];
             /* Since too many lookahead threads significantly degrades lookahead accuracy, limit auto
@@ -1422,7 +1434,7 @@ static int validate_parameters( x264_t *h, int b_open )
             h->param.analyse.b_fast_pskip = 0;
             /* B-frame QPs need to be lower to retain grain */
             /* Arbitrary formula to scale pbratio based on fgo strength. */
-            h->param.rc.f_pb_factor = 1 + (h->param.rc.f_pb_factor - 1) / pow(h->param.analyse.i_fgo, 0.3);
+            h->param.rc.f_pb_factor = 1.0f + (h->param.rc.f_pb_factor - 1.0f) / powf( h->param.analyse.i_fgo, 0.3f );
         }
     }
 
@@ -1835,8 +1847,8 @@ x264_t *x264_encoder_open( x264_param_t *param, void *api )
     h->out.i_bitstream = x264_clip3f(
         h->param.i_width * h->param.i_height * 4
         * ( h->param.rc.i_rc_method == X264_RC_ABR
-            ? pow( 0.95, h->param.rc.i_qp_min_min )
-            : pow( 0.95, h->param.rc.i_qp_constant ) * X264_MAX( 1, h->param.rc.f_ip_factor ) ),
+            ? powf( 0.95f, h->param.rc.i_qp_min_min )
+            : powf( 0.95f, h->param.rc.i_qp_constant ) * X264_MAX( 1.0f, h->param.rc.f_ip_factor ) ),
         1000000, INT_MAX/3
     );
 
@@ -1959,10 +1971,11 @@ x264_t *x264_encoder_open( x264_param_t *param, void *api )
     else
         snprintf( level, sizeof(level), "%d.%d", h->sps->i_level_idc / 10, h->sps->i_level_idc % 10 );
 
-    static const char * const subsampling[4] = { "4:0:0", "4:2:0", "4:2:2", "4:4:4" };
+    static const char * const subsampling[] = { "4:0:0", "4:2:0", "4:2:2", "4:4:4" };
+    X264_STATIC_ASSERT( ARRAY_ELEMS(subsampling) == X264_SUBSAMPLING_FORMAT_COUNT, "subsampling name table size must match chroma format count" );
     x264_log( h, X264_LOG_INFO, "profile %s, level %s, %s, %d-bit\n",
               profile, level, subsampling[CHROMA_FORMAT], BIT_DEPTH );
-			  
+
     char *opts = x264_param2string( &h->param, 0 );
     if( opts )
     {
@@ -3262,7 +3275,8 @@ static void thread_sync_context( x264_t *dst, x264_t *src )
     x264_frame_push_unused( src, dst->fdec );
 
     // copy everything except the per-thread pointers and the constants.
-    memcpy( &dst->i_frame, &src->i_frame, offsetof(x264_t, mb.base) - offsetof(x264_t, i_frame) );
+    memcpy( (uint8_t*)dst + offsetof(x264_t, i_frame), (uint8_t*)src + offsetof(x264_t, i_frame),
+            offsetof(x264_t, mb.base) - offsetof(x264_t, i_frame) );
     dst->param = src->param;
     dst->stat = src->stat;
     dst->pixf = src->pixf;
@@ -3346,7 +3360,8 @@ static int threaded_slices_write( x264_t *h )
         if( i )
         {
             t->param = h->param;
-            memcpy( &t->i_frame, &h->i_frame, offsetof(x264_t, rc) - offsetof(x264_t, i_frame) );
+            memcpy( (uint8_t*)t + offsetof(x264_t, i_frame), (uint8_t*)h + offsetof(x264_t, i_frame),
+                    offsetof(x264_t, rc) - offsetof(x264_t, i_frame) );
         }
         int height = h->mb.i_mb_height >> PARAM_INTERLACED;
         t->i_threadslice_start = ((height *  i    + round_bias) / h->param.i_threads) << PARAM_INTERLACED;
@@ -3759,16 +3774,16 @@ int     x264_encoder_encode( x264_t *h,
             h->fdec->f_pir_position = h->fref[0][0]->f_pir_position;
             h->fdec->i_frames_since_pir = h->fref[0][0]->i_frames_since_pir + pocdiff;
             if( h->fdec->i_frames_since_pir >= h->param.i_keyint_max ||
-                (h->b_queued_intra_refresh && h->fdec->f_pir_position + 0.5 >= h->mb.i_mb_width) )
+                (h->b_queued_intra_refresh && h->fdec->f_pir_position + 0.5f >= h->mb.i_mb_width) )
             {
                 h->fdec->f_pir_position = 0;
                 h->fdec->i_frames_since_pir = 0;
                 h->b_queued_intra_refresh = 0;
                 h->fenc->b_keyframe = 1;
             }
-            h->fdec->i_pir_start_col = h->fdec->f_pir_position+0.5;
+            h->fdec->i_pir_start_col = h->fdec->f_pir_position + 0.5f;
             h->fdec->f_pir_position += increment * pocdiff;
-            h->fdec->i_pir_end_col = h->fdec->f_pir_position+0.5;
+            h->fdec->i_pir_end_col = h->fdec->f_pir_position + 0.5f;
             /* If our intra refresh has reached the right side of the frame, we're done. */
             if( h->fdec->i_pir_end_col >= h->mb.i_mb_width - 1 )
             {
@@ -4269,6 +4284,7 @@ static int encoder_frame_end( x264_t *h, x264_t *thread_current,
 {
     static const char mb_chars[] = { 'i', 'i', 'I', 'C', 'P', '8', 'S',
         'D', '<', 'X', 'B', 'X', '>', 'B', 'B', 'B', 'B', '8', 'S' };
+    X264_STATIC_ASSERT( ARRAY_ELEMS(mb_chars) == X264_MBTYPE_MAX, "debug mb character table size must match mb type enum" );
     for( int mb_xy = 0; mb_xy < h->mb.i_mb_width * h->mb.i_mb_height; mb_xy++ )
     {
         if( h->mb.type[mb_xy] < X264_MBTYPE_MAX && h->mb.type[mb_xy] >= 0 )
@@ -4354,6 +4370,7 @@ void    x264_encoder_close  ( x264_t *h )
     for( int i = 0; i < 3; i++ )
     {
         static const uint8_t slice_order[] = { SLICE_TYPE_I, SLICE_TYPE_P, SLICE_TYPE_B };
+        X264_STATIC_ASSERT( ARRAY_ELEMS(slice_order) == X264_SLICE_ORDER_COUNT, "slice order table size must match reported slice types" );
         int i_slice = slice_order[i];
 
         if( h->stat.i_frame_count[i_slice] > 0 )

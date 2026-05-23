@@ -26,6 +26,8 @@
 
 #include "input.h"
 
+#define X264_AVS_PLANES 3
+
 #if SYS_WINDOWS || SYS_CYGWIN
 #include <windows.h>
 #define avs_open() LoadLibraryW( L"avisynth" )
@@ -190,7 +192,7 @@ fail:
 #define AVS_IS_Y16( vi ) (h->func.avs_is_y16 && h->func.avs_is_y16( vi ))
 
 /* generate a filter sequence to try based on the filename extension */
-static void avs_build_filter_sequence( char *filename_ext, const char *filter[AVS_MAX_SEQUENCE+1] )
+static void avs_build_filter_sequence( const char *filename_ext, const char *filter[AVS_MAX_SEQUENCE+1] )
 {
     int i = 0;
 #if SYS_WINDOWS || SYS_CYGWIN
@@ -318,7 +320,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
 #endif
 
     AVS_Value res;
-    char *filename_ext = get_filename_extension( psz_filename );
+    const char *filename_ext = get_filename_extension( psz_filename );
 
     if( !strcasecmp( filename_ext, "avs" ) )
     {
@@ -587,7 +589,8 @@ static int picture_alloc( cli_pic_t *pic, hnd_t handle, int csp, int width, int 
 
 static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
 {
-    static const int plane[3] = { AVS_PLANAR_Y, AVS_PLANAR_U, AVS_PLANAR_V };
+    static const int plane[] = { AVS_PLANAR_Y, AVS_PLANAR_U, AVS_PLANAR_V };
+    X264_STATIC_ASSERT( ARRAY_ELEMS(plane) == X264_AVS_PLANES, "Avisynth plane table size must match YUV plane domain" );
     avs_hnd_t *h = handle;
     if( i_frame >= h->num_frames )
         return -1;

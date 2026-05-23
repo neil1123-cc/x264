@@ -144,6 +144,7 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
         if( !h->stored_pts_num )
             h->stored_pts_num = end + 2;
         timecodes_num = h->stored_pts_num;
+        FAIL_IF_ERROR( timecodes_num <= 0 || (uint64_t)timecodes_num > SIZE_MAX / sizeof(double), "too many timecodes\n" );
         fseek( tcfile_in, file_pos, SEEK_SET );
 
         timecodes = malloc( timecodes_num * sizeof(double) );
@@ -151,6 +152,7 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
             return -1;
         if( h->auto_timebase_den || h->auto_timebase_num )
         {
+            FAIL_IF_ERROR( seq_num == INT_MAX || (uint64_t)(seq_num + 1) > SIZE_MAX / sizeof(double), "too many tcfile fps entries\n" );
             fpss = malloc( (seq_num + 1) * sizeof(double) );
             if( !fpss )
                 goto fail;
@@ -237,6 +239,7 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
         }
         timecodes_num = h->stored_pts_num;
         FAIL_IF_ERROR( !timecodes_num, "input tcfile doesn't have any timecodes!\n" );
+        FAIL_IF_ERROR( (uint64_t)timecodes_num > SIZE_MAX / sizeof(double), "too many timecodes\n" );
         fseek( tcfile_in, file_pos, SEEK_SET );
 
         timecodes = malloc( timecodes_num * sizeof(double) );
@@ -266,18 +269,21 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
             h->timebase_den = info->fps_num;
         else if( h->auto_timebase_den )
         {
-            fpss = malloc( (timecodes_num - 1) * sizeof(double) );
+            assert( timecodes_num > 1 );
+            size_t fpss_num = timecodes_num - 1;
+            FAIL_IF_ERROR( fpss_num > SIZE_MAX / sizeof(double), "too many tcfile fps entries\n" );
+            fpss = malloc( fpss_num * sizeof(double) );
             if( !fpss )
                 goto fail;
-            for( num = 0; num < timecodes_num - 1; num++ )
+            for( size_t fpss_idx = 0; fpss_idx < fpss_num; fpss_idx++ )
             {
-                fpss[num] = 1 / (timecodes[num + 1] - timecodes[num]);
+                fpss[fpss_idx] = 1 / (timecodes[fpss_idx + 1] - timecodes[fpss_idx]);
                 if( h->auto_timebase_den )
                 {
                     int i = 1;
                     uint64_t fps_num, fps_den;
                     double exponent;
-                    double fps_sig = sigexp10( fpss[num], &exponent );
+                    double fps_sig = sigexp10( fpss[fpss_idx], &exponent );
                     while( 1 )
                     {
                         fps_den = i * h->timebase_num;
@@ -295,7 +301,7 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
                 }
             }
             if( h->auto_timebase_num && !h->auto_timebase_den )
-                if( try_mkv_timebase_den( fpss, h, timecodes_num - 1 ) < 0 )
+                if( try_mkv_timebase_den( fpss, h, fpss_num ) < 0 )
                     goto fail;
             free( fpss );
             fpss = NULL;

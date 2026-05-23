@@ -31,6 +31,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <errno.h>
 
 #ifdef _MSC_VER
@@ -109,7 +110,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
 
     if( last_slash )
     {
-        int dir_len = (int)(last_slash - psz_filename + 1);
+        size_t dir_len = last_slash - psz_filename + 1;
         hnd->dir_prefix = malloc( dir_len + 1 );
         if( !hnd->dir_prefix )
         {
@@ -117,7 +118,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
             free( hnd );
             return -1;
         }
-        strncpy( hnd->dir_prefix, psz_filename, dir_len );
+        memcpy( hnd->dir_prefix, psz_filename, dir_len );
         hnd->dir_prefix[dir_len] = '\0';
         psz_filename = last_slash + 1;
     }
@@ -128,11 +129,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
 
     /* Extract filename without extension */
     char *dot = strrchr( psz_filename, '.' );
-    int prefix_len;
-    if( dot )
-        prefix_len = (int)(dot - psz_filename);
-    else
-        prefix_len = (int)strlen( psz_filename );
+    size_t prefix_len = dot ? (size_t)(dot - psz_filename) : strlen( psz_filename );
 
     hnd->filename_prefix = malloc( prefix_len + 1 );
     if( !hnd->filename_prefix )
@@ -141,7 +138,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
         free( hnd );
         return -1;
     }
-    strncpy( hnd->filename_prefix, psz_filename, prefix_len );
+    memcpy( hnd->filename_prefix, psz_filename, prefix_len );
     hnd->filename_prefix[prefix_len] = '\0';
 
     hnd->i_numframe = 0;
@@ -160,8 +157,9 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
     p_param->b_repeat_headers = 0;
 
     /* Build options filename */
-    int opt_len = (hnd->dir_prefix ? (int)strlen(hnd->dir_prefix) : 0) +
-                  (int)strlen(hnd->filename_prefix) + 8; /* .options */
+    size_t dir_len = hnd->dir_prefix ? strlen(hnd->dir_prefix) : 0;
+    size_t prefix_len = strlen(hnd->filename_prefix);
+    size_t opt_len = dir_len + prefix_len + sizeof(".options") - 1;
     char *opt_filename = malloc( opt_len + 1 );
     if( !opt_filename )
         return -1;
@@ -203,8 +201,9 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     int size = 0;
 
     /* Build headers filename */
-    int hdr_len = (hnd->dir_prefix ? (int)strlen(hnd->dir_prefix) : 0) +
-                  (int)strlen(hnd->filename_prefix) + 8; /* .headers */
+    size_t dir_len = hnd->dir_prefix ? strlen(hnd->dir_prefix) : 0;
+    size_t prefix_len = strlen(hnd->filename_prefix);
+    size_t hdr_len = dir_len + prefix_len + sizeof(".headers") - 1;
     char *hdr_filename = malloc( hdr_len + 1 );
     if( !hdr_filename )
         return -1;
@@ -223,8 +222,13 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     int nal_count = 3; /* SPS, PPS, and potentially SEI */
     for( int i = 0; i < nal_count; i++ )
     {
-        if( fwrite( p_nal[i].p_payload, p_nal[i].i_payload, 1, hdr_file ) )
-            size += p_nal[i].i_payload;
+        if( p_nal[i].i_payload < 0 ||
+            (p_nal[i].i_payload > 0 && fwrite( p_nal[i].p_payload, (size_t)p_nal[i].i_payload, 1, hdr_file ) != 1) )
+        {
+            fclose( hdr_file );
+            return -1;
+        }
+        size += p_nal[i].i_payload;
     }
 
     fclose( hdr_file );
@@ -246,8 +250,9 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
         }
 
         /* Create new data file for this GOP */
-        int data_len = (hnd->dir_prefix ? (int)strlen(hnd->dir_prefix) : 0) +
-                       (int)strlen(hnd->filename_prefix) + 20; /* -NNNNNN.264-gop-data */
+        size_t dir_len = hnd->dir_prefix ? strlen(hnd->dir_prefix) : 0;
+        size_t prefix_len = strlen(hnd->filename_prefix);
+        size_t data_len = dir_len + prefix_len + sizeof("-000000.264-gop-data") - 1;
         char *data_filename = malloc( data_len + 1 );
         if( !data_filename )
             return -1;
@@ -278,14 +283,14 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
         return -1;
 
     /* Write timestamp header (PTS + DTS) */
-    int8_t ts_len = 2 * sizeof(int64_t);
-    int8_t ts_header[4] = { 0, 0, 0, ts_len };
-    fwrite( ts_header, 4, 1, hnd->data_file );
-    fwrite( &p_picture->i_pts, sizeof(int64_t), 1, hnd->data_file );
-    fwrite( &p_picture->i_dts, sizeof(int64_t), 1, hnd->data_file );
+    const uint8_t ts_header[4] = { 0, 0, 0, (uint8_t)(2 * sizeof(int64_t)) };
+    if( fwrite( ts_header, sizeof(ts_header), 1, hnd->data_file ) != 1 ||
+        fwrite( &p_picture->i_pts, sizeof(int64_t), 1, hnd->data_file ) != 1 ||
+        fwrite( &p_picture->i_dts, sizeof(int64_t), 1, hnd->data_file ) != 1 )
+        return -1;
 
     /* Write NAL data */
-    if( fwrite( p_nalu, i_size, 1, hnd->data_file ) )
+    if( i_size >= 0 && fwrite( p_nalu, (size_t)i_size, 1, hnd->data_file ) == 1 )
     {
         hnd->i_numframe++;
         return i_size;

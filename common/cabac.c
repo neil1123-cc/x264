@@ -133,11 +133,13 @@ void x264_cabac_encode_bypass_c( x264_cabac_t *cb, int b )
     cabac_putbyte( cb );
 }
 
-static const int bypass_lut[16] =
+#define X264_CABAC_BYPASS_LUT_SIZE 16
+static const int bypass_lut[] =
 {
     -1,      0x2,     0x14,     0x68,     0x1d0,     0x7a0,     0x1f40,     0x7e80,
     0x1fd00, 0x7fa00, 0x1ff400, 0x7fe800, 0x1ffd000, 0x7ffa000, 0x1fff4000, 0x7ffe8000
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(bypass_lut) == X264_CABAC_BYPASS_LUT_SIZE, "CABAC bypass LUT size must match prefix length domain" );
 
 void x264_cabac_encode_ue_bypass( x264_cabac_t *cb, int exp_bits, int val )
 {

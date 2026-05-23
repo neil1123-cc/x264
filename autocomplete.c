@@ -237,13 +237,13 @@ static int list_contains( const char * const *list, const char *s )
     return 0;
 }
 
-static void suggest( const char *s, const char *cur, int cur_len )
+static void suggest( const char *s, const char *cur, size_t cur_len )
 {
     if( s && *s && !strncmp( s, cur, cur_len ) )
         printf( "%s ", s );
 }
 
-static void suggest_lower( const char *s, const char *cur, int cur_len )
+static void suggest_lower( const char *s, const char *cur, size_t cur_len )
 {
     if( s && *s && !strncasecmp( s, cur, cur_len ) )
     {
@@ -253,7 +253,7 @@ static void suggest_lower( const char *s, const char *cur, int cur_len )
     }
 }
 
-static void suggest_num_range( int start, int end, const char *cur, int cur_len )
+static void suggest_num_range( int start, int end, const char *cur, size_t cur_len )
 {
     char buf[16];
     for( int i = start; i <= end; i++ )
@@ -265,15 +265,18 @@ static void suggest_num_range( int start, int end, const char *cur, int cur_len 
 
 #if HAVE_LAVF
 /* Suggest each token in a string separated by delimiters. */
-static void suggest_token( const char *s, int delim, const char *cur, int cur_len )
+static void suggest_token( const char *s, int delim, const char *cur, size_t cur_len )
 {
     if( s && *s )
     {
         for( const char *tok_end; (tok_end = strchr( s, delim )); s = tok_end + 1 )
         {
-            int tok_len = tok_end - s;
+            size_t tok_len = tok_end - s;
             if( tok_len && tok_len >= cur_len && !strncmp( s, cur, cur_len ) )
-                printf( "%.*s ", tok_len, s );
+            {
+                fwrite( s, 1, tok_len, stdout );
+                putchar( ' ' );
+            }
         }
         suggest( s, cur, cur_len );
     }
@@ -292,7 +295,7 @@ static void suggest_token( const char *s, int delim, const char *cur, int cur_le
 
 int x264_cli_autocomplete( const char *prev, const char *cur )
 {
-    int cur_len = strlen( cur );
+    size_t cur_len = strlen( cur );
     if( 0 );
     OPT( "--alternative-transfer" )
         suggest_list( x264_transfer_names );

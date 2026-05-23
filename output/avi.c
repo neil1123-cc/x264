@@ -22,6 +22,7 @@
 
 #include "output.h"
 #undef DECLARE_ALIGNED
+#include <limits.h>
 #include <libavformat/avformat.h>
 
 typedef struct
@@ -145,7 +146,15 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
 
 static int write_buffer( avi_hnd_t *h, uint8_t *p_nalu, int i_size )
 {
-    unsigned ns = h->d_cur + i_size;
+    size_t size;
+    unsigned ns;
+
+    if( !h || i_size < 0 || (i_size && !p_nalu) )
+        return -1;
+    if( h->d_cur > INT_MAX || i_size > INT_MAX - (int)h->d_cur )
+        return -1;
+    size = (size_t)i_size;
+    ns = h->d_cur + (unsigned)i_size;
 
     if( !h->data || ns > h->d_max )
     {
@@ -153,7 +162,11 @@ static int write_buffer( avi_hnd_t *h, uint8_t *p_nalu, int i_size )
         unsigned dn = 16;
 
         while( ns > dn )
+        {
+            if( dn > (unsigned)INT_MAX / 2 )
+                return -1;
             dn <<= 1;
+        }
 
         dp = realloc( h->data, dn );
         if( !dp )
@@ -163,25 +176,39 @@ static int write_buffer( avi_hnd_t *h, uint8_t *p_nalu, int i_size )
         h->d_max = dn;
     }
 
-    memcpy( h->data + h->d_cur, p_nalu, i_size );
+    if( size )
+        memcpy( h->data + h->d_cur, p_nalu, size );
     h->d_cur = ns;
 
     return i_size;
+}
+
+static int add_payload_size( int *dst, int payload )
+{
+    if( payload < 0 || *dst > INT_MAX - payload )
+        return -1;
+    *dst += payload;
+    return 0;
 }
 
 static int write_headers( hnd_t handle, x264_nal_t *p_nal )
 {
     avi_hnd_t *h = handle;
     AVCodecContext *c;
-    int i_size = p_nal[0].i_payload + p_nal[1].i_payload + p_nal[2].i_payload;
+    int i_size = 0;
 
-    if( !h->mux_fc || !h->video_stm )
+    if( !h || !p_nal || !h->mux_fc || !h->video_stm ||
+        add_payload_size( &i_size, p_nal[0].i_payload ) ||
+        add_payload_size( &i_size, p_nal[1].i_payload ) ||
+        add_payload_size( &i_size, p_nal[2].i_payload ) )
         return -1;
 
     c = h->video_stm->codec;
     if( c->flags & AV_CODEC_FLAG_GLOBAL_HEADER )
     {
         c->extradata_size = i_size - p_nal[2].i_payload;
+        if( c->extradata_size && !p_nal[0].p_payload )
+            return -1;
         av_freep( &c->extradata );
         c->extradata = av_malloc( c->extradata_size );
         if( !c->extradata )
@@ -206,7 +233,7 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
     avi_hnd_t *h = handle;
     AVPacket pkt;
 
-    if( !h->mux_fc || !h->video_stm )
+    if( !h || !p_picture || !h->mux_fc || !h->video_stm )
         return -1;
 
     av_init_packet(&pkt);
@@ -217,10 +244,12 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
         if( write_buffer( h, p_nalu, i_size ) < 0 )
             return -1;
         pkt.data = h->data;
-        pkt.size = h->d_cur;
+        pkt.size = (int)h->d_cur;
     }
     else
     {
+        if( i_size < 0 || (i_size && !p_nalu) )
+            return -1;
         pkt.data = p_nalu;
         pkt.size = i_size;
     }

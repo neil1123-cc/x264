@@ -116,6 +116,7 @@ enum slice_type_e
 };
 
 static const char slice_type_to_char[] = { 'P', 'B', 'I' };
+X264_STATIC_ASSERT( ARRAY_ELEMS(slice_type_to_char) == SLICE_TYPE_I + 1, "slice type table size must match slice type enum" );
 
 enum sei_payload_type_e
 {
@@ -177,7 +178,7 @@ enum sei_payload_type_e
 #define LUMA_DC   48
 #define CHROMA_DC 49
 
-static const uint8_t x264_scan8[16*3 + 3] =
+static const uint8_t x264_scan8[] =
 {
     4+ 1*8, 5+ 1*8, 4+ 2*8, 5+ 2*8,
     6+ 1*8, 7+ 1*8, 6+ 2*8, 7+ 2*8,
@@ -193,6 +194,9 @@ static const uint8_t x264_scan8[16*3 + 3] =
     6+13*8, 7+13*8, 6+14*8, 7+14*8,
     0+ 0*8, 0+ 5*8, 0+10*8
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_scan8) == 16*3 + 3, "scan8 table size must match coded blocks and DC entries" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_scan8) <= X264_SCAN8_SIZE, "scan8 table must fit scan8 cache" );
+X264_STATIC_ASSERT( LUMA_DC < ARRAY_ELEMS(x264_scan8) && CHROMA_DC < ARRAY_ELEMS(x264_scan8), "scan8 DC indexes must fit table" );
 
 /****************************************************************************
  * Includes
@@ -272,8 +276,8 @@ X264_API void x264_reduce_fraction( uint32_t *n, uint32_t *d );
 X264_API void x264_reduce_fraction64( uint64_t *n, uint64_t *d );
 void x264_ntsc_fps( uint32_t *fps_num, uint32_t *fps_den );
 
-X264_API void x264_log_default( void *p_unused, int i_level, const char *psz_fmt, va_list arg );
-X264_API void x264_log_internal( int i_level, const char *psz_fmt, ... );
+X264_API void x264_log_default( void *p_unused, int i_level, const char *psz_fmt, va_list arg ) X264_FORMAT_PRINTF( 3, 0 );
+X264_API void x264_log_internal( int i_level, const char *psz_fmt, ... ) X264_FORMAT_PRINTF( 2, 3 );
 
 /* x264_malloc: will do or emulate a memalign
  * you have to use x264_free for buffers allocated with x264_malloc */

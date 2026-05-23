@@ -323,12 +323,12 @@ configure_system_override() {
     if [ -e "$x264_config_path" ]; then
         res=$?
         log_ok
-        arg="$(grep '#define X264_GPL ' $x264_config_path | sed -e 's/#define X264_GPL *//; s/ *$//')"
+        arg="$(grep '#define X264_GPL ' "$x264_config_path" | sed -e 's/#define X264_GPL *//; s/ *$//')"
         if [ -n "$arg" ]; then
             [ "$arg" = 0 ] && arg="no" || arg="yes"
             [ "$arg" != "$gpl" ] && die "Incompatible license with system libx264"
         fi
-        arg="$(grep '#define X264_BIT_DEPTH ' $x264_config_path | sed -e 's/#define X264_BIT_DEPTH *//; s/ *$//')"
+        arg="$(grep '#define X264_BIT_DEPTH ' "$x264_config_path" | sed -e 's/#define X264_BIT_DEPTH *//; s/ *$//')"
         if [ -n "$arg" ]; then
             [ "$arg" = 0 ] && arg="all"
             if [ "$arg" != "$bit_depth" ]; then
@@ -336,7 +336,7 @@ configure_system_override() {
                 bit_depth="$arg"
             fi
         fi
-        arg="$(grep '#define X264_CHROMA_FORMAT ' $x264_config_path | sed -e 's/#define X264_CHROMA_FORMAT *//; s/ *$//')"
+        arg="$(grep '#define X264_CHROMA_FORMAT ' "$x264_config_path" | sed -e 's/#define X264_CHROMA_FORMAT *//; s/ *$//')"
         if [ -n "$arg" ]; then
             [ "$arg" = 0 ] && arg="all" || arg="${arg#X264_CSP_I}"
             if [ "$arg" != "$chroma_format" ]; then
@@ -344,7 +344,7 @@ configure_system_override() {
                 chroma_format="$arg"
             fi
         fi
-        arg="$(grep '#define X264_INTERLACED ' $x264_config_path | sed -e 's/#define X264_INTERLACED *//; s/ *$//')"
+        arg="$(grep '#define X264_INTERLACED ' "$x264_config_path" | sed -e 's/#define X264_INTERLACED *//; s/ *$//')"
         if [ -n "$arg" ]; then
             [ "$arg" = 0 ] && arg="no" || arg="yes"
             if [ "$arg" != "$interlaced" ]; then
@@ -713,6 +713,11 @@ else
     fi
 fi
 
+if [ $compiler_style = GNU ]; then
+    cc_check '' -std=gnu17 '' '_Static_assert(__STDC_VERSION__ >= 201710L, "expected C17");' || die "GNU17 compiler is needed for compilation."
+    CFLAGS="$CFLAGS -std=gnu17 -D_GNU_SOURCE"
+fi
+
 if [ $compiler = GNU ]; then
     if cc_check '' -Werror=unknown-warning-option ; then
         CHECK_CFLAGS="$CHECK_CFLAGS -Werror=unknown-warning-option"
@@ -1010,16 +1015,6 @@ log_msg ""
 # check requirements
 
 cc_check || die "No working C compiler found."
-
-if [ $compiler_style = GNU ]; then
-    if cc_check '' -std=gnu99 'for( int i = 0; i < 9; i++ );' ; then
-        CFLAGS="$CFLAGS -std=gnu99 -D_GNU_SOURCE"
-    elif cc_check '' -std=c99 'for( int i = 0; i < 9; i++ );' ; then
-        CFLAGS="$CFLAGS -std=c99 -D_POSIX_C_SOURCE=200112L -D_BSD_SOURCE"
-    elif ! cc_check '' '' 'for( int i = 0; i < 9; i++ );' ; then
-        die "C99 compiler is needed for compilation."
-    fi
-fi
 
 if [ $shared = yes ] ; then
     pic="yes"
@@ -1915,7 +1910,8 @@ if [ "$static" = "yes" ]; then
     echo 'install: install-lib-static' >> config.mak
 fi
 
-${SRCPATH}/version.sh >> x264_config.h
+version_defs="$(${SRCPATH}/version.sh)" || exit 1
+printf '%s\n' "$version_defs" >> x264_config.h
 
 if [ "$bashcompletion" = "auto" ]; then
     if [ "$cli" = "no" ]; then

@@ -27,8 +27,12 @@
 
 #define SHIFT(x,s) ((s)<=0 ? (x)<<-(s) : ((x)+(1<<((s)-1)))>>(s))
 #define DIV(n,d) (((n) + ((d)>>1)) / (d))
+#define X264_QUANT_SCALE_MODES 6
+#define X264_QUANT4_SCALE_CLASSES 3
+#define X264_QUANT8_SCAN_SIZE 16
+#define X264_QUANT8_SCALE_CLASSES 6
 
-static const uint8_t dequant4_scale[6][3] =
+static const uint8_t dequant4_scale[][X264_QUANT4_SCALE_CLASSES] =
 {
     { 10, 13, 16 },
     { 11, 14, 18 },
@@ -37,7 +41,9 @@ static const uint8_t dequant4_scale[6][3] =
     { 16, 20, 25 },
     { 18, 23, 29 }
 };
-static const uint16_t quant4_scale[6][3] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(dequant4_scale) == X264_QUANT_SCALE_MODES, "4x4 dequant scale table size must match QP mod-6 domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(dequant4_scale[0]) == X264_QUANT4_SCALE_CLASSES, "4x4 dequant scale table width must match coefficient classes" );
+static const uint16_t quant4_scale[][X264_QUANT4_SCALE_CLASSES] =
 {
     { 13107, 8066, 5243 },
     { 11916, 7490, 4660 },
@@ -46,12 +52,15 @@ static const uint16_t quant4_scale[6][3] =
     {  8192, 5243, 3355 },
     {  7282, 4559, 2893 },
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(quant4_scale) == X264_QUANT_SCALE_MODES, "4x4 quant scale table size must match QP mod-6 domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(quant4_scale[0]) == X264_QUANT4_SCALE_CLASSES, "4x4 quant scale table width must match coefficient classes" );
 
-static const uint8_t quant8_scan[16] =
+static const uint8_t quant8_scan[] =
 {
     0,3,4,3, 3,1,5,1, 4,5,2,5, 3,1,5,1
 };
-static const uint8_t dequant8_scale[6][6] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(quant8_scan) == X264_QUANT8_SCAN_SIZE, "8x8 quant scan table size must match scan input domain" );
+static const uint8_t dequant8_scale[][X264_QUANT8_SCALE_CLASSES] =
 {
     { 20, 18, 32, 19, 25, 24 },
     { 22, 19, 35, 21, 28, 26 },
@@ -60,7 +69,9 @@ static const uint8_t dequant8_scale[6][6] =
     { 32, 28, 51, 30, 40, 38 },
     { 36, 32, 58, 34, 46, 43 },
 };
-static const uint16_t quant8_scale[6][6] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(dequant8_scale) == X264_QUANT_SCALE_MODES, "8x8 dequant scale table size must match QP mod-6 domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(dequant8_scale[0]) == X264_QUANT8_SCALE_CLASSES, "8x8 dequant scale table width must match coefficient classes" );
+static const uint16_t quant8_scale[][X264_QUANT8_SCALE_CLASSES] =
 {
     { 13107, 11428, 20972, 12222, 16777, 15481 },
     { 11916, 10826, 19174, 11058, 14980, 14290 },
@@ -69,6 +80,8 @@ static const uint16_t quant8_scale[6][6] =
     {  8192,  7346, 13159,  7740, 10486,  9777 },
     {  7282,  6428, 11570,  6830,  9118,  8640 }
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(quant8_scale) == X264_QUANT_SCALE_MODES, "8x8 quant scale table size must match QP mod-6 domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(quant8_scale[0]) == X264_QUANT8_SCALE_CLASSES, "8x8 quant scale table width must match coefficient classes" );
 
 int x264_cqm_init( x264_t *h )
 {

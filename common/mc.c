@@ -46,9 +46,9 @@
 #endif
 
 
-static inline void pixel_avg( pixel *dst,  intptr_t i_dst_stride,
-                              pixel *src1, intptr_t i_src1_stride,
-                              pixel *src2, intptr_t i_src2_stride, int i_width, int i_height )
+static inline void pixel_avg( pixel *restrict dst,  intptr_t i_dst_stride,
+                              pixel *restrict src1, intptr_t i_src1_stride,
+                              pixel *restrict src2, intptr_t i_src2_stride, int i_width, int i_height )
 {
     for( int y = 0; y < i_height; y++ )
     {
@@ -149,7 +149,8 @@ MC_WEIGHT_C( mc_weight_w8,   8 )
 MC_WEIGHT_C( mc_weight_w4,   4 )
 MC_WEIGHT_C( mc_weight_w2,   2 )
 
-static weight_fn_t mc_weight_wtab[6] =
+#define X264_MC_WEIGHT_WIDTH_COUNT 6
+static weight_fn_t mc_weight_wtab[] =
 {
     mc_weight_w2,
     mc_weight_w4,
@@ -158,6 +159,7 @@ static weight_fn_t mc_weight_wtab[6] =
     mc_weight_w16,
     mc_weight_w20,
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(mc_weight_wtab) == X264_MC_WEIGHT_WIDTH_COUNT, "MC weight function table size must match supported widths" );
 
 static void mc_copy( pixel *src, intptr_t i_src_stride, pixel *dst, intptr_t i_dst_stride, int i_width, int i_height )
 {

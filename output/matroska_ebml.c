@@ -319,7 +319,7 @@ mk_writer *mk_create_writer( const char *filename )
     return w;
 }
 
-int mk_write_track( mk_writer *w, mk_context *c, mk_track_t track )
+static int mk_write_track( mk_writer *w, mk_context *c, mk_track_t track )
 {
     mk_context  *ti, *t;
 

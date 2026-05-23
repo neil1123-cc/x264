@@ -296,7 +296,7 @@ static int init( hnd_t *handle, const char *opt_str )
 
     char *filename = x264_get_option( "filename", opts );
 #if !USE_AVXSYNTH
-    char *filename_ext = get_filename_extension( filename );
+    const char *filename_ext = get_filename_extension( filename );
 #endif
     int track = x264_otoi( x264_get_option( "track", opts ), TRACK_ANY );
 

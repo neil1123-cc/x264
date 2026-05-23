@@ -110,6 +110,13 @@
 
 #define SIZEOF_PIXEL ((int)sizeof(pixel))
 
+X264_STATIC_ASSERT( BIT_DEPTH == 8 || BIT_DEPTH == 10, "bit depth must be 8 or 10" );
+X264_STATIC_ASSERT( HIGH_BIT_DEPTH == (BIT_DEPTH > 8), "high-bit-depth flag must match bit depth" );
+X264_STATIC_ASSERT( sizeof(pixel) == (HIGH_BIT_DEPTH ? 2 : 1), "pixel type size must match bit depth" );
+X264_STATIC_ASSERT( sizeof(pixel4) == 4 * sizeof(pixel), "packed pixel type size must match four pixels" );
+X264_STATIC_ASSERT( sizeof(dctcoef) == (HIGH_BIT_DEPTH ? 4 : 2), "DCT coefficient type size must match bit depth" );
+X264_STATIC_ASSERT( sizeof(udctcoef) == sizeof(dctcoef), "unsigned DCT coefficient type size must match signed type" );
+
 #define CPPIXEL_X4(dst,src) MPIXEL_X4(dst) = MPIXEL_X4(src)
 
 /****************************************************************************
@@ -135,9 +142,9 @@
 
 /* log */
 #define x264_log x264_template(log)
-void x264_log( x264_t *h, int i_level, const char *psz_fmt, ... );
+void x264_log( x264_t *h, int i_level, const char *psz_fmt, ... ) X264_FORMAT_PRINTF( 3, 4 );
 #define x264_log_file x264_template(log_file)
-void x264_log_file( char *p_file_name, int i_level, const char *psz_fmt, va_list arg );
+void x264_log_file( char *p_file_name, int i_level, const char *psz_fmt, va_list arg ) X264_FORMAT_PRINTF( 3, 0 );
 
 #define x264_cavlc_init x264_template(cavlc_init)
 void x264_cavlc_init( x264_t *h );
@@ -215,6 +222,13 @@ typedef struct
     int i_beta_offset;
 
 } x264_slice_header_t;
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_slice_header_t*)0)->i_delta_poc) == 2, "slice delta POC size must match POC deltas" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_slice_header_t*)0)->b_ref_pic_list_reordering) == 2, "slice reference reordering flags must match reference lists" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_slice_header_t*)0)->ref_pic_list_order) == 2, "slice reference reordering table height must match reference lists" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_slice_header_t*)0)->ref_pic_list_order[0]) == X264_REF_MAX, "slice reference reordering table width must match max refs" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_slice_header_t*)0)->weight) == X264_REF_MAX*2, "slice weight table height must match doubled max refs" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_slice_header_t*)0)->weight[0]) == 3, "slice weight table width must match color planes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_slice_header_t*)0)->mmco) == X264_REF_MAX, "slice MMCO table size must match max refs" );
 
 typedef struct x264_lookahead_t
 {
@@ -240,6 +254,11 @@ typedef struct x264_left_table_t
     uint8_t mv[4];
     uint8_t ref[4];
 } x264_left_table_t;
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_left_table_t*)0)->intra) == 4, "left-table intra cache size must match neighbour domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_left_table_t*)0)->nnz) == 4, "left-table nnz cache size must match neighbour domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_left_table_t*)0)->nnz_chroma) == 4, "left-table chroma nnz cache size must match neighbour domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_left_table_t*)0)->mv) == 4, "left-table MV cache size must match neighbour domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_left_table_t*)0)->ref) == 4, "left-table ref cache size must match neighbour domain" );
 
 /* Current frame stats */
 typedef struct
@@ -268,6 +287,17 @@ typedef struct
     double f_ssim;
     int i_ssim_cnt;
 } x264_frame_stat_t;
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_stat_t*)0)->i_mb_count) == 19, "frame stat macroblock count size must match mb type domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_stat_t*)0)->i_mb_count_8x8dct) == 2, "frame stat 8x8dct count size must match transform states" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_stat_t*)0)->i_mb_count_ref) == 2, "frame stat reference count height must match list count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_stat_t*)0)->i_mb_count_ref[0]) == X264_REF_MAX*2, "frame stat reference count width must match doubled max refs" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_stat_t*)0)->i_mb_partition) == 17, "frame stat partition count size must match partition domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_stat_t*)0)->i_mb_cbp) == 6, "frame stat CBP count size must match luma/chroma categories" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_stat_t*)0)->i_mb_pred_mode) == 4, "frame stat prediction mode height must match prediction classes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_stat_t*)0)->i_mb_pred_mode[0]) == 13, "frame stat prediction mode width must match largest prediction domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_stat_t*)0)->i_mb_field) == 3, "frame stat field count size must match field classes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_stat_t*)0)->i_direct_score) == 2, "frame stat direct score size must match direct modes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_stat_t*)0)->i_ssd) == 3, "frame stat SSD size must match color planes" );
 
 struct x264_t
 {
@@ -763,6 +793,57 @@ struct x264_t
     x264_opencl_t opencl;
 #endif
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->cost_mv) == QP_MAX+1, "MV cost table size must match QP domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->cost_mv_fpel) == QP_MAX+1, "fullpel MV cost table height must match QP domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->cost_mv_fpel[0]) == 4, "fullpel MV cost table width must match subpel residue domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->dct.luma16x16_dc) == 3, "luma16x16 DC block height must match color planes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->dct.luma16x16_dc[0]) == 16, "luma16x16 DC block width must match 4x4 DC coefficients" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->dct.chroma_dc) == 2, "chroma DC block height must match chroma planes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->dct.chroma_dc[0]) == 8, "chroma DC block width must match max chroma DC coefficients" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->dct.luma8x8) == 12, "luma8x8 DCT block count must match luma 8x8 domains" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->dct.luma8x8[0]) == 64, "luma8x8 DCT block width must match 8x8 coefficients" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->dct.luma4x4) == 16*3, "luma4x4 DCT block count must match luma block domains" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->dct.luma4x4[0]) == 16, "luma4x4 DCT block width must match 4x4 coefficients" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.left_b8) == 2, "left 8x8 cache size must match macroblock edge halves" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.left_b4) == 2, "left 4x4 cache size must match macroblock edge halves" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.mv_min) == 2, "minimum MV bound size must match vector components" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.mv_max) == 2, "maximum MV bound size must match vector components" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.mv_miny_row) == 3, "minimum row MV cache size must match field row domains" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.mv_maxy_row) == 3, "maximum row MV cache size must match field row domains" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.mv_min_spel) == 2, "minimum subpel MV bound size must match vector components" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.mv_max_spel) == 2, "maximum subpel MV bound size must match vector components" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.mv_miny_spel_row) == 3, "minimum subpel row MV cache size must match field row domains" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.mv_maxy_spel_row) == 3, "maximum subpel row MV cache size must match field row domains" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.mv_limit_fpel) == 2, "fullpel MV limit height must match min/max domains" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.mv_limit_fpel[0]) == 2, "fullpel MV limit width must match vector components" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.mv_miny_fpel_row) == 3, "minimum fullpel row MV cache size must match field row domains" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.mv_maxy_fpel_row) == 3, "maximum fullpel row MV cache size must match field row domains" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.i_neighbour8) == 4, "8x8 neighbour cache size must match partition count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.i_neighbour4) == 16, "4x4 neighbour cache size must match block count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.i_mb_type_left) == 2, "left MB type cache size must match macroblock edge halves" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.i_mb_left_xy) == 2, "left MB index cache size must match macroblock edge halves" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.mv) == 2, "macroblock MV table size must match reference lists" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.mvd) == 2, "macroblock MVD table size must match reference lists" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.ref) == 2, "macroblock ref table size must match reference lists" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.mvr) == 2, "macroblock MVR list count must match reference lists" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.mvr[0]) == X264_REF_MAX*2, "macroblock MVR width must match doubled max refs" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.p_weight_buf) == X264_REF_MAX, "weighted buffer count must match max refs" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.i_sub_partition) == 4, "subpartition cache size must match 8x8 partition count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->nr_offset_denoise) == 4, "denoise NR offset height must match coefficient classes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->nr_offset_denoise[0]) == 64, "denoise NR offset width must match max coefficient domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->nr_residual_sum_buf) == 2, "NR residual sum buffer height must match denoise state domains" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->nr_residual_sum_buf[0]) == 4, "NR residual sum buffer middle dimension must match coefficient classes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->nr_residual_sum_buf[0][0]) == 64, "NR residual sum buffer width must match max coefficient domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->nr_count_buf) == 2, "NR count buffer height must match denoise state domains" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->nr_count_buf[0]) == 4, "NR count buffer width must match coefficient classes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->intra_border_backup) == 5, "intra border backup height must match MBAFF row domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->intra_border_backup[0]) == 3, "intra border backup width must match color planes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.pic.i8x8_dct_buf) == 3, "i8x8 DCT backup height must match RD backup slots" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.pic.i8x8_dct_buf[0]) == 64, "i8x8 DCT backup width must match 8x8 coefficients" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.pic.i4x4_dct_buf) == 15, "i4x4 DCT backup height must match skipped block domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.pic.i4x4_dct_buf[0]) == 16, "i4x4 DCT backup width must match 4x4 coefficients" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.pic.fenc_satd_cache) == 32, "fenc SATD cache size must match analysis cache domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_t*)0)->mb.pic.fenc_hadamard_cache) == 9, "fenc Hadamard cache size must match analysis cache domain" );
 
 typedef struct
 {

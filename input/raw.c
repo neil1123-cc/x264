@@ -51,11 +51,32 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     {
         /* try to parse the file name */
         for( char *p = psz_filename; *p; p++ )
-            if( *p >= '0' && *p <= '9' && sscanf( p, "%dx%d", &info->width, &info->height ) == 2 )
-                break;
+            if( *p >= '0' && *p <= '9' )
+            {
+                char *end;
+                long width = strtol( p, &end, 10 );
+                if( *end == 'x' )
+                {
+                    long height = strtol( end + 1, &end, 10 );
+                    if( width > 0 && height > 0 && width <= MAX_RESOLUTION && height <= MAX_RESOLUTION )
+                    {
+                        info->width = (int)width;
+                        info->height = (int)height;
+                        break;
+                    }
+                }
+            }
     }
     else
-        sscanf( opt->resolution, "%dx%d", &info->width, &info->height );
+    {
+        char *end;
+        long width = strtol( opt->resolution, &end, 10 );
+        long height = *end == 'x' ? strtol( end + 1, &end, 10 ) : 0;
+        FAIL_IF_ERROR( *end || width <= 0 || height <= 0 || width > MAX_RESOLUTION || height > MAX_RESOLUTION,
+                       "invalid resolution `%s'\n", opt->resolution );
+        info->width = (int)width;
+        info->height = (int)height;
+    }
     FAIL_IF_ERROR( !info->width || !info->height, "raw input requires a resolution.\n" );
     if( opt->colorspace )
     {
@@ -107,7 +128,9 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         fseek( h->fh, 0, SEEK_END );
         int64_t size = ftell( h->fh );
         fseek( h->fh, 0, SEEK_SET );
-        info->num_frames = size / h->frame_size;
+        int64_t num_frames = size / h->frame_size;
+        FAIL_IF_ERROR( num_frames > INT_MAX, "too many frames\n" );
+        info->num_frames = (int)num_frames;
         FAIL_IF_ERROR( !info->num_frames, "empty input file\n" );
 
         /* Attempt to use memory-mapped input frames if possible */
@@ -130,7 +153,7 @@ static int read_frame_internal( cli_pic_t *pic, raw_hnd_t *h, int bit_depth_uc )
             if( i )
                 pic->img.plane[i] = pic->img.plane[i-1] + pixel_depth * h->plane_size[i-1];
         }
-        else if( fread( pic->img.plane[i], pixel_depth, h->plane_size[i], h->fh ) != (uint64_t)h->plane_size[i] )
+        else if( fread( pic->img.plane[i], (size_t)pixel_depth, (size_t)h->plane_size[i], h->fh ) != (size_t)h->plane_size[i] )
             return -1;
 
         if( bit_depth_uc && h->bit_depth != h->x264_bit_depth )

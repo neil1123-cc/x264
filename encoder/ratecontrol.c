@@ -59,6 +59,10 @@ typedef struct
     int64_t i_cpb_duration;
     int out_num;
 } ratecontrol_entry_t;
+X264_STATIC_ASSERT( ARRAY_ELEMS(((ratecontrol_entry_t*)0)->weight) == 3, "ratecontrol entry weight height must match color planes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((ratecontrol_entry_t*)0)->weight[0]) == 2, "ratecontrol entry weight width must match weight parameters" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((ratecontrol_entry_t*)0)->i_weight_denom) == 2, "ratecontrol entry weight denom count must match chroma/luma domains" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((ratecontrol_entry_t*)0)->refcount) == 16, "ratecontrol entry refcount size must match stat-file ref domain" );
 
 typedef struct
 {
@@ -180,7 +184,7 @@ struct x264_ratecontrol_t
     double previous_cpb_final_arrival_time;
     uint64_t hrd_multiply_denom;
 };
-
+X264_STATIC_ASSERT( ARRAY_ELEMS(((struct x264_ratecontrol_t*)0)->qp_constant) == SLICE_TYPE_I + 1, "ratecontrol constant QP table size must match slice type enum" );
 
 static int parse_zones( x264_t *h );
 static int init_pass2(x264_t *);
@@ -189,6 +193,8 @@ static int update_vbv( x264_t *h, int bits );
 static void update_vbv_plan( x264_t *h, int overhead );
 static float predict_size( predictor_t *p, float q, float var );
 static void update_predictor( predictor_t *p, float q, float var, float bits );
+
+#define X264_RC_PRED_COEFFS 3
 
 #define CMP_OPT_FIRST_PASS( opt, param_val )\
 {\
@@ -391,15 +397,15 @@ static NOINLINE float x264_adjust_OreAQ( x264_t *h, int mb_x, int mb_y, x264_fra
 
     _energy_y  = X264_MAX( energy[0], 1 );
     _energy_uv = X264_MAX( energy[1], 1 );
-	
+
 	if( (h->param.rc.i_aq3_mode == X264_AQ_ORE_2)  || (h->param.rc.i_aq3_mode == X264_AQ_MIXORE_2))
 	{
-		h->rc->aq3_threshold_flat = logf( powf( h->param.rc.f_aq3_sensitivity*0.75, 4 ) / 2.0 );
-		h->rc->aq3_threshold_bump = logf( powf( h->param.rc.f_aq3_sensitivity*1.25, 4 ) / 2.0 );		
+		h->rc->aq3_threshold_flat = logf( powf( h->param.rc.f_aq3_sensitivity*0.75f, 4.0f ) / 2.0f );
+		h->rc->aq3_threshold_bump = logf( powf( h->param.rc.f_aq3_sensitivity*1.25f, 4.0f ) / 2.0f );
 	}
 	else
 	{
-		h->rc->aq3_threshold_bump = h->rc->aq3_threshold_flat = logf( powf( h->param.rc.f_aq3_sensitivity, 4 ) / 2.0 );
+		h->rc->aq3_threshold_bump = h->rc->aq3_threshold_flat = logf( powf( h->param.rc.f_aq3_sensitivity, 4.0f ) / 2.0f );
 	}
     // logf(energy) = 1.0397 * x264_log2( energy ) / 1.5
     // energy_y  = 1.2 * (logf(_energy_y ) - ((h->rc->aq3_threshold + 2*(BIT_DEPTH-8)) * .91) + 0.5);
@@ -407,7 +413,7 @@ static NOINLINE float x264_adjust_OreAQ( x264_t *h, int mb_x, int mb_y, x264_fra
 	energy_y_flat  = 0.83176f * x264_log2( _energy_y  ) - ((h->rc->aq3_threshold_flat + 2*(BIT_DEPTH-8)) * 1.092f) + 0.5f;
 	energy_uv_flat = 0.55451f * x264_log2( _energy_uv ) - ((h->rc->aq3_threshold_flat + 2*(BIT_DEPTH-8)) * 0.728f) + 0.5f;
 	energy_y_bump  = 0.83176f * x264_log2( _energy_y  ) - ((h->rc->aq3_threshold_bump + 2*(BIT_DEPTH-8)) * 1.092f) + 0.5f;
-	energy_uv_bump = 0.55451f * x264_log2( _energy_uv ) - ((h->rc->aq3_threshold_bump + 2*(BIT_DEPTH-8)) * 0.728f) + 0.5f;	
+	energy_uv_bump = 0.55451f * x264_log2( _energy_uv ) - ((h->rc->aq3_threshold_bump + 2*(BIT_DEPTH-8)) * 0.728f) + 0.5f;
     f_qp_adj = 0.f;
 
     if( luma > h->param.rc.i_aq3_boundary[0] )
@@ -506,7 +512,7 @@ static NOINLINE float x264_adjust_OreAQ( x264_t *h, int mb_x, int mb_y, x264_fra
 void x264_adaptive_quant_frame( x264_t *h, x264_frame_t *frame, float *quant_offsets )
 {
 	uint32_t energy_yuv[2] = {0, 0};
-	
+
     /* Initialize frame stats */
     for( int i = 0; i < 3; i++ )
     {
@@ -530,8 +536,8 @@ void x264_adaptive_quant_frame( x264_t *h, x264_frame_t *frame, float *quant_off
             }
             else
             {
-                memset( frame->f_qp_offset, 0, h->mb.i_mb_count * sizeof(float) );
-                memset( frame->f_qp_offset_aq, 0, h->mb.i_mb_count * sizeof(float) );
+                memset( frame->f_qp_offset, 0, (size_t)h->mb.i_mb_count * sizeof(float) );
+                memset( frame->f_qp_offset_aq, 0, (size_t)h->mb.i_mb_count * sizeof(float) );
                 if( h->frames.b_have_lowres )
                     for( int mb_xy = 0; mb_xy < h->mb.i_mb_count; mb_xy++ )
                         frame->i_inv_qscale_factor[mb_xy] = 256;
@@ -695,9 +701,9 @@ static int macroblock_tree_rescale_init( x264_t *h, x264_ratecontrol_t *rc )
 
     rc->mbtree.src_mb_count = srcdimi[0] * srcdimi[1];
 
-    CHECKED_MALLOC( rc->mbtree.qp_buffer[0], rc->mbtree.src_mb_count * sizeof(uint16_t) );
+    CHECKED_MALLOC( rc->mbtree.qp_buffer[0], (size_t)rc->mbtree.src_mb_count * sizeof(uint16_t) );
     if( h->param.i_bframe_pyramid && h->param.rc.b_stat_read )
-        CHECKED_MALLOC( rc->mbtree.qp_buffer[1], rc->mbtree.src_mb_count * sizeof(uint16_t) );
+        CHECKED_MALLOC( rc->mbtree.qp_buffer[1], (size_t)rc->mbtree.src_mb_count * sizeof(uint16_t) );
     rc->mbtree.qpbuf_pos = -1;
 
     /* No rescaling to do */
@@ -707,8 +713,8 @@ static int macroblock_tree_rescale_init( x264_t *h, x264_ratecontrol_t *rc )
     rc->mbtree.rescale_enabled = 1;
 
     /* Allocate intermediate scaling buffers */
-    CHECKED_MALLOC( rc->mbtree.scale_buffer[0], srcdimi[0] * srcdimi[1] * sizeof(float) );
-    CHECKED_MALLOC( rc->mbtree.scale_buffer[1], dstdimi[0] * srcdimi[1] * sizeof(float) );
+    CHECKED_MALLOC( rc->mbtree.scale_buffer[0], (size_t)srcdimi[0] * srcdimi[1] * sizeof(float) );
+    CHECKED_MALLOC( rc->mbtree.scale_buffer[1], (size_t)dstdimi[0] * srcdimi[1] * sizeof(float) );
 
     /* Allocate and calculate resize filter parameters and coefficients */
     for( int i = 0; i < 2; i++ )
@@ -718,8 +724,8 @@ static int macroblock_tree_rescale_init( x264_t *h, x264_ratecontrol_t *rc )
         else                        // upscale
             rc->mbtree.filtersize[i] = 3;
 
-        CHECKED_MALLOC( rc->mbtree.coeffs[i], rc->mbtree.filtersize[i] * dstdimi[i] * sizeof(float) );
-        CHECKED_MALLOC( rc->mbtree.pos[i], dstdimi[i] * sizeof(int) );
+        CHECKED_MALLOC( rc->mbtree.coeffs[i], (size_t)rc->mbtree.filtersize[i] * dstdimi[i] * sizeof(float) );
+        CHECKED_MALLOC( rc->mbtree.pos[i], (size_t)dstdimi[i] * sizeof(int) );
 
         /* Initialize filter coefficients */
         float inc = srcdim[i] / dstdim[i];
@@ -733,8 +739,8 @@ static int macroblock_tree_rescale_init( x264_t *h, x264_ratecontrol_t *rc )
             rc->mbtree.pos[i][j] = pos;
             for( int k = 0; k < filtersize; k++ )
             {
-                float d = fabs( pos + k - dstinsrc ) * dmul;
-                float coeff = X264_MAX( 1.f - d, 0 );
+                float d = fabsf( pos + k - dstinsrc ) * dmul;
+                float coeff = X264_MAX( 1.0f - d, 0.0f );
                 rc->mbtree.coeffs[i][j * filtersize + k] = coeff;
                 sum += coeff;
             }
@@ -818,9 +824,11 @@ int x264_macroblock_tree_read( x264_t *h, x264_frame_t *frame, float *quant_offs
             {
                 rc->mbtree.qpbuf_pos++;
 
-                if( !fread( &i_type, 1, 1, rc->p_mbtree_stat_file_in ) )
+                if( fread( &i_type, 1, 1, rc->p_mbtree_stat_file_in ) != 1 )
                     goto fail;
-                if( fread( rc->mbtree.qp_buffer[rc->mbtree.qpbuf_pos], sizeof(uint16_t), rc->mbtree.src_mb_count, rc->p_mbtree_stat_file_in ) != (unsigned)rc->mbtree.src_mb_count )
+                size_t mbtree_mb_count = (size_t)rc->mbtree.src_mb_count;
+                size_t mbtree_qp_count = fread( rc->mbtree.qp_buffer[rc->mbtree.qpbuf_pos], sizeof(uint16_t), mbtree_mb_count, rc->p_mbtree_stat_file_in );
+                if( mbtree_qp_count != mbtree_mb_count )
                     goto fail;
 
                 if( i_type != i_type_actual && rc->mbtree.qpbuf_pos == 1 )
@@ -885,13 +893,17 @@ int x264_reference_build_list_optimal( x264_t *h )
     return 0;
 }
 
-static char *strcat_filename( char *input, char *suffix )
+static char *strcat_filename( const char *input, const char *suffix )
 {
-    char *output = x264_malloc( strlen( input ) + strlen( suffix ) + 1 );
+    size_t input_len = strlen( input );
+    size_t suffix_len = strlen( suffix );
+    if( input_len > SIZE_MAX - suffix_len - 1 )
+        return NULL;
+    char *output = x264_malloc( input_len + suffix_len + 1 );
     if( !output )
         return NULL;
-    strcpy( output, input );
-    strcat( output, suffix );
+    memcpy( output, input, input_len );
+    memcpy( output + input_len, suffix, suffix_len + 1 );
     return output;
 }
 
@@ -994,7 +1006,7 @@ void x264_ratecontrol_init_reconfigurable( x264_t *h, int b_init )
         }
         if( b_init )
         {
-            if( h->param.rc.f_vbv_buffer_init > 1. )
+            if( h->param.rc.f_vbv_buffer_init > 1.0f )
                 h->param.rc.f_vbv_buffer_init = x264_clip3f( h->param.rc.f_vbv_buffer_init / h->param.rc.i_vbv_buffer_size, 0, 1 );
             h->param.rc.f_vbv_buffer_init = x264_clip3f( X264_MAX( h->param.rc.f_vbv_buffer_init, rc->buffer_rate / rc->buffer_size ), 0, 1);
             rc->buffer_fill_final =
@@ -1084,8 +1096,8 @@ int x264_ratecontrol_new( x264_t *h )
         rc->last_non_b_pict_type = SLICE_TYPE_I;
     }
 
-    rc->ip_offset = 6.0 * log2f( h->param.rc.f_ip_factor );
-    rc->pb_offset = 6.0 * log2f( h->param.rc.f_pb_factor );
+    rc->ip_offset = 6.0f * log2f( h->param.rc.f_ip_factor );
+    rc->pb_offset = 6.0f * log2f( h->param.rc.f_pb_factor );
     rc->qp_constant[SLICE_TYPE_P] = h->param.rc.i_qp_constant;
     rc->qp_constant[SLICE_TYPE_I] = x264_clip3( h->param.rc.i_qp_constant - rc->ip_offset + 0.5, 0, QP_MAX );
     rc->qp_constant[SLICE_TYPE_B] = x264_clip3( h->param.rc.i_qp_constant + rc->pb_offset + 0.5, 0, QP_MAX );
@@ -1096,8 +1108,9 @@ int x264_ratecontrol_new( x264_t *h )
     int num_preds = h->param.b_sliced_threads * h->param.i_threads + 1;
     CHECKED_MALLOC( rc->pred, 5 * sizeof(predictor_t) * num_preds );
     CHECKED_MALLOC( rc->pred_b_from_p, sizeof(predictor_t) );
-    static const float pred_coeff_table[3] = { 1.0, 1.0, 1.5 };
-    for( int i = 0; i < 3; i++ )
+    static const float pred_coeff_table[] = { 1.0, 1.0, 1.5 };
+    X264_STATIC_ASSERT( ARRAY_ELEMS(pred_coeff_table) == X264_RC_PRED_COEFFS, "ratecontrol predictor coefficient table size must match slice type domain" );
+    for( int i = 0; i < X264_RC_PRED_COEFFS; i++ )
     {
         rc->last_qscale_for[i] = qp2qscale( ABR_INIT_QP );
         rc->lmin[i] = qp2qscale( h->param.rc.i_qp_min[i] );
@@ -1227,12 +1240,13 @@ int x264_ratecontrol_new( x264_t *h )
             {
                 p += 7;
                 char buf[13] = "infinite ";
-                if( h->param.i_keyint_max != X264_KEYINT_MAX_INFINITE )
-                    sprintf( buf, "%d ", h->param.i_keyint_max );
-                if( strncmp( p, buf, strlen(buf) ) )
+                if( h->param.i_keyint_max != X264_KEYINT_MAX_INFINITE && snprintf( buf, sizeof(buf), "%d ", h->param.i_keyint_max ) < 0 )
+                    return -1;
+                size_t keyint_len = strlen( buf );
+                if( strncmp( p, buf, keyint_len ) )
                 {
                     x264_log( h, X264_LOG_ERROR, "different keyint setting than first pass (%.*s vs %.*s)\n",
-                              strlen(buf)-1, buf, strcspn(p, " "), p );
+                              (int)keyint_len-1, buf, (int)strcspn(p, " "), p );
                     return -1;
                 }
             }
@@ -1532,16 +1546,24 @@ static int parse_zones( x264_t *h )
     if( h->param.rc.psz_zones && !h->param.rc.i_zones )
     {
         char *psz_zones, *p;
-        CHECKED_MALLOC( psz_zones, strlen( h->param.rc.psz_zones )+1 );
-        strcpy( psz_zones, h->param.rc.psz_zones );
-        h->param.rc.i_zones = 1;
+        size_t psz_zones_len = strlen( h->param.rc.psz_zones );
+        CHECKED_MALLOC( psz_zones, psz_zones_len + 1 );
+        memcpy( psz_zones, h->param.rc.psz_zones, psz_zones_len + 1 );
+        size_t zone_count = 1;
         for( p = psz_zones; *p; p++ )
-            h->param.rc.i_zones += (*p == '/');
-        CHECKED_MALLOC( h->param.rc.zones, h->param.rc.i_zones * sizeof(x264_zone_t) );
+            zone_count += (*p == '/');
+        if( zone_count > INT_MAX )
+        {
+            x264_log( h, X264_LOG_ERROR, "too many zones\n" );
+            x264_free( psz_zones );
+            return -1;
+        }
+        h->param.rc.i_zones = (int)zone_count;
+        CHECKED_MALLOC( h->param.rc.zones, zone_count * sizeof(x264_zone_t) );
         p = psz_zones;
         for( int i = 0; i < h->param.rc.i_zones; i++ )
         {
-            int i_tok = strcspn( p, "/" );
+            size_t i_tok = strcspn( p, "/" );
             p[i_tok] = 0;
             if( parse_zone( h, &h->param.rc.zones[i], p ) )
             {
@@ -1572,9 +1594,14 @@ static int parse_zones( x264_t *h )
             }
         }
 
+        if( h->param.rc.i_zones == INT_MAX )
+        {
+            x264_log( h, X264_LOG_ERROR, "too many zones\n" );
+            return -1;
+        }
         rc->i_zones = h->param.rc.i_zones + 1;
-        CHECKED_MALLOC( rc->zones, rc->i_zones * sizeof(x264_zone_t) );
-        memcpy( rc->zones+1, h->param.rc.zones, (rc->i_zones-1) * sizeof(x264_zone_t) );
+        CHECKED_MALLOC( rc->zones, (size_t)rc->i_zones * sizeof(x264_zone_t) );
+        memcpy( rc->zones+1, h->param.rc.zones, (size_t)(rc->i_zones-1) * sizeof(x264_zone_t) );
 
         // default zone to fall back to if none of the others match
         rc->zones[0].i_start = 0;
@@ -2074,7 +2101,7 @@ int x264_ratecontrol_mb_qp( x264_t *h )
 {
     x264_emms();
     float qp = h->rc->qpm;
-	
+
 	float qp_offset = 0;
     if( h->param.rc.i_aq_mode )
     {
@@ -2086,7 +2113,7 @@ int x264_ratecontrol_mb_qp( x264_t *h )
                    : h->sh.i_type == SLICE_TYPE_B ? h->param.rc.f_aq_bfactor
                    : 1.f;
     }
-	
+
    if( h->param.rc.b_aq2 )
     {
         float haq_offset = x264_haali_adaptive_quant( h );
@@ -2118,7 +2145,7 @@ int x264_ratecontrol_mb_qp( x264_t *h )
     if( qp > QP_MAX_SPEC )
         qp_offset *= (QP_MAX - qp) / (QP_MAX - QP_MAX_SPEC);
     qp += qp_offset;
-	
+
 	return x264_clip3( qp + 0.5f, h->param.rc.i_qp_min[h->sh.i_type], h->param.rc.i_qp_max[h->sh.i_type] );
 }
 
@@ -2259,10 +2286,11 @@ int x264_ratecontrol_end( x264_t *h, int bits, int *filler )
         if( h->param.rc.b_mb_tree && h->fenc->b_kept_as_ref && !h->param.rc.b_stat_read )
         {
             uint8_t i_type = h->sh.i_type;
+            size_t mbtree_mb_count = (size_t)h->mb.i_mb_count;
             h->mc.mbtree_fix8_pack( rc->mbtree.qp_buffer[0], h->fenc->f_qp_offset, h->mb.i_mb_count );
             if( fwrite( &i_type, 1, 1, rc->p_mbtree_stat_file_out ) < 1 )
                 goto fail;
-            if( fwrite( rc->mbtree.qp_buffer[0], sizeof(uint16_t), h->mb.i_mb_count, rc->p_mbtree_stat_file_out ) < (unsigned)h->mb.i_mb_count )
+            if( fwrite( rc->mbtree.qp_buffer[0], sizeof(uint16_t), mbtree_mb_count, rc->p_mbtree_stat_file_out ) < mbtree_mb_count )
                 goto fail;
         }
     }
@@ -2393,6 +2421,7 @@ static double get_diff_limited_q(x264_t *h, ratecontrol_entry_t *rce, double q, 
 {
     x264_ratecontrol_t *rcc = h->rc;
     const int pict_type = rce->pict_type;
+    assert( (unsigned)pict_type <= SLICE_TYPE_I );
     x264_zone_t *zone = get_zone( h, frame_num );
 
     // force I/B quants as a function of P quants
@@ -2411,7 +2440,8 @@ static double get_diff_limited_q(x264_t *h, ratecontrol_entry_t *rce, double q, 
     }
     else if( pict_type == SLICE_TYPE_B )
     {
-        q = rcc->last_qscale_for[rcc->last_non_b_pict_type];
+        int last_non_b_pict_type = rcc->last_non_b_pict_type >= 0 ? rcc->last_non_b_pict_type : SLICE_TYPE_P;
+        q = rcc->last_qscale_for[last_non_b_pict_type];
         if( !rce->kept_as_ref )
             q *= h->param.rc.f_pb_factor;
     }
@@ -2445,9 +2475,9 @@ static double get_diff_limited_q(x264_t *h, ratecontrol_entry_t *rce, double q, 
     }
     if( pict_type == SLICE_TYPE_P )
     {
-        float mask = 1 - pow( (float)rce->i_count / rcc->nmb, 2 );
+        float mask = 1.0f - powf( (float)rce->i_count / rcc->nmb, 2.0f );
         rcc->accum_p_qp   = mask * (qscale2qp( q ) + rcc->accum_p_qp);
-        rcc->accum_p_norm = mask * (1 + rcc->accum_p_norm);
+        rcc->accum_p_norm = mask * (1.0f + rcc->accum_p_norm);
     }
 
     if( zone )

@@ -11,7 +11,6 @@
 *.pdb
 *.mo
 *.o
-*.patch
 *.pc
 *.pot
 *.so*
@@ -49,3 +48,5 @@ dataDec.txt
 log.dec
 common/oclobj.h
 x264_lookahead.clbin
+build/
+/Status.md

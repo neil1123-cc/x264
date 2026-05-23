@@ -32,6 +32,16 @@
 #define RDO_SKIP_BS 0
 #endif
 
+#define X264_CAVLC_SUBPARTITION_P_COUNT (D_L0_8x8 - D_L0_4x4 + 1)
+#define X264_CAVLC_SUBPARTITION_B_COUNT (D_DIRECT_8x8 - D_L0_4x4 + 1)
+#define X264_CAVLC_CBP_CHROMA_CLASSES 2
+#define X264_CAVLC_CBP_INTRA_CLASSES 2
+#define X264_CAVLC_CBP_DOMAIN 48
+#define X264_CAVLC_B_PARTITIONS (D_16x16 - D_16x8 + 1)
+#define X264_CAVLC_B_TYPES (B_BI_BI - B_L0_L0 + 1)
+#define X264_CAVLC_CT_INDEX_COUNT 17
+#define X264_CAVLC_PCM_OFFSET_COUNT 3
+
 /* [400,420][inter,intra] */
 static const uint8_t cbp_to_golomb[2][2][48] =
 {
@@ -44,6 +54,9 @@ static const uint8_t cbp_to_golomb[2][2][48] =
       16, 33, 34, 21, 35, 22, 39,  4, 36, 40, 23,  5, 24,  6,  7,  1,
       41, 42, 43, 25, 44, 26, 46, 12, 45, 47, 27, 13, 28, 14, 15,  0 }}
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(cbp_to_golomb) == X264_CAVLC_CBP_CHROMA_CLASSES, "CAVLC CBP table height must match chroma classes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(cbp_to_golomb[0]) == X264_CAVLC_CBP_INTRA_CLASSES, "CAVLC CBP table middle dimension must match inter/intra classes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(cbp_to_golomb[0][0]) == X264_CAVLC_CBP_DOMAIN, "CAVLC CBP table width must match coded block pattern domain" );
 
 static const uint8_t mb_type_b_to_golomb[3][9]=
 {
@@ -51,16 +64,20 @@ static const uint8_t mb_type_b_to_golomb[3][9]=
     { 5,  9, 13, 11,  7, 15, 17, 19, 21 }, /* D_8x16 */
     { 1, -1, -1, -1,  2, -1, -1, -1,  3 }  /* D_16x16 */
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(mb_type_b_to_golomb) == X264_CAVLC_B_PARTITIONS, "CAVLC B macroblock type table height must match partition domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(mb_type_b_to_golomb[0]) == X264_CAVLC_B_TYPES, "CAVLC B macroblock type table width must match B type domain" );
 
-static const uint8_t subpartition_p_to_golomb[4]=
+static const uint8_t subpartition_p_to_golomb[] =
 {
     3, 1, 2, 0
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(subpartition_p_to_golomb) == X264_CAVLC_SUBPARTITION_P_COUNT, "CAVLC P subpartition table size must match P subpartition domain" );
 
-static const uint8_t subpartition_b_to_golomb[13]=
+static const uint8_t subpartition_b_to_golomb[] =
 {
     10,  4,  5,  1, 11,  6,  7,  2, 12,  8,  9,  3,  0
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(subpartition_b_to_golomb) == X264_CAVLC_SUBPARTITION_B_COUNT, "CAVLC B subpartition table size must match B subpartition domain" );
 
 #define bs_write_vlc(s,v) bs_write( s, (v).i_size, (v).i_bits )
 
@@ -121,8 +138,10 @@ static inline int cavlc_block_residual_escape( x264_t *h, int i_suffix_length, i
 static int cavlc_block_residual_internal( x264_t *h, int ctx_block_cat, dctcoef *l, int nC )
 {
     bs_t *s = &h->out.bs;
-    static const uint8_t ctz_index[8] = {3,0,1,0,2,0,1,0};
-    static const uint8_t count_cat[14] = {16, 15, 16, 0, 15, 64, 16, 15, 16, 64, 16, 15, 16, 64};
+    static const uint8_t ctz_index[] = {3,0,1,0,2,0,1,0};
+    static const uint8_t count_cat[] = {16, 15, 16, 0, 15, 64, 16, 15, 16, 64, 16, 15, 16, 64};
+    X264_STATIC_ASSERT( ARRAY_ELEMS(ctz_index) == 8, "CAVLC trailing count index table must cover 3-bit input domain" );
+    X264_STATIC_ASSERT( ARRAY_ELEMS(count_cat) == X264_COUNT_CAT_M1_COUNT, "CAVLC count category table size must match residual category count" );
     x264_run_level_t runlevel;
     int i_total, i_trailing, i_total_zero, i_suffix_length;
     unsigned int i_sign;
@@ -196,7 +215,8 @@ static int cavlc_block_residual_internal( x264_t *h, int ctx_block_cat, dctcoef 
     return i_total;
 }
 
-static const uint8_t ct_index[17] = {0,0,1,1,2,2,2,2,3,3,3,3,3,3,3,3,3};
+static const uint8_t ct_index[] = {0,0,1,1,2,2,2,2,3,3,3,3,3,3,3,3,3};
+X264_STATIC_ASSERT( ARRAY_ELEMS(ct_index) == X264_CAVLC_CT_INDEX_COUNT, "CAVLC non-zero prediction index table size must match prediction domain" );
 
 #define x264_cavlc_block_residual(h,cat,idx,l)\
 {\
@@ -511,7 +531,8 @@ void x264_macroblock_write_cavlc( x264_t *h )
 #if !RDO_SKIP_BS
     if( i_mb_type == I_PCM )
     {
-        static const uint8_t i_offsets[3] = {5,23,0};
+        static const uint8_t i_offsets[] = {5,23,0};
+        X264_STATIC_ASSERT( ARRAY_ELEMS(i_offsets) == X264_CAVLC_PCM_OFFSET_COUNT, "CAVLC PCM offset table size must match slice types" );
         uint8_t *p_start = s->p_start;
         bs_write_ue( s, i_offsets[h->sh.i_type] + 25 );
         i_mb_pos_tex = bs_pos( s );

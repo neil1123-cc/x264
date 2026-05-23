@@ -64,10 +64,31 @@
 #include "output/output.h"
 #include "filters/filters.h"
 
+#ifdef _WIN32
+#include "filters/video/subtitles.h"
+#endif
+
 #define QP_MAX_SPEC (51+6*2)
 #define QP_MAX (QP_MAX_SPEC+18)
 
 #define FAIL_IF_ERROR( cond, ... ) FAIL_IF_ERR( cond, "x264", __VA_ARGS__ )
+
+static int append_audio_option( char *dst, size_t dst_size, size_t *len, const char *fmt, ... )
+{
+    va_list args;
+    if( *len >= dst_size )
+        return -1;
+
+    va_start( args, fmt );
+    int written = vsnprintf( dst + *len, dst_size - *len, fmt, args );
+    va_end( args );
+
+    if( written < 0 || (size_t)written >= dst_size - *len )
+        return -1;
+
+    *len += written;
+    return 0;
+}
 
 #if HAVE_FFMS
 #include <ffms.h>
@@ -144,9 +165,6 @@ typedef struct {
 /* file i/o operation structs */
 cli_input_t cli_input;
 static cli_output_t cli_output;
-#ifdef _WIN32
-int add_sub(char *filename);
-#endif
 
 /* video filter operation struct */
 static cli_vid_filter_t filter;
@@ -251,6 +269,7 @@ static const char * const chroma_format_names[] =
     [X264_CSP_I422] = "i422",
     [X264_CSP_I444] = "i444"
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(chroma_format_names) == X264_CSP_I444 + 1, "chroma format name table size must cover internal chroma formats" );
 
 typedef struct
 {
@@ -276,22 +295,26 @@ enum pulldown_type_e
 
 static const cli_pulldown_t pulldown_values[] =
 {
-    [X264_PULLDOWN_22]     = {1,  {TB},                                   1.0},
-    [X264_PULLDOWN_32]     = {4,  {TBT, BT, BTB, TB},                     1.25},
-    [X264_PULLDOWN_64]     = {2,  {PIC_STRUCT_DOUBLE, PIC_STRUCT_TRIPLE}, 1.0},
-    [X264_PULLDOWN_DOUBLE] = {1,  {PIC_STRUCT_DOUBLE},                    2.0},
-    [X264_PULLDOWN_TRIPLE] = {1,  {PIC_STRUCT_TRIPLE},                    3.0},
+    [X264_PULLDOWN_22]     = {1,  {TB},                                   1.0f},
+    [X264_PULLDOWN_32]     = {4,  {TBT, BT, BTB, TB},                     1.25f},
+    [X264_PULLDOWN_64]     = {2,  {PIC_STRUCT_DOUBLE, PIC_STRUCT_TRIPLE}, 1.0f},
+    [X264_PULLDOWN_DOUBLE] = {1,  {PIC_STRUCT_DOUBLE},                    2.0f},
+    [X264_PULLDOWN_TRIPLE] = {1,  {PIC_STRUCT_TRIPLE},                    3.0f},
     [X264_PULLDOWN_EURO]   = {24, {TBT, BT, BT, BT, BT, BT, BT, BT, BT, BT, BT, BT,
-                                   BTB, TB, TB, TB, TB, TB, TB, TB, TB, TB, TB, TB}, 25.0/24.0}
+                                   BTB, TB, TB, TB, TB, TB, TB, TB, TB, TB, TB, TB}, 25.0f/24.0f}
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(pulldown_values) == X264_PULLDOWN_EURO + 1, "pulldown values table size must match pulldown enum" );
 
 #undef TB
 #undef BT
 #undef TBT
 #undef BTB
 
+#define X264_PULLDOWN_FRAME_DURATION_COUNT 10
+
 // indexed by pic_struct enum
-static const float pulldown_frame_duration[10] = { 0.0, 1, 0.5, 0.5, 1, 1, 1.5, 1.5, 2, 3 };
+static const float pulldown_frame_duration[] = { 0.0f, 1.0f, 0.5f, 0.5f, 1.0f, 1.0f, 1.5f, 1.5f, 2.0f, 3.0f };
+X264_STATIC_ASSERT( ARRAY_ELEMS(pulldown_frame_duration) == X264_PULLDOWN_FRAME_DURATION_COUNT, "pulldown frame duration table size must match pic_struct domain" );
 
 static void help( x264_param_t *defaults, int longhelp );
 static int  parse( int argc, char **argv, x264_param_t *param, cli_opt_t *opt );
@@ -301,7 +324,7 @@ static int  encode( x264_param_t *param, cli_opt_t *opt );
 static char *psz_log_file       = NULL;
 static int   cli_log_file_level = -1;
 
-static inline void x264_log_done()
+static inline void x264_log_done( void )
 {
     if( psz_log_file ) free( psz_log_file );
     psz_log_file = NULL;
@@ -621,7 +644,7 @@ static void help( x264_param_t *defaults, int longhelp )
 #define H0 printf
 #define H1 if( longhelp >= 1 ) printf
 #define H2 if( longhelp == 2 ) printf
-    H0( "x264 core:%d%s\n"
+    H0( "x264 "X264_COREVER_SHORT"\n"
         "Syntax: x264 [options] -o outfile infile\n"
         "\n"
         "Infile can be raw (in which case resolution is required),\n"
@@ -647,7 +670,6 @@ static void help( x264_param_t *defaults, int longhelp )
         "      --longhelp              List more options\n"
         "      --fullhelp              List all options\n"
         "\n",
-        X264_BUILD, X264_VERSION,
 #if HAVE_AVS
         "yes",
 #else
@@ -1683,7 +1705,7 @@ static int select_output( const char *muxer, char *filename, x264_param_t *param
     return 0;
 }
 
-static int select_input( const char *demuxer, char *used_demuxer, char *filename,
+static int select_input( const char *demuxer, char *used_demuxer, size_t used_demuxer_size, char *filename,
                          hnd_t *p_handle, video_info_t *info, cli_input_opt_t *opt )
 {
     int b_auto = !strcasecmp( demuxer, "auto" );
@@ -1756,6 +1778,8 @@ static int select_input( const char *demuxer, char *used_demuxer, char *filename
 
         FAIL_IF_ERROR( !(*p_handle), "could not open input file `%s' via any method!\n", filename );
     }
+    if( strlen( module ) >= used_demuxer_size )
+        return -1;
     strcpy( used_demuxer, module );
 
     return 0;
@@ -1779,10 +1803,10 @@ static int init_vid_filters( char *sequence, hnd_t *handle, video_info_t *info, 
     /* parse filter chain */
     for( char *p = sequence; p && *p; )
     {
-        int tok_len = strcspn( p, "/" );
-        int p_len = strlen( p );
+        size_t tok_len = strcspn( p, "/" );
+        size_t p_len = strlen( p );
         p[tok_len] = 0;
-        int name_len = strcspn( p, ":" );
+        size_t name_len = strcspn( p, ":" );
         p[name_len] = 0;
         name_len += name_len != tok_len;
         if( x264_init_vid_filter( p, handle, &filter, info, param, p + name_len ) )
@@ -1818,8 +1842,10 @@ static int init_vid_filters( char *sequence, hnd_t *handle, video_info_t *info, 
         return -1;
 
     char args[20], name[20];
-    sprintf( args, "bit_depth=%d", param->i_bitdepth );
-    sprintf( name, "depth_%d", param->i_bitdepth );
+    int args_len = snprintf( args, sizeof(args), "bit_depth=%d", param->i_bitdepth );
+    int name_len = snprintf( name, sizeof(name), "depth_%d", param->i_bitdepth );
+    if( args_len < 0 || args_len >= (int)sizeof(args) || name_len < 0 || name_len >= (int)sizeof(name) )
+        return -1;
 
     if( x264_init_vid_filter( name, handle, &filter, info, param, args ) )
         return -1;
@@ -1827,7 +1853,7 @@ static int init_vid_filters( char *sequence, hnd_t *handle, video_info_t *info, 
     return 0;
 }
 
-static int select_audio_demuxer( const char *demuxer, char *used_demuxer, char **encoder, char *filename )
+static int select_audio_demuxer( const char *demuxer, char *used_demuxer, size_t used_demuxer_size, char **encoder, char *filename )
 {
     int b_auto = !strcasecmp( demuxer, "auto" );
     const char *module = b_auto ? NULL : demuxer;
@@ -1857,6 +1883,8 @@ static int select_audio_demuxer( const char *demuxer, char *used_demuxer, char *
         *encoder = "copy";
 #endif
 
+    if( strlen( module ) >= used_demuxer_size )
+        return -1;
     strcpy( used_demuxer, module );
     return 0;
 }
@@ -2113,8 +2141,10 @@ static int parse( int argc, char **argv, x264_param_t *param, cli_opt_t *opt )
                 // correct the parsed value to the libx264 csp value
 #if X264_CHROMA_FORMAT
                 static const uint8_t output_csp_fix[] = { X264_CHROMA_FORMAT, X264_CSP_RGB };
+                X264_STATIC_ASSERT( ARRAY_ELEMS(output_csp_fix) == 2, "fixed-depth output CSP map must cover native and RGB choices" );
 #else
                 static const uint8_t output_csp_fix[] = { X264_CSP_I400, X264_CSP_I420, X264_CSP_I422, X264_CSP_I444, X264_CSP_RGB };
+                X264_STATIC_ASSERT( ARRAY_ELEMS(output_csp_fix) == 5, "all-depth output CSP map must cover CLI choices" );
 #endif
                 param->i_csp = output_csp = output_csp_fix[output_csp];
                 break;
@@ -2277,7 +2307,7 @@ generic_option:
     input_opt.output_csp = output_csp;
 	input_opt.demuxer_threads = x264_clip3( input_opt.demuxer_threads, 1, X264_THREAD_MAX );
 
-    if( select_input( demuxer, demuxername, input_filename, &opt->hin, &info, &input_opt ) )
+    if( select_input( demuxer, demuxername, sizeof(demuxername), input_filename, &opt->hin, &info, &input_opt ) )
         return -1;
 
     FAIL_IF_ERROR( !opt->hin && cli_input.open_file( input_filename, &opt->hin, &info, &input_opt ),
@@ -2288,7 +2318,7 @@ generic_option:
         if( audio_filename )
         {
             char used_demuxer[8];
-            FAIL_IF_ERROR( select_audio_demuxer( audio_demuxer, used_demuxer, &audio_enc, audio_filename ), "no audio demuxer was found for --audiofile.\n" );
+            FAIL_IF_ERROR( select_audio_demuxer( audio_demuxer, used_demuxer, sizeof(used_demuxer), &audio_enc, audio_filename ), "no audio demuxer was found for --audiofile.\n" );
             haud = x264_audio_open_from_file( used_demuxer, audio_filename, audio_track );
         }
         else if( cli_input.open_audio )
@@ -2336,22 +2366,22 @@ generic_option:
 #endif // if 0
 
     char arg[MAX_ARGS] = { 0 };
-    int len = 0;
+    size_t len = 0;
     if( audio_enable )
     {
         if( audio_bitrate > 0 )
-            len += snprintf( &arg[len], MAX_ARGS, "is_vbr=0,bitrate=%f", audio_bitrate );
+            FAIL_IF_ERROR( append_audio_option( arg, sizeof(arg), &len, "is_vbr=0,bitrate=%f", audio_bitrate ), "audio encoder options are too long\n" );
         else if( audio_quality_set )
-            len += snprintf( &arg[len], MAX_ARGS, "is_vbr=1,bitrate=%f", audio_quality );
+            FAIL_IF_ERROR( append_audio_option( arg, sizeof(arg), &len, "is_vbr=1,bitrate=%f", audio_quality ), "audio encoder options are too long\n" );
 
         if( acodec_quality_set )
-            len += snprintf( &arg[len], MAX_ARGS - len, "%squality=%f", len ? "," : "", acodec_quality );
+            FAIL_IF_ERROR( append_audio_option( arg, sizeof(arg), &len, "%squality=%f", len ? "," : "", acodec_quality ), "audio encoder options are too long\n" );
 
         if( audio_samplerate > 0 )
-            len += snprintf( &arg[len], MAX_ARGS - len, "%ssamplerate=%d", len ? "," : "", audio_samplerate );
+            FAIL_IF_ERROR( append_audio_option( arg, sizeof(arg), &len, "%ssamplerate=%d", len ? "," : "", audio_samplerate ), "audio encoder options are too long\n" );
 
         if( audio_extraopt )
-            len += snprintf( &arg[len], MAX_ARGS - len, "%s%s", len ? "," : "", audio_extraopt );
+            FAIL_IF_ERROR( append_audio_option( arg, sizeof(arg), &len, "%s%s", len ? "," : "", audio_extraopt ), "audio encoder options are too long\n" );
     }
 
     FAIL_IF_ERROR( cli_output.open_file( output_filename, &opt->hout, &output_opt, haud, audio_enc, arg ) < 0, "could not open output file `%s'\n", output_filename );

@@ -70,7 +70,8 @@ static int audio_init( hnd_t handle, hnd_t filters, char *audio_enc, char *audio
         const audio_encoder_t *encoder = x264_select_audio_encoder( audio_enc, (char*[]){ "ac3", "aac", "vorbis", "mp3", "raw", NULL }, &used_enc );
         FAIL_IF_ERR( !encoder, "mkv", "unable to select audio encoder\n" );
 
-        snprintf( audio_params, MAX_ARGS, "%s,codec=%s", audio_parameters, used_enc );
+        int audio_params_len = snprintf( audio_params, sizeof(audio_params), "%s,codec=%s", audio_parameters, used_enc );
+        FAIL_IF_ERR( audio_params_len < 0 || (size_t)audio_params_len >= sizeof(audio_params), "mkv", "audio encoder parameters are too long\n" );
         henc = x264_audio_encoder_open( encoder, filters, audio_params );
     }
     FAIL_IF_ERR( !henc, "mkv", "error opening audio encoder\n" );
@@ -125,9 +126,12 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
 
 
 #define STEREO_COUNT 7
-static const uint8_t stereo_modes[STEREO_COUNT] = {5,9,7,1,3,13,0};
-static const uint8_t stereo_w_div[STEREO_COUNT] = {1,2,1,2,1,1,1};
-static const uint8_t stereo_h_div[STEREO_COUNT] = {1,1,2,1,2,1,1};
+static const uint8_t stereo_modes[] = {5,9,7,1,3,13,0};
+static const uint8_t stereo_w_div[] = {1,2,1,2,1,1,1};
+static const uint8_t stereo_h_div[] = {1,1,2,1,2,1,1};
+X264_STATIC_ASSERT( ARRAY_ELEMS(stereo_modes) == STEREO_COUNT, "Matroska stereo mode table size must match frame packing domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(stereo_w_div) == STEREO_COUNT, "Matroska stereo width divisor table size must match frame packing domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(stereo_h_div) == STEREO_COUNT, "Matroska stereo height divisor table size must match frame packing domain" );
 
 static int set_video_track( mkv_hnd_t *p_mkv, x264_param_t *p_param )
 {
@@ -295,9 +299,15 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     mkv_hnd_t *p_mkv = handle;
     mk_track_t *vtrack = &p_mkv->tracks[p_mkv->i_video_track];
 
+    if( p_nal[0].i_payload < 8 || p_nal[1].i_payload < 5 )
+        return -1;
+
     int sps_size = p_nal[0].i_payload - 4;
     int pps_size = p_nal[1].i_payload - 4;
     int sei_size = p_nal[2].i_payload;
+
+    if( sps_size > UINT16_MAX || pps_size > UINT16_MAX )
+        return -1;
 
     uint8_t *sps = p_nal[0].p_payload + 4;
     uint8_t *pps = p_nal[1].p_payload + 4;

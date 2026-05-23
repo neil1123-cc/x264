@@ -33,15 +33,23 @@
     H += i * ( src[j+i - FDEC_STRIDE ]  - src[j-i - FDEC_STRIDE ] );\
     V += i * ( src[(j+i)*FDEC_STRIDE -1] - src[(j-i)*FDEC_STRIDE -1] );
 
+#define X264_X86_PREDICT_WEIGHT_LANES 8
+
 #if HAVE_X86_INLINE_ASM
 #if HIGH_BIT_DEPTH
-ALIGNED_16( static const int16_t pw_12345678[8] ) = {1,2,3,4,5,6,7,8};
-ALIGNED_16( static const int16_t pw_m87654321[8] ) = {-8,-7,-6,-5,-4,-3,-2,-1};
-ALIGNED_16( static const int16_t pw_m32101234[8] ) = {-3,-2,-1,0,1,2,3,4};
+ALIGNED_16( static const int16_t pw_12345678[] ) = {1,2,3,4,5,6,7,8};
+ALIGNED_16( static const int16_t pw_m87654321[] ) = {-8,-7,-6,-5,-4,-3,-2,-1};
+ALIGNED_16( static const int16_t pw_m32101234[] ) = {-3,-2,-1,0,1,2,3,4};
+X264_STATIC_ASSERT( ARRAY_ELEMS(pw_12345678) == X264_X86_PREDICT_WEIGHT_LANES, "x86 high bit-depth predict weight table size must match SIMD lanes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(pw_m87654321) == X264_X86_PREDICT_WEIGHT_LANES, "x86 high bit-depth negative predict weight table size must match SIMD lanes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(pw_m32101234) == X264_X86_PREDICT_WEIGHT_LANES, "x86 high bit-depth chroma predict weight table size must match SIMD lanes" );
 #else // !HIGH_BIT_DEPTH
-ALIGNED_8( static const int8_t pb_12345678[8] ) = {1,2,3,4,5,6,7,8};
-ALIGNED_8( static const int8_t pb_m87654321[8] ) = {-8,-7,-6,-5,-4,-3,-2,-1};
-ALIGNED_8( static const int8_t pb_m32101234[8] ) = {-3,-2,-1,0,1,2,3,4};
+ALIGNED_8( static const int8_t pb_12345678[] ) = {1,2,3,4,5,6,7,8};
+ALIGNED_8( static const int8_t pb_m87654321[] ) = {-8,-7,-6,-5,-4,-3,-2,-1};
+ALIGNED_8( static const int8_t pb_m32101234[] ) = {-3,-2,-1,0,1,2,3,4};
+X264_STATIC_ASSERT( ARRAY_ELEMS(pb_12345678) == X264_X86_PREDICT_WEIGHT_LANES, "x86 predict weight table size must match SIMD lanes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(pb_m87654321) == X264_X86_PREDICT_WEIGHT_LANES, "x86 negative predict weight table size must match SIMD lanes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(pb_m32101234) == X264_X86_PREDICT_WEIGHT_LANES, "x86 chroma predict weight table size must match SIMD lanes" );
 #endif // HIGH_BIT_DEPTH
 #endif // HAVE_X86_INLINE_ASM
 

@@ -32,6 +32,9 @@
 #include "analyse.h"
 #include "rdo.c"
 
+#define X264_ANALYSE_SUBPEL_REFINE_THRESHOLDS 11
+#define X264_ANALYSE_I8X8_COST_DIVISORS 3
+
 typedef struct
 {
     x264_me_t me16x16;
@@ -52,6 +55,18 @@ typedef struct
     /* [ref][0] is 16x16 mv, [ref][1..4] are 8x8 mv from partition [0..3], [ref][5] is for alignment */
     ALIGNED_8( int16_t mvc[32][6][2] );
 } x264_mb_analysis_list_t;
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_list_t*)0)->me8x8) == 4, "analysis 8x8 ME count must match partition count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_list_t*)0)->me4x4) == 4, "analysis 4x4 ME rows must match 8x8 partition count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_list_t*)0)->me4x4[0]) == 4, "analysis 4x4 ME columns must match subpartition count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_list_t*)0)->me8x4) == 4, "analysis 8x4 ME rows must match 8x8 partition count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_list_t*)0)->me8x4[0]) == 2, "analysis 8x4 ME columns must match subpartition count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_list_t*)0)->me4x8) == 4, "analysis 4x8 ME rows must match 8x8 partition count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_list_t*)0)->me4x8[0]) == 2, "analysis 4x8 ME columns must match subpartition count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_list_t*)0)->me16x8) == 2, "analysis 16x8 ME count must match partition count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_list_t*)0)->me8x16) == 2, "analysis 8x16 ME count must match partition count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_list_t*)0)->mvc) == 32, "analysis MVC ref count must match cache domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_list_t*)0)->mvc[0]) == 6, "analysis MVC candidate count must match partition candidates" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_list_t*)0)->mvc[0][0]) == 2, "analysis MVC vector size must match motion vector components" );
 
 typedef struct
 {
@@ -119,24 +134,45 @@ typedef struct
     int b_early_terminate;
 
 } x264_mb_analysis_t;
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_t*)0)->p_cost_ref) == 2, "analysis reference cost count must match reference lists" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_t*)0)->i_satd_i16x16_dir) == 7, "analysis I16x16 SATD domain must match predictor domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_t*)0)->i_satd_i8x8_dir) == 4, "analysis I8x8 SATD rows must match 8x8 partition count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_t*)0)->i_satd_i8x8_dir[0]) == 16, "analysis I8x8 SATD columns must match predictor domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_t*)0)->i_predict8x8) == 4, "analysis I8x8 prediction count must match 8x8 partition count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_t*)0)->i_predict4x4) == 16, "analysis I4x4 prediction count must match 4x4 block count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_t*)0)->i_satd_chroma_dir) == 7, "analysis chroma SATD domain must match chroma predictor domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_t*)0)->i_cost8x8direct) == 4, "analysis direct 8x8 cost count must match partition count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_t*)0)->i_satd8x8) == 3, "analysis 8x8 SATD list count must match L0/L1/BI" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_t*)0)->i_satd8x8[0]) == 4, "analysis 8x8 SATD width must match partition count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_t*)0)->i_cost_est16x8) == 2, "analysis 16x8 estimated cost count must match partition count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_t*)0)->i_cost_est8x16) == 2, "analysis 8x16 estimated cost count must match partition count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_t*)0)->i_mb_partition16x8) == 2, "analysis 16x8 partition count must match partition count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_t*)0)->i_mb_partition8x16) == 2, "analysis 8x16 partition count must match partition count" );
 
 /* TODO: calculate CABAC costs */
-static const uint8_t i_mb_b_cost_table[X264_MBTYPE_MAX] =
+#define X264_MB_B16X8_COST_COUNT (B_BI_BI+1)
+#define X264_SUB_MB_B_COST_COUNT (D_DIRECT_8x8+1)
+#define X264_SUB_MB_P_COST_COUNT (D_L0_8x8+1)
+static const uint8_t i_mb_b_cost_table[] =
 {
     9, 9, 9, 9, 0, 0, 0, 1, 3, 7, 7, 7, 3, 7, 7, 7, 5, 9, 0
 };
-static const uint8_t i_mb_b16x8_cost_table[17] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(i_mb_b_cost_table) == X264_MBTYPE_MAX, "B macroblock cost table size must match macroblock type enum" );
+static const uint8_t i_mb_b16x8_cost_table[] =
 {
     0, 0, 0, 0, 0, 0, 0, 0, 5, 7, 7, 7, 5, 7, 9, 9, 9
 };
-static const uint8_t i_sub_mb_b_cost_table[13] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(i_mb_b16x8_cost_table) == X264_MB_B16X8_COST_COUNT, "B 16x8/8x16 cost table size must cover BI macroblock types" );
+static const uint8_t i_sub_mb_b_cost_table[] =
 {
     7, 5, 5, 3, 7, 5, 7, 3, 7, 7, 7, 5, 1
 };
-static const uint8_t i_sub_mb_p_cost_table[4] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(i_sub_mb_b_cost_table) == X264_SUB_MB_B_COST_COUNT, "B sub-macroblock cost table size must cover direct partitions" );
+static const uint8_t i_sub_mb_p_cost_table[] =
 {
     5, 3, 3, 1
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(i_sub_mb_p_cost_table) == X264_SUB_MB_P_COST_COUNT, "P sub-macroblock cost table size must cover L0 partitions" );
 
 static void analyse_update_cache( x264_t *h, x264_mb_analysis_t *a );
 
@@ -481,6 +517,8 @@ static const int8_t i16x16_mode_available[5][5] =
     {I_PRED_16x16_V, I_PRED_16x16_H, I_PRED_16x16_DC, -1, -1},
     {I_PRED_16x16_V, I_PRED_16x16_H, I_PRED_16x16_DC, I_PRED_16x16_P, -1},
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(i16x16_mode_available) == 5, "I16x16 mode table height must match neighbor cases" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(i16x16_mode_available[0]) == 5, "I16x16 mode table width must cover prediction modes and terminator" );
 
 static const int8_t chroma_mode_available[5][5] =
 {
@@ -490,6 +528,8 @@ static const int8_t chroma_mode_available[5][5] =
     {I_PRED_CHROMA_V, I_PRED_CHROMA_H, I_PRED_CHROMA_DC, -1, -1},
     {I_PRED_CHROMA_V, I_PRED_CHROMA_H, I_PRED_CHROMA_DC, I_PRED_CHROMA_P, -1},
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(chroma_mode_available) == 5, "chroma mode table height must match neighbor cases" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(chroma_mode_available[0]) == 5, "chroma mode table width must cover prediction modes and terminator" );
 
 static const int8_t i8x8_mode_available[2][5][10] =
 {
@@ -508,6 +548,9 @@ static const int8_t i8x8_mode_available[2][5][10] =
         {I_PRED_4x4_H, I_PRED_4x4_HD, I_PRED_4x4_HU, -1, -1, -1, -1, -1, -1, -1},
     }
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(i8x8_mode_available) == 2, "I8x8 mode table height must match top-right availability states" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(i8x8_mode_available[0]) == 5, "I8x8 mode table neighbor domain must match neighbor cases" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(i8x8_mode_available[0][0]) == 10, "I8x8 mode table width must cover prediction modes and terminator" );
 
 static const int8_t i4x4_mode_available[2][5][10] =
 {
@@ -526,6 +569,9 @@ static const int8_t i4x4_mode_available[2][5][10] =
         {I_PRED_4x4_DC, I_PRED_4x4_H, I_PRED_4x4_V, I_PRED_4x4_DDR, I_PRED_4x4_VR, I_PRED_4x4_HD, I_PRED_4x4_HU, -1, -1, -1},
     }
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(i4x4_mode_available) == 2, "I4x4 mode table height must match top-right availability states" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(i4x4_mode_available[0]) == 5, "I4x4 mode table neighbor domain must match neighbor cases" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(i4x4_mode_available[0][0]) == 10, "I4x4 mode table width must cover prediction modes and terminator" );
 
 static ALWAYS_INLINE const int8_t *predict_16x16_mode_available( int i_neighbour )
 {
@@ -681,6 +727,10 @@ static void mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter
          {{I_PRED_4x4_DDR, I_PRED_4x4_HD, I_PRED_4x4_HU, -1, -1},
           {I_PRED_4x4_DDR, I_PRED_4x4_VR, -1, -1, -1}}},
     };
+    X264_STATIC_ASSERT( ARRAY_ELEMS(intra_analysis_shortcut) == 2, "intra analysis shortcut table must cover top-right availability states" );
+    X264_STATIC_ASSERT( ARRAY_ELEMS(intra_analysis_shortcut[0]) == 2, "intra analysis shortcut table must cover diagonal mode availability" );
+    X264_STATIC_ASSERT( ARRAY_ELEMS(intra_analysis_shortcut[0][0]) == 2, "intra analysis shortcut table must cover directional preference states" );
+    X264_STATIC_ASSERT( ARRAY_ELEMS(intra_analysis_shortcut[0][0][0]) == 5, "intra analysis shortcut table width must cover prediction modes and terminator" );
 
     int idx;
     int lambda = a->i_lambda;
@@ -692,7 +742,8 @@ static void mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter
         const int8_t *predict_mode = predict_16x16_mode_available( h->mb.i_neighbour_intra );
 
         /* Not heavily tuned */
-        static const uint8_t i16x16_thresh_lut[11] = { 2, 2, 2, 3, 3, 4, 4, 4, 4, 4, 4 };
+        static const uint8_t i16x16_thresh_lut[] = { 2, 2, 2, 3, 3, 4, 4, 4, 4, 4, 4 };
+        X264_STATIC_ASSERT( ARRAY_ELEMS(i16x16_thresh_lut) == X264_ANALYSE_SUBPEL_REFINE_THRESHOLDS, "i16x16 threshold table size must match subpel refine domain" );
         int i16x16_thresh = a->b_fast_intra ? (i16x16_thresh_lut[h->mb.i_subpel_refine]*i_satd_inter)>>1 : COST_MAX;
 
         if( !h->mb.b_lossless && predict_mode[3] >= 0 )
@@ -851,12 +902,14 @@ static void mb_analyse_intra( x264_t *h, x264_mb_analysis_t *a, int i_satd_inter
         }
         else
         {
-            static const uint16_t cost_div_fix8[3] = {1024,512,341};
+            static const uint16_t cost_div_fix8[] = {1024,512,341};
+            X264_STATIC_ASSERT( ARRAY_ELEMS(cost_div_fix8) == X264_ANALYSE_I8X8_COST_DIVISORS, "i8x8 cost divisor table size must match branch domain" );
             a->i_satd_i8x8 = COST_MAX;
             i_cost = (i_cost * cost_div_fix8[idx]) >> 8;
         }
         /* Not heavily tuned */
-        static const uint8_t i8x8_thresh[11] = { 4, 4, 4, 5, 5, 5, 6, 6, 6, 6, 6 };
+        static const uint8_t i8x8_thresh[] = { 4, 4, 4, 5, 5, 5, 6, 6, 6, 6, 6 };
+        X264_STATIC_ASSERT( ARRAY_ELEMS(i8x8_thresh) == X264_ANALYSE_SUBPEL_REFINE_THRESHOLDS, "i8x8 threshold table size must match subpel refine domain" );
         if( a->b_early_terminate && X264_MIN(i_cost, a->i_satd_i16x16) > (i_satd_inter*i8x8_thresh[h->mb.i_subpel_refine])>>2 )
             return;
     }

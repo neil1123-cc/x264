@@ -124,6 +124,9 @@ extern void (*x264_cache_mv_func_table[10])(void *, uint32_t);
 extern void (*x264_cache_mvd_func_table[10])(void *, uint32_t);
 #define x264_cache_ref_func_table x264_template(cache_ref_func_table)
 extern void (*x264_cache_ref_func_table[10])(void *, uint32_t);
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cache_mv_func_table) == 10, "MV cache dispatch table width must cover macroblock rectangle shapes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cache_mvd_func_table) == 10, "MVD cache dispatch table width must cover macroblock rectangle shapes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cache_ref_func_table) == 10, "reference cache dispatch table width must cover macroblock rectangle shapes" );
 
 #define x264_macroblock_cache_mv_ptr( a, x, y, w, h, l, mv ) x264_macroblock_cache_mv( a, x, y, w, h, l, M32( mv ) )
 static ALWAYS_INLINE void x264_macroblock_cache_mv( x264_t *h, int x, int y, int width, int height, int i_list, uint32_t mv )

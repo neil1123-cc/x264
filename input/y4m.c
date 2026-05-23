@@ -118,13 +118,21 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         switch( *tokstart++ )
         {
             case 'W': /* Width. Required. */
-                info->width = strtol( tokstart, &tokend, 10 );
+            {
+                long width = strtol( tokstart, &tokend, 10 );
+                FAIL_IF_ERROR( tokend == tokstart || width <= 0 || width > MAX_RESOLUTION, "invalid width `%s'\n", tokstart );
+                info->width = (int)width;
                 tokstart=tokend;
                 break;
+            }
             case 'H': /* Height. Required. */
-                info->height = strtol( tokstart, &tokend, 10 );
+            {
+                long height = strtol( tokstart, &tokend, 10 );
+                FAIL_IF_ERROR( tokend == tokstart || height <= 0 || height > MAX_RESOLUTION, "invalid height `%s'\n", tokstart );
+                info->height = (int)height;
                 tokstart=tokend;
                 break;
+            }
             case 'C': /* Color space */
                 colorspace = parse_csp_and_depth( tokstart, &h->bit_depth );
                 tokstart = strchr( tokstart, 0x20 );
@@ -189,8 +197,11 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
                 else if( !strncmp( "LENGTH=", tokstart, 7 ) )
                 {
                     /* x265 extension: total frame count for ETA */
+                    long num_frames;
                     tokstart += 7;
-                    info->num_frames = strtol( tokstart, &tokend, 10 );
+                    num_frames = strtol( tokstart, &tokend, 10 );
+                    FAIL_IF_ERROR( tokend == tokstart || num_frames < 0 || num_frames > INT_MAX, "invalid frame count `%s'\n", tokstart );
+                    info->num_frames = (int)num_frames;
                     tokstart = tokend;
                 }
                 tokstart = strchr( tokstart, 0x20 );
@@ -246,13 +257,15 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         while( len <= Y4M_MAX_HEADER && fgetc( h->fh ) != '\n' )
             len++;
         FAIL_IF_ERROR( len > Y4M_MAX_HEADER || len < sizeof(Y4M_FRAME_MAGIC), "bad frame header length\n" );
-        h->frame_header_len = len;
-        h->frame_size += len;
+        h->frame_header_len = (int)len;
+        h->frame_size += (int64_t)len;
 
         fseek( h->fh, 0, SEEK_END );
         int64_t i_size = ftell( h->fh );
         fseek( h->fh, init_pos, SEEK_SET );
-        info->num_frames = (i_size - h->seq_header_len) / h->frame_size;
+        int64_t num_frames = (i_size - h->seq_header_len) / h->frame_size;
+        FAIL_IF_ERROR( num_frames > INT_MAX, "too many frames\n" );
+        info->num_frames = (int)num_frames;
         FAIL_IF_ERROR( !info->num_frames, "empty input file\n" );
 
         /* Attempt to use memory-mapped input frames if possible */
@@ -268,7 +281,7 @@ static int read_frame_internal( cli_pic_t *pic, y4m_hnd_t *h, int bit_depth_uc )
 {
     static const size_t slen = sizeof(Y4M_FRAME_MAGIC)-1;
     int pixel_depth = x264_cli_csp_depth_factor( pic->img.csp );
-    int i = sizeof(Y4M_FRAME_MAGIC);
+    int i = (int)sizeof(Y4M_FRAME_MAGIC);
     char header_buf[16];
     char *header;
 
@@ -303,7 +316,7 @@ static int read_frame_internal( cli_pic_t *pic, y4m_hnd_t *h, int bit_depth_uc )
             if( i )
                 pic->img.plane[i] = pic->img.plane[i-1] + pixel_depth * h->plane_size[i-1];
         }
-        else if( fread( pic->img.plane[i], pixel_depth, h->plane_size[i], h->fh ) != (uint64_t)h->plane_size[i] )
+        else if( fread( pic->img.plane[i], (size_t)pixel_depth, (size_t)h->plane_size[i], h->fh ) != (size_t)h->plane_size[i] )
             return -1;
 
         if( bit_depth_uc && h->bit_depth != h->x264_bit_depth )

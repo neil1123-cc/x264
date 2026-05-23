@@ -40,7 +40,7 @@ enum macroblock_position_e
     ALL_NEIGHBORS = 0xf,
 };
 
-static const uint8_t x264_pred_i4x4_neighbors[12] =
+static const uint8_t x264_pred_i4x4_neighbors[] =
 {
     MB_TOP,                         // I_PRED_4x4_V
     MB_LEFT,                        // I_PRED_4x4_H
@@ -55,6 +55,7 @@ static const uint8_t x264_pred_i4x4_neighbors[12] =
     MB_TOP,                         // I_PRED_4x4_DC_TOP
     0                               // I_PRED_4x4_DC_128
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_pred_i4x4_neighbors) == I_PRED_4x4_DC_128 + 1, "4x4 prediction neighbor table size must match prediction enum" );
 
 
 /* XXX mb_type isn't the one written in the bitstream -> only internal usage */
@@ -87,14 +88,17 @@ enum mb_class_e
 
     X264_MBTYPE_MAX = 19
 };
-static const uint8_t x264_mb_type_fix[X264_MBTYPE_MAX] =
+static const uint8_t x264_mb_type_fix[] =
 {
     I_4x4, I_4x4, I_16x16, I_PCM,
     P_L0, P_8x8, P_SKIP,
     B_DIRECT, B_L0_L0, B_L0_L1, B_L0_BI, B_L1_L0, B_L1_L1,
     B_L1_BI, B_BI_L0, B_BI_L1, B_BI_BI, B_8x8, B_SKIP
 };
-static const uint8_t x264_mb_type_list_table[X264_MBTYPE_MAX][2][2] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_mb_type_fix) == X264_MBTYPE_MAX, "mb type fix table size must match mb type enum" );
+#define X264_MB_TYPE_LISTS 2
+#define X264_MB_TYPE_LIST_FLAGS 2
+static const uint8_t x264_mb_type_list_table[][X264_MB_TYPE_LISTS][X264_MB_TYPE_LIST_FLAGS] =
 {
     {{0,0},{0,0}}, {{0,0},{0,0}}, {{0,0},{0,0}}, {{0,0},{0,0}}, /* INTRA */
     {{1,1},{0,0}},                                              /* P_L0 */
@@ -107,6 +111,9 @@ static const uint8_t x264_mb_type_list_table[X264_MBTYPE_MAX][2][2] =
     {{0,0},{0,0}},                                              /* B_8x8 */
     {{0,0},{0,0}}                                               /* B_SKIP */
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_mb_type_list_table) == X264_MBTYPE_MAX, "mb type list table size must match mb type enum" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_mb_type_list_table[0]) == X264_MB_TYPE_LISTS, "mb type list table height must match reference lists" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_mb_type_list_table[0][0]) == X264_MB_TYPE_LIST_FLAGS, "mb type list table width must match list flags" );
 
 #define IS_SUB4x4(type) ( (type == D_L0_4x4)||(type == D_L1_4x4)||(type == D_BI_4x4) )
 #define IS_SUB4x8(type) ( (type == D_L0_4x8)||(type == D_L1_4x8)||(type == D_BI_4x8) )
@@ -140,7 +147,8 @@ enum mb_partition_e
     X264_PARTTYPE_MAX = 17,
 };
 
-static const uint8_t x264_mb_partition_listX_table[2][17] =
+#define X264_MB_PARTITION_LISTS 2
+static const uint8_t x264_mb_partition_listX_table[][X264_PARTTYPE_MAX] =
 {{
     1, 1, 1, 1, /* D_L0_* */
     0, 0, 0, 0, /* D_L1_* */
@@ -155,7 +163,7 @@ static const uint8_t x264_mb_partition_listX_table[2][17] =
     0,          /* D_DIRECT_8x8 */
     0, 0, 0, 0  /* 8x8 .. 16x16 */
 }};
-static const uint8_t x264_mb_partition_count_table[17] =
+static const uint8_t x264_mb_partition_count_table[] =
 {
     /* sub L0 */
     4, 2, 2, 1,
@@ -168,7 +176,7 @@ static const uint8_t x264_mb_partition_count_table[17] =
     /* Partition */
     4, 2, 2, 1
 };
-static const uint8_t x264_mb_partition_pixel_table[17] =
+static const uint8_t x264_mb_partition_pixel_table[] =
 {
     PIXEL_4x4, PIXEL_8x4,  PIXEL_4x8,  PIXEL_8x8,   /* D_L0_* */
     PIXEL_4x4, PIXEL_8x4,  PIXEL_4x8,  PIXEL_8x8,   /* D_L1_* */
@@ -176,16 +184,28 @@ static const uint8_t x264_mb_partition_pixel_table[17] =
     PIXEL_8x8,                                      /* D_DIRECT_8x8 */
     PIXEL_8x8, PIXEL_16x8, PIXEL_8x16, PIXEL_16x16, /* 8x8 .. 16x16 */
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_mb_partition_listX_table) == X264_MB_PARTITION_LISTS, "mb partition list table height must match reference lists" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_mb_partition_listX_table[0]) == X264_PARTTYPE_MAX, "mb partition list table width must match partition enum" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_mb_partition_count_table) == X264_PARTTYPE_MAX, "mb partition count table size must match partition enum" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_mb_partition_pixel_table) == X264_PARTTYPE_MAX, "mb partition pixel table size must match partition enum" );
+
+#define X264_ZIGZAG_SCAN_MODES 2
+#define X264_ZIGZAG_SCAN4_SIZE 16
+#define X264_ZIGZAG_SCAN8_SIZE 64
+#define X264_BLOCK_INDEX_COUNT 16
+#define X264_BLOCK_INDEX_DIM 4
 
 /* zigzags are transposed with respect to the tables in the standard */
-static const uint8_t x264_zigzag_scan4[2][16] =
+static const uint8_t x264_zigzag_scan4[][X264_ZIGZAG_SCAN4_SIZE] =
 {{ // frame
     0,  4,  1,  2,  5,  8, 12,  9,  6,  3,  7, 10, 13, 14, 11, 15
 },
 {  // field
     0,  1,  4,  2,  3,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15
 }};
-static const uint8_t x264_zigzag_scan8[2][64] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_zigzag_scan4) == X264_ZIGZAG_SCAN_MODES, "4x4 zigzag scan table size must match frame and field modes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_zigzag_scan4[0]) == X264_ZIGZAG_SCAN4_SIZE, "4x4 zigzag scan table width must match coefficient count" );
+static const uint8_t x264_zigzag_scan8[][X264_ZIGZAG_SCAN8_SIZE] =
 {{
     0,  8,  1,  2,  9, 16, 24, 17, 10,  3,  4, 11, 18, 25, 32, 40,
    33, 26, 19, 12,  5,  6, 13, 20, 27, 34, 41, 48, 56, 49, 42, 35,
@@ -198,31 +218,39 @@ static const uint8_t x264_zigzag_scan8[2][64] =
    28, 29, 30, 31, 35, 41, 48, 42, 36, 37, 38, 39, 43, 49, 50, 44,
    45, 46, 47, 51, 56, 57, 52, 53, 54, 55, 58, 59, 60, 61, 62, 63
 }};
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_zigzag_scan8) == X264_ZIGZAG_SCAN_MODES, "8x8 zigzag scan table size must match frame and field modes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_zigzag_scan8[0]) == X264_ZIGZAG_SCAN8_SIZE, "8x8 zigzag scan table width must match coefficient count" );
 
-static const uint8_t block_idx_x[16] =
+static const uint8_t block_idx_x[] =
 {
     0, 1, 0, 1, 2, 3, 2, 3, 0, 1, 0, 1, 2, 3, 2, 3
 };
-static const uint8_t block_idx_y[16] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(block_idx_x) == X264_BLOCK_INDEX_COUNT, "block X index table size must match 4x4 block count" );
+static const uint8_t block_idx_y[] =
 {
     0, 0, 1, 1, 0, 0, 1, 1, 2, 2, 3, 3, 2, 2, 3, 3
 };
-static const uint8_t block_idx_xy[4][4] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(block_idx_y) == X264_BLOCK_INDEX_COUNT, "block Y index table size must match 4x4 block count" );
+static const uint8_t block_idx_xy[][X264_BLOCK_INDEX_DIM] =
 {
     { 0, 2, 8,  10 },
     { 1, 3, 9,  11 },
     { 4, 6, 12, 14 },
     { 5, 7, 13, 15 }
 };
-static const uint8_t block_idx_xy_1d[16] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(block_idx_xy) == X264_BLOCK_INDEX_DIM, "block XY index table height must match 4x4 block dimension" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(block_idx_xy[0]) == X264_BLOCK_INDEX_DIM, "block XY index table width must match 4x4 block dimension" );
+static const uint8_t block_idx_xy_1d[] =
 {
     0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15
 };
-static const uint8_t block_idx_yx_1d[16] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(block_idx_xy_1d) == X264_BLOCK_INDEX_COUNT, "1D block XY index table size must match 4x4 block count" );
+static const uint8_t block_idx_yx_1d[] =
 {
     0, 4, 1, 5, 8, 12, 9, 13, 2, 6, 3, 7, 10, 14, 11, 15
 };
-static const uint8_t block_idx_xy_fenc[16] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(block_idx_yx_1d) == X264_BLOCK_INDEX_COUNT, "1D block YX index table size must match 4x4 block count" );
+static const uint8_t block_idx_xy_fenc[] =
 {
     0*4 + 0*4*FENC_STRIDE, 1*4 + 0*4*FENC_STRIDE,
     0*4 + 1*4*FENC_STRIDE, 1*4 + 1*4*FENC_STRIDE,
@@ -233,7 +261,8 @@ static const uint8_t block_idx_xy_fenc[16] =
     2*4 + 2*4*FENC_STRIDE, 3*4 + 2*4*FENC_STRIDE,
     2*4 + 3*4*FENC_STRIDE, 3*4 + 3*4*FENC_STRIDE
 };
-static const uint16_t block_idx_xy_fdec[16] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(block_idx_xy_fenc) == X264_BLOCK_INDEX_COUNT, "fenc block offset table size must match 4x4 block count" );
+static const uint16_t block_idx_xy_fdec[] =
 {
     0*4 + 0*4*FDEC_STRIDE, 1*4 + 0*4*FDEC_STRIDE,
     0*4 + 1*4*FDEC_STRIDE, 1*4 + 1*4*FDEC_STRIDE,
@@ -244,6 +273,7 @@ static const uint16_t block_idx_xy_fdec[16] =
     2*4 + 2*4*FDEC_STRIDE, 3*4 + 2*4*FDEC_STRIDE,
     2*4 + 3*4*FDEC_STRIDE, 3*4 + 3*4*FDEC_STRIDE
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(block_idx_xy_fdec) == X264_BLOCK_INDEX_COUNT, "fdec block offset table size must match 4x4 block count" );
 
 #define QP(qP) ( (qP)+QP_BD_OFFSET )
 static const uint8_t i_chroma_qp_table[QP_MAX+1+12*2] =
@@ -297,6 +327,8 @@ static const uint8_t ctx_cat_plane[6][3] =
     {0},
     {DCT_LUMA_8x8, DCT_CHROMAU_8x8, DCT_CHROMAV_8x8}
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(ctx_cat_plane) == 6, "CABAC block category plane table height must match coded block classes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(ctx_cat_plane[0]) == 3, "CABAC block category plane table width must match color planes" );
 
 /* Per-frame allocation: is allocated per-thread only in frame-threads mode. */
 #define x264_macroblock_cache_allocate x264_template(macroblock_cache_allocate)
@@ -314,9 +346,9 @@ void x264_macroblock_thread_free( x264_t *h, int b_lookahead );
 void x264_macroblock_slice_init( x264_t *h );
 #define x264_macroblock_thread_init x264_template(macroblock_thread_init)
 void x264_macroblock_thread_init( x264_t *h );
-#define x264_macroblock_cache_load_interlaced x264_template(macroblock_cache_load_interlaced)
-void x264_macroblock_cache_load_progressive( x264_t *h, int mb_x, int mb_y );
 #define x264_macroblock_cache_load_progressive x264_template(macroblock_cache_load_progressive)
+void x264_macroblock_cache_load_progressive( x264_t *h, int mb_x, int mb_y );
+#define x264_macroblock_cache_load_interlaced x264_template(macroblock_cache_load_interlaced)
 void x264_macroblock_cache_load_interlaced( x264_t *h, int mb_x, int mb_y );
 #define x264_macroblock_deblock_strength x264_template(macroblock_deblock_strength)
 void x264_macroblock_deblock_strength( x264_t *h );
@@ -442,10 +474,11 @@ static ALWAYS_INLINE int x264_mb_predict_non_zero_code( x264_t *h, int idx )
 }
 
 /* intra and skip are disallowed, p8x8 is conditional. */
-static const uint8_t x264_transform_allowed[X264_MBTYPE_MAX] =
+static const uint8_t x264_transform_allowed[] =
 {
     0,0,0,0,1,2,0,1,1,1,1,1,1,1,1,1,1,1,0
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_transform_allowed) == X264_MBTYPE_MAX, "transform allowed table size must match mb type enum" );
 
 /* x264_mb_transform_8x8_allowed:
  *      check whether any partition is smaller than 8x8 (or at least

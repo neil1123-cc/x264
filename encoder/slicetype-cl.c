@@ -405,6 +405,7 @@ int x264_opencl_motionsearch( x264_t *h, x264_frame_t **frames, int b, int ref, 
     }
 
     const int num_iterations[NUM_IMAGE_SCALES] = { 1, 1, 2, 3 };
+    X264_STATIC_ASSERT( ARRAY_ELEMS(num_iterations) == NUM_IMAGE_SCALES, "OpenCL HME iteration table size must match image scales" );
     int b_first_iteration = 1;
     int b_reverse_references = 1;
     int A = 1;

@@ -28,8 +28,11 @@
 
 #include "common.h"
 
+#define X264_DEBLOCK_TABLE_SIZE (52+12*3)
+#define X264_DEBLOCK_TC0_STRENGTHS 4
+
 /* Deblocking filter */
-static const uint8_t i_alpha_table[52+12*3] =
+static const uint8_t i_alpha_table[] =
 {
      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
@@ -41,7 +44,8 @@ static const uint8_t i_alpha_table[52+12*3] =
    255,255,
    255,255,255,255,255,255,255,255,255,255,255,255,
 };
-static const uint8_t i_beta_table[52+12*3] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(i_alpha_table) == X264_DEBLOCK_TABLE_SIZE, "deblock alpha table size must match clipped QP domain" );
+static const uint8_t i_beta_table[] =
 {
      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
@@ -53,7 +57,8 @@ static const uint8_t i_beta_table[52+12*3] =
     18, 18,
     18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18,
 };
-static const int8_t i_tc0_table[52+12*3][4] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(i_beta_table) == X264_DEBLOCK_TABLE_SIZE, "deblock beta table size must match clipped QP domain" );
+static const int8_t i_tc0_table[][X264_DEBLOCK_TC0_STRENGTHS] =
 {
     {-1, 0, 0, 0 }, {-1, 0, 0, 0 }, {-1, 0, 0, 0 }, {-1, 0, 0, 0 }, {-1, 0, 0, 0 }, {-1, 0, 0, 0 },
     {-1, 0, 0, 0 }, {-1, 0, 0, 0 }, {-1, 0, 0, 0 }, {-1, 0, 0, 0 }, {-1, 0, 0, 0 }, {-1, 0, 0, 0 },
@@ -71,6 +76,8 @@ static const int8_t i_tc0_table[52+12*3][4] =
     {-1,13,17,25 }, {-1,13,17,25 }, {-1,13,17,25 }, {-1,13,17,25 }, {-1,13,17,25 }, {-1,13,17,25 },
     {-1,13,17,25 }, {-1,13,17,25 }, {-1,13,17,25 }, {-1,13,17,25 }, {-1,13,17,25 }, {-1,13,17,25 },
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(i_tc0_table) == X264_DEBLOCK_TABLE_SIZE, "deblock tc0 table size must match clipped QP domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(i_tc0_table[0]) == X264_DEBLOCK_TC0_STRENGTHS, "deblock tc0 table width must match boundary strength domain" );
 #define alpha_table(x) i_alpha_table[(x)+24]
 #define beta_table(x)  i_beta_table[(x)+24]
 #define tc0_table(x)   i_tc0_table[(x)+24]

@@ -1,0 +1,141 @@
+name: Build Profiling
+
+on:
+  push:
+    tags:
+      - '**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target_cpu:
+          - x86-64
+          - haswell
+          - skylake
+          - alderlake
+          - raptorlake
+          - arrowlake
+          - znver2
+          - znver3
+          - znver4
+          - znver5
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      TMP: C:/Windows/Temp
+      TEMP: C:/Windows/Temp
+      TMPDIR: C:/Windows/Temp
+    steps:
+    - name: Checkout x264
+      uses: actions/checkout@v6
+      with:
+        path: x264
+        fetch-depth: 0
+        fetch-tags: true
+
+    - name: Fetch VideoLAN version base
+      shell: bash
+      working-directory: x264
+      run: git fetch https://code.videolan.org/videolan/x264.git master:refs/remotes/videolan/master
+
+    # === Dependency Caching ===
+    - name: Setup Shared Dependencies
+      uses: ./x264/.github/actions/setup-windows-deps
+      with:
+        ffmpeg-cache-suffix: minimal-v2-clang
+        extra-msys2-packages: mingw-w64-clang-x86_64-ffmpeg
+        ffmpeg-configure: |
+          ./configure --prefix=/usr/local --enable-gpl --enable-version3 \
+            --disable-runtime-cpudetect --disable-all --disable-autodetect \
+            --enable-avformat --enable-avcodec --enable-swscale --enable-swresample \
+            --disable-everything --disable-network \
+            --enable-demuxer=mpegts,mov,matroska,h264,hevc,rawvideo,yuv4mpegpipe \
+            --enable-decoder=h264,hevc,ffv1,ffvhuff,huffyuv,rawvideo,wrapped_avframe,aac,ac3,mp3 \
+            --enable-protocol=file \
+            --cc=cc --cxx=c++ --cpu=x86-64
+
+    - name: Setup Build Dir
+      run: mkdir -p build/prof
+
+    - name: Compile x264 Profiling Version
+      working-directory: build/prof
+      run: |
+        export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
+        export X264_TARGET_CPU=${{ matrix.target_cpu }}
+        CC=cc RC=/ucrt64/bin/windres ../../x264/configure --prefix=/usr/local --bit-depth=all --enable-lavf --enable-lsmash --enable-static \
+          --extra-cflags="-O3 -fmerge-all-constants -momit-leaf-frame-pointer -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
+          --extra-ldflags="-L/usr/local/lib -L/clang64/lib"
+        cat >> config.mak <<'EOF'
+        CFLAGS+= -flto -ffat-lto-objects -fprofile-instr-generate -fprofile-update=atomic
+        LDFLAGS+= -flto -fprofile-instr-generate
+        EOF
+        make -j$(nproc)
+        mv x264.exe x264-profiling.exe
+
+    - name: MP4 smoke (profiling)
+      if: matrix.target_cpu == 'x86-64'
+      run: |
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24 -frames:v 8 -pix_fmt yuv420p smoke_prof.y4m
+        ./build/prof/x264-profiling.exe --fps 24/1 --frames 8 --bframes 2 --keyint 4 --min-keyint 4 -o smoke_prof.mp4 smoke_prof.y4m
+        ffprobe -v error -show_entries format=format_name -of default=noprint_wrappers=1 smoke_prof.mp4 > smoke_prof_format.txt
+        ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames,codec_name,codec_tag_string -of default=noprint_wrappers=1 smoke_prof.mp4 > smoke_prof_stream.txt
+        grep -q "format_name=mov,mp4,m4a,3gp,3g2,mj2" smoke_prof_format.txt
+        grep -q "codec_name=h264" smoke_prof_stream.txt
+        grep -q "codec_tag_string=avc1" smoke_prof_stream.txt
+        grep -q "nb_read_frames=8" smoke_prof_stream.txt
+
+    - name: Package
+      run: |
+        mkdir dist
+        strip -s build/prof/x264-profiling.exe
+        cp build/prof/x264-profiling.exe dist/
+
+    - name: Set Package Version
+      id: package_version
+      shell: bash
+      run: |
+        version_line=$(./build/prof/x264-profiling.exe --version | head -n 1)
+        version=$(printf '%s\n' "$version_line" | awk '{print $2 "-" $3}')
+        release_version=$(printf '%s\n' "$version_line" | awk '{print $2}')
+        test -n "$version"
+        test -n "$release_version"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "release_version=$release_version" >> "$GITHUB_OUTPUT"
+
+    - name: Compress Profiling Build
+      run: |
+        cd dist
+        archive="x264-profiling-win64-${{ matrix.target_cpu }}-clang.${{ steps.package_version.outputs.version }}.7z"
+        release_archive="x264-profiling-win64-${{ matrix.target_cpu }}-clang.${{ steps.package_version.outputs.release_version }}.7z"
+        7za a -t7z -mx=9 "../$archive" ./*.exe
+        cp "../$archive" "../$release_archive"
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: x264-profiling-win64-${{ matrix.target_cpu }}-clang.${{ steps.package_version.outputs.version }}
+        path: x264-profiling-win64-${{ matrix.target_cpu }}-clang.${{ steps.package_version.outputs.version }}.7z
+        compression-level: 0
+
+    - name: Release Profiling Archive
+      uses: softprops/action-gh-release@v3
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        tag_name: ${{ github.ref_name }}
+        files: x264-profiling-win64-${{ matrix.target_cpu }}-clang.${{ steps.package_version.outputs.release_version }}.7z
+        fail_on_unmatched_files: true
+        overwrite_files: true
+        generate_release_notes: false
+        prerelease: true

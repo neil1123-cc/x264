@@ -42,11 +42,12 @@ enum intra_chroma_pred_e
     I_PRED_CHROMA_DC_TOP  = 5,
     I_PRED_CHROMA_DC_128  = 6
 };
-static const uint8_t x264_mb_chroma_pred_mode_fix[7] =
+static const uint8_t x264_mb_chroma_pred_mode_fix[] =
 {
     I_PRED_CHROMA_DC, I_PRED_CHROMA_H, I_PRED_CHROMA_V, I_PRED_CHROMA_P,
     I_PRED_CHROMA_DC, I_PRED_CHROMA_DC,I_PRED_CHROMA_DC
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_mb_chroma_pred_mode_fix) == I_PRED_CHROMA_DC_128 + 1, "chroma prediction mode fix table size must match prediction enum" );
 
 enum intra16x16_pred_e
 {
@@ -59,11 +60,12 @@ enum intra16x16_pred_e
     I_PRED_16x16_DC_TOP  = 5,
     I_PRED_16x16_DC_128  = 6,
 };
-static const uint8_t x264_mb_pred_mode16x16_fix[7] =
+static const uint8_t x264_mb_pred_mode16x16_fix[] =
 {
     I_PRED_16x16_V, I_PRED_16x16_H, I_PRED_16x16_DC, I_PRED_16x16_P,
     I_PRED_16x16_DC,I_PRED_16x16_DC,I_PRED_16x16_DC
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_mb_pred_mode16x16_fix) == I_PRED_16x16_DC_128 + 1, "16x16 prediction mode fix table size must match prediction enum" );
 
 enum intra4x4_pred_e
 {
@@ -81,7 +83,7 @@ enum intra4x4_pred_e
     I_PRED_4x4_DC_TOP  = 10,
     I_PRED_4x4_DC_128  = 11,
 };
-static const int8_t x264_mb_pred_mode4x4_fix[13] =
+static const int8_t x264_mb_pred_mode4x4_fix[] =
 {
     -1,
     I_PRED_4x4_V,   I_PRED_4x4_H,   I_PRED_4x4_DC,
@@ -89,6 +91,7 @@ static const int8_t x264_mb_pred_mode4x4_fix[13] =
     I_PRED_4x4_HD,  I_PRED_4x4_VL,  I_PRED_4x4_HU,
     I_PRED_4x4_DC,  I_PRED_4x4_DC,  I_PRED_4x4_DC
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_mb_pred_mode4x4_fix) == I_PRED_4x4_DC_128 + 2, "4x4 prediction mode fix table size must cover invalid and prediction enum entries" );
 #define x264_mb_pred_mode4x4_fix(t) x264_mb_pred_mode4x4_fix[(t)+1]
 
 /* must use the same numbering as intra4x4_pred_e */

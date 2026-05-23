@@ -146,6 +146,7 @@ typedef struct
     const uint8_t *scaling_list[8]; /* could be 12, but we don't allow separate Cb/Cr lists */
 
 } x264_sps_t;
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_sps_t*)0)->scaling_list) == 8, "SPS scaling list count must match supported CQM slots" );
 
 typedef struct
 {

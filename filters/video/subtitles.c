@@ -44,7 +44,7 @@ int add_sub(char *filename)
 	return 0;
 }
 
-const char* get_csri_fmt_name(unsigned int fmt)
+static const char* get_csri_fmt_name(unsigned int fmt)
 {
 	switch(fmt)
 	{

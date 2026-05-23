@@ -51,7 +51,7 @@ static inline uint64_t gcd( uint64_t a, uint64_t b )
 {
     while( 1 )
     {
-        int64_t c = a % b;
+        uint64_t c = a % b;
         if( !c )
             return b;
         a = b;
@@ -64,9 +64,9 @@ static inline uint64_t lcm( uint64_t a, uint64_t b )
     return ( a / gcd( a, b ) ) * b;
 }
 
-static inline char *get_filename_extension( char *filename )
+static inline const char *get_filename_extension( const char *filename )
 {
-    char *ext = filename + strlen( filename );
+    const char *ext = filename + strlen( filename );
     while( *ext != '.' && ext > filename )
         ext--;
     ext += *ext == '.';

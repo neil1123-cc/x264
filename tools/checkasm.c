@@ -91,10 +91,26 @@ static const char *bench_pattern = "";
 static char func_name[100];
 static bench_func_t benchs[MAX_FUNCS];
 
-static const char *pixel_names[12] = { "16x16", "16x8", "8x16", "8x8", "8x4", "4x8", "4x4", "4x16", "4x2", "2x8", "2x4", "2x2" };
-static const char *intra_predict_16x16_names[7] = { "v", "h", "dc", "p", "dcl", "dct", "dc8" };
-static const char *intra_predict_8x8c_names[7] = { "dc", "h", "v", "p", "dcl", "dct", "dc8" };
-static const char *intra_predict_4x4_names[12] = { "v", "h", "dc", "ddl", "ddr", "vr", "hd", "vl", "hu", "dcl", "dct", "dc8" };
+#define X264_CHECKASM_PIXEL_NAMES 12
+#define X264_CHECKASM_INTRA_16X16_NAMES 7
+#define X264_CHECKASM_INTRA_8X8C_NAMES 7
+#define X264_CHECKASM_INTRA_4X4_NAMES 12
+#define X264_CHECKASM_LIST_DIST_LISTS 2
+#define X264_CHECKASM_LIST_DIST_VALUES 8
+#define X264_CHECKASM_QUANT8_SCALE_SIZE 8
+#define X264_CHECKASM_QUANT4_SCALE_SIZE 4
+#define X264_CHECKASM_ZERORATE_SIZE 4
+#define X264_CHECKASM_CTX_AC_SIZE 14
+#define X264_CHECKASM_MBTREE_FIX8_COUNTS 5
+#define X264_CHECKASM_PLANE_SPECS 10
+static const char *pixel_names[] = { "16x16", "16x8", "8x16", "8x8", "8x4", "4x8", "4x4", "4x16", "4x2", "2x8", "2x4", "2x2" };
+static const char *intra_predict_16x16_names[] = { "v", "h", "dc", "p", "dcl", "dct", "dc8" };
+static const char *intra_predict_8x8c_names[] = { "dc", "h", "v", "p", "dcl", "dct", "dc8" };
+static const char *intra_predict_4x4_names[] = { "v", "h", "dc", "ddl", "ddr", "vr", "hd", "vl", "hu", "dcl", "dct", "dc8" };
+X264_STATIC_ASSERT( ARRAY_ELEMS(pixel_names) == X264_CHECKASM_PIXEL_NAMES, "checkasm pixel name table size must match pixel function domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(intra_predict_16x16_names) == X264_CHECKASM_INTRA_16X16_NAMES, "checkasm 16x16 intra name table size must match prediction mode domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(intra_predict_8x8c_names) == X264_CHECKASM_INTRA_8X8C_NAMES, "checkasm 8x8 chroma intra name table size must match prediction mode domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(intra_predict_4x4_names) == X264_CHECKASM_INTRA_4X4_NAMES, "checkasm 4x4 intra name table size must match prediction mode domain" );
 static const char **intra_predict_8x8_names = intra_predict_4x4_names;
 static const char **intra_predict_8x16c_names = intra_predict_8x8c_names;
 
@@ -254,20 +270,25 @@ static void print_bench(void)
 static void (*simd_warmup_func)( void ) = NULL;
 #define simd_warmup() do { if( simd_warmup_func ) simd_warmup_func(); } while( 0 )
 
+#if HAVE_MMX || HAVE_AARCH64 || HAVE_ARMV6 || ARCH_RISCV64 || ARCH_LOONGARCH
+typedef intptr_t (*x264_checkasm_trampoline_func)( void );
+#endif
+
 #if HAVE_MMX
-int x264_stack_pagealign( int (*func)(), int align );
+typedef int (*x264_checkasm_flags_func)( void );
+int x264_stack_pagealign( x264_checkasm_flags_func func, int align );
 void x264_checkasm_warmup_avx( void );
 void x264_checkasm_warmup_avx512( void );
 
 /* detect when callee-saved regs aren't saved
  * needs an explicit asm check because it only sometimes crashes in normal use. */
-intptr_t x264_checkasm_call( intptr_t (*func)(), int *ok, ... );
+intptr_t x264_checkasm_call( x264_checkasm_trampoline_func func, int *ok, ... );
 #else
 #define x264_stack_pagealign( func, align ) func()
 #endif
 
 #if HAVE_AARCH64
-intptr_t x264_checkasm_call( intptr_t (*func)(), int *ok, ... );
+intptr_t x264_checkasm_call( x264_checkasm_trampoline_func func, int *ok, ... );
 
 #if HAVE_SVE
 int x264_checkasm_sve_length( void );
@@ -275,20 +296,21 @@ int x264_checkasm_sve_length( void );
 #endif
 
 #if HAVE_ARMV6
-intptr_t x264_checkasm_call_neon( intptr_t (*func)(), int *ok, ... );
-intptr_t x264_checkasm_call_noneon( intptr_t (*func)(), int *ok, ... );
-intptr_t (*x264_checkasm_call)( intptr_t (*func)(), int *ok, ... ) = x264_checkasm_call_noneon;
+intptr_t x264_checkasm_call_neon( x264_checkasm_trampoline_func func, int *ok, ... );
+intptr_t x264_checkasm_call_noneon( x264_checkasm_trampoline_func func, int *ok, ... );
+intptr_t (*x264_checkasm_call)( x264_checkasm_trampoline_func func, int *ok, ... ) = x264_checkasm_call_noneon;
 #endif
 
 #if ARCH_RISCV64
-intptr_t x264_checkasm_call( intptr_t (*func)(), int *ok, ... );
+intptr_t x264_checkasm_call( x264_checkasm_trampoline_func func, int *ok, ... );
 #endif
 
 #if ARCH_LOONGARCH
-intptr_t x264_checkasm_call( intptr_t (*func)(), int *ok, ... );
+intptr_t x264_checkasm_call( x264_checkasm_trampoline_func func, int *ok, ... );
 #endif
 
 #define call_c1(func,...) func(__VA_ARGS__)
+#define call_a1_func( func ) ((x264_checkasm_trampoline_func)(func))
 
 #if HAVE_MMX && ARCH_X86_64
 /* Evil hack: detect incorrect assumptions that 32-bit ints are zero-extended to 64-bit.
@@ -305,27 +327,27 @@ void x264_checkasm_stack_clobber( uint64_t clobber, ... );
     uint64_t r = (rand() & 0xffff) * 0x0001000100010001ULL; \
     x264_checkasm_stack_clobber( r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r ); /* max_args+6 */ \
     simd_warmup(); \
-    x264_checkasm_call(( intptr_t(*)())func, &ok, 0, 0, 0, 0, __VA_ARGS__ ); })
+    x264_checkasm_call( call_a1_func( func ), &ok, 0, 0, 0, 0, __VA_ARGS__ ); })
 #elif HAVE_AARCH64 && !defined(__APPLE__)
 void x264_checkasm_stack_clobber( uint64_t clobber, ... );
 #define call_a1(func,...) ({ \
     uint64_t r = (rand() & 0xffff) * 0x0001000100010001ULL; \
     x264_checkasm_stack_clobber( r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r ); /* max_args+8 */ \
-    x264_checkasm_call(( intptr_t(*)())func, &ok, 0, 0, 0, 0, 0, 0, __VA_ARGS__ ); })
+    x264_checkasm_call( call_a1_func( func ), &ok, 0, 0, 0, 0, 0, 0, __VA_ARGS__ ); })
 #elif HAVE_MMX || HAVE_ARMV6
-#define call_a1(func,...) x264_checkasm_call( (intptr_t(*)())func, &ok, __VA_ARGS__ )
+#define call_a1(func,...) x264_checkasm_call( call_a1_func( func ), &ok, __VA_ARGS__ )
 #elif ARCH_LOONGARCH && HAVE_LSX
 void x264_checkasm_stack_clobber( uint64_t clobber, ... );
 #define call_a1(func,...) ({ \
     uint64_t r = (rand() & 0xffff) * 0x0001000100010001ULL; \
     x264_checkasm_stack_clobber( r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r ); /* max_args+8 */ \
-    x264_checkasm_call(( intptr_t(*)())func, &ok, 0, 0, 0, 0, 0, 0, __VA_ARGS__ ); })
+    x264_checkasm_call( call_a1_func( func ), &ok, 0, 0, 0, 0, 0, 0, __VA_ARGS__ ); })
 #else
 #define call_a1 call_c1
 #endif
 
 #if HAVE_ARMV6
-#define call_a1_64(func,...) ((uint64_t (*)(intptr_t(*)(), int*, ...))x264_checkasm_call)( (intptr_t(*)())func, &ok, __VA_ARGS__ )
+#define call_a1_64(func,...) ((uint64_t (*)(x264_checkasm_trampoline_func, int*, ...))x264_checkasm_call)( call_a1_func( func ), &ok, __VA_ARGS__ )
 #else
 #define call_a1_64 call_a1
 #endif
@@ -446,8 +468,8 @@ static int check_pixel( uint32_t cpu_ref, uint32_t cpu_new )
             for( int j = 0; j < 64; j++ ) \
             { \
                 used_asm = 1; \
-                res_c   = call_c( pixel_c.name[i], pbuf1, 32, pbuf2+j*!align, 16, j ); \
-                res_asm = call_a( pixel_asm.name[i], pbuf1, 32, pbuf2+j*!align, 16, j ); \
+                res_c   = call_c( pixel_c.name[i], pbuf1, (intptr_t)32, pbuf2+j*!align, (intptr_t)16, (intptr_t)j ); \
+                res_asm = call_a( pixel_asm.name[i], pbuf1, (intptr_t)32, pbuf2+j*!align, (intptr_t)16, (intptr_t)j ); \
                 if( res_c != res_asm ) \
                 { \
                     ok = 0; \
@@ -1522,6 +1544,7 @@ static int check_mc( uint32_t cpu_ref, uint32_t cpu_new )
     struct plane_spec {
         int w, h, src_stride;
     } plane_specs[] = { {2,2,2}, {8,6,8}, {20,31,24}, {32,8,40}, {256,10,272}, {504,7,505}, {528,6,528}, {256,10,-256}, {263,9,-264}, {1904,1,0} };
+    X264_STATIC_ASSERT( ARRAY_ELEMS(plane_specs) == X264_CHECKASM_PLANE_SPECS, "checkasm plane copy specs table size must match test cases" );
     ok = 1; used_asm = 0;
     if( mc_a.plane_copy != mc_ref.plane_copy )
     {
@@ -1648,6 +1671,7 @@ static int check_mc( uint32_t cpu_ref, uint32_t cpu_new )
                 if( memcmp( pbuf3+y*dst_stride,      pbuf4+y*dst_stride,      w*SIZEOF_PIXEL ) ||
                     memcmp( pbuf3+y*dst_stride+offv, pbuf4+y*dst_stride+offv, w*SIZEOF_PIXEL ) )
                 {
+                    ok = 0;
                     fprintf( stderr, "plane_copy_deinterleave_yuyv FAILED: w=%d h=%d stride=%d\n", w, h, (int)src_stride );
                     break;
                 }
@@ -1865,7 +1889,9 @@ static int check_mc( uint32_t cpu_ref, uint32_t cpu_new )
                 ref_costsc[j] = ref_costsa[j] = rand()&32767;
             for( int j = 0; j < width; j++ )
             {
-                static const uint8_t list_dist[2][8] = {{0,1,1,1,1,1,1,1},{1,1,3,3,3,3,3,2}};
+                static const uint8_t list_dist[][X264_CHECKASM_LIST_DIST_VALUES] = {{0,1,1,1,1,1,1,1},{1,1,3,3,3,3,3,2}};
+                X264_STATIC_ASSERT( ARRAY_ELEMS(list_dist) == X264_CHECKASM_LIST_DIST_LISTS, "checkasm list distance table size must match reference lists" );
+                X264_STATIC_ASSERT( ARRAY_ELEMS(list_dist[0]) == X264_CHECKASM_LIST_DIST_VALUES, "checkasm list distance table width must match random input domain" );
                 for( int k = 0; k < 2; k++ )
                     mvs[j][k] = (rand()&127) - 64;
                 propagate_amount[j] = rand()&32767;
@@ -1888,6 +1914,7 @@ static int check_mc( uint32_t cpu_ref, uint32_t cpu_new )
     }
 
     static const uint16_t mbtree_fix8_counts[] = { 5, 384, 392, 400, 415 };
+    X264_STATIC_ASSERT( ARRAY_ELEMS(mbtree_fix8_counts) == X264_CHECKASM_MBTREE_FIX8_COUNTS, "checkasm mbtree fix8 count table size must match test cases" );
 
     if( mc_a.mbtree_fix8_pack != mc_ref.mbtree_fix8_pack )
     {
@@ -2120,14 +2147,14 @@ static int check_quant( uint32_t cpu_ref, uint32_t cpu_new )
     h->chroma_qp_table = i_chroma_qp_table + 12;
     h->param.analyse.b_transform_8x8 = 1;
 
-    static const uint8_t cqm_test4[16] =
+    static const uint8_t cqm_test4[] =
     {
         6,4,6,4,
         4,3,4,3,
         6,4,6,4,
         4,3,4,3
     };
-    static const uint8_t cqm_test8[64] =
+    static const uint8_t cqm_test8[] =
     {
         3,3,4,3,3,3,4,3,
         3,3,4,3,3,3,4,3,
@@ -2138,6 +2165,8 @@ static int check_quant( uint32_t cpu_ref, uint32_t cpu_new )
         4,4,5,4,4,4,5,4,
         3,3,4,3,3,3,4,3
     };
+    X264_STATIC_ASSERT( ARRAY_ELEMS(cqm_test4) == X264_CQM_4_SIZE, "checkasm 4x4 CQM test table size must match scaling list size" );
+    X264_STATIC_ASSERT( ARRAY_ELEMS(cqm_test8) == X264_CQM_8_SIZE, "checkasm 8x8 CQM test table size must match scaling list size" );
 
     for( int i_cqm = 0; i_cqm < 6; i_cqm++ )
     {
@@ -2198,7 +2227,8 @@ static int check_quant( uint32_t cpu_ref, uint32_t cpu_new )
 
 #define INIT_QUANT8(j,max) \
         { \
-            static const int scale1d[8] = {32,31,24,31,32,31,24,31}; \
+            static const int scale1d[] = {32,31,24,31,32,31,24,31}; \
+            X264_STATIC_ASSERT( ARRAY_ELEMS(scale1d) == X264_CHECKASM_QUANT8_SCALE_SIZE, "checkasm 8x8 quant scale table size must match scale domain" ); \
             for( int i = 0; i < max; i++ ) \
             { \
                 int scale = (PIXEL_MAX*scale1d[(i>>3)&7]*scale1d[i&7])/16; \
@@ -2208,7 +2238,8 @@ static int check_quant( uint32_t cpu_ref, uint32_t cpu_new )
 
 #define INIT_QUANT4(j,max) \
         { \
-            static const int scale1d[4] = {4,6,4,6}; \
+            static const int scale1d[] = {4,6,4,6}; \
+            X264_STATIC_ASSERT( ARRAY_ELEMS(scale1d) == X264_CHECKASM_QUANT4_SCALE_SIZE, "checkasm 4x4 quant scale table size must match scale domain" ); \
             for( int i = 0; i < max; i++ ) \
             { \
                 int scale = PIXEL_MAX*scale1d[(i>>2)&3]*scale1d[i&3]; \
@@ -2452,7 +2483,9 @@ static int check_quant( uint32_t cpu_ref, uint32_t cpu_new )
         for( int i = 0; i < 100; i++ ) \
         { \
             static const int distrib[16] = {1,1,1,1,1,1,1,1,1,1,1,1,2,3,4};\
-            static const int zerorate_lut[4] = {3,7,15,31};\
+            X264_STATIC_ASSERT( ARRAY_ELEMS(distrib) == 16, "checkasm coefficient distribution table size must match random input domain" );\
+            static const int zerorate_lut[] = {3,7,15,31};\
+            X264_STATIC_ASSERT( ARRAY_ELEMS(zerorate_lut) == X264_CHECKASM_ZERORATE_SIZE, "checkasm zero-rate table size must match random input domain" );\
             int zero_rate = zerorate_lut[i&3];\
             for( int idx = 0; idx < w*w; idx++ ) \
             { \
@@ -2726,10 +2759,8 @@ static void run_cabac_terminal_##cpu( x264_t *h, uint8_t *dst )\
     for( int i = 0; i < 0x1000; i++ )\
         x264_cabac_encode_terminal_##cpu( &cb );\
 }
+#if HAVE_MMX || HAVE_AARCH64
 DECL_CABAC(c)
-#if HAVE_MMX
-DECL_CABAC(asm)
-#elif HAVE_AARCH64
 DECL_CABAC(asm)
 #else
 #define run_cabac_decision_asm run_cabac_decision_c
@@ -2771,7 +2802,8 @@ static int check_cabac( uint32_t cpu_ref, uint32_t cpu_new )
                 {\
                     ALIGNED_ARRAY_64( dctcoef, dct, [2],[64] );\
                     uint8_t bitstream[2][1<<16];\
-                    static const uint8_t ctx_ac[14] = {0,1,0,0,1,0,0,1,0,0,0,1,0,0};\
+                    static const uint8_t ctx_ac[] = {0,1,0,0,1,0,0,1,0,0,0,1,0,0};\
+                    X264_STATIC_ASSERT( ARRAY_ELEMS(ctx_ac) == X264_CHECKASM_CTX_AC_SIZE, "checkasm residual AC context table size must match residual category count" );\
                     int ac = ctx_ac[ctx_block_cat];\
                     int nz = 0;\
                     while( !nz )\
@@ -2825,6 +2857,7 @@ name##fail:
     CABAC_RESIDUAL( cabac_block_residual_8x8_rd, DCT_LUMA_8x8, DCT_LUMA_8x8, 1 )
     report( "cabac residual rd:" );
 
+#if HAVE_MMX || HAVE_AARCH64
     if( cpu_ref || run_cabac_decision_c == run_cabac_decision_asm )
         return ret;
     ok = 1; used_asm = 0;
@@ -2850,6 +2883,7 @@ name##fail:
     call_a( run_cabac_terminal_asm, &h, buf4 );
     ok = !memcmp( buf3, buf4, 0x1000 );
     report( "cabac terminal:" );
+#endif
 
     return ret;
 }

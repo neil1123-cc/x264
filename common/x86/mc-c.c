@@ -471,8 +471,9 @@ MC_COPY_WTAB(avx,mmx,sse,avx)
 MC_COPY_WTAB(sse,mmx,mmx,sse)
 #endif
 
+#define X264_X86_MC_WEIGHT_WIDTHS 6
 #define MC_WEIGHT_WTAB(function, instr, name1, name2, w12version)\
-static void (* mc_##function##_wtab_##instr[6])( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int ) =\
+static void (* mc_##function##_wtab_##instr[])( pixel *, intptr_t, pixel *, intptr_t, const x264_weight_t *, int ) =\
 {\
     x264_mc_##function##_w4_##name1,\
     x264_mc_##function##_w4_##name1,\
@@ -480,7 +481,8 @@ static void (* mc_##function##_wtab_##instr[6])( pixel *, intptr_t, pixel *, int
     x264_mc_##function##_w##w12version##_##instr,\
     x264_mc_##function##_w16_##instr,\
     x264_mc_##function##_w20_##instr,\
-};
+};\
+X264_STATIC_ASSERT( ARRAY_ELEMS(mc_##function##_wtab_##instr) == X264_X86_MC_WEIGHT_WIDTHS, "x86 MC weight function table size must match width classes" );
 
 #if HIGH_BIT_DEPTH
 MC_WEIGHT_WTAB(weight,mmx2,mmx2,mmx2,12)

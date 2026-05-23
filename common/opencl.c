@@ -49,6 +49,8 @@
         goto fail;\
 }
 
+#define X264_OPENCL_LOOKAHEAD_KERNELS 12
+
 /* load the library and functions we require from it */
 x264_opencl_function_t *x264_opencl_load_library( void )
 {
@@ -359,6 +361,8 @@ static int opencl_lookahead_alloc( x264_t *h )
         &h->opencl.mode_select_kernel,
         &h->opencl.rowsum_inter_kernel
     };
+    X264_STATIC_ASSERT( ARRAY_ELEMS(kernelnames) == X264_OPENCL_LOOKAHEAD_KERNELS, "OpenCL lookahead kernel name table size must match kernel handles" );
+    X264_STATIC_ASSERT( ARRAY_ELEMS(kernels) == X264_OPENCL_LOOKAHEAD_KERNELS, "OpenCL lookahead kernel handle table size must match kernel names" );
 
     x264_opencl_function_t *ocl = h->opencl.ocl;
     cl_int status;

@@ -53,13 +53,19 @@ enum
     PIXEL_2x2   = 11,
 };
 
-static const struct { uint8_t w, h; } x264_pixel_size[12] =
+#define X264_PIXEL_TYPE_COUNT (PIXEL_2x2+1)
+#define X264_LUMA_PIXEL_TYPE_COUNT (PIXEL_4x4+1)
+#define X264_CHROMA_FORMAT_COUNT 4
+#define X264_SIZE2PIXEL_DIM 5
+
+static const struct { uint8_t w, h; } x264_pixel_size[] =
 {
     { 16, 16 }, { 16, 8 }, { 8, 16 }, { 8, 8 }, { 8, 4 }, { 4, 8 }, { 4, 4 },
     {  4, 16 }, {  4, 2 }, { 2,  8 }, { 2, 4 }, { 2, 2 },
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_pixel_size) == X264_PIXEL_TYPE_COUNT, "pixel size table must match pixel type enum" );
 
-static const uint8_t x264_size2pixel[5][5] =
+static const uint8_t x264_size2pixel[][X264_SIZE2PIXEL_DIM] =
 {
     { 0, },
     { 0, PIXEL_4x4, PIXEL_8x4, 0, 0 },
@@ -67,14 +73,18 @@ static const uint8_t x264_size2pixel[5][5] =
     { 0, },
     { 0, 0,        PIXEL_8x16, 0, PIXEL_16x16 }
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_size2pixel) == X264_SIZE2PIXEL_DIM, "size-to-pixel table height must match size domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_size2pixel[0]) == X264_SIZE2PIXEL_DIM, "size-to-pixel table width must match size domain" );
 
-static const uint8_t x264_luma2chroma_pixel[4][7] =
+static const uint8_t x264_luma2chroma_pixel[][X264_LUMA_PIXEL_TYPE_COUNT] =
 {
     { 0 },
     { PIXEL_8x8,   PIXEL_8x4,  PIXEL_4x8,  PIXEL_4x4, PIXEL_4x2, PIXEL_2x4, PIXEL_2x2 }, /* 4:2:0 */
     { PIXEL_8x16,  PIXEL_8x8,  PIXEL_4x16, PIXEL_4x8, PIXEL_4x4, PIXEL_2x8, PIXEL_2x4 }, /* 4:2:2 */
     { PIXEL_16x16, PIXEL_16x8, PIXEL_8x16, PIXEL_8x8, PIXEL_8x4, PIXEL_4x8, PIXEL_4x4 }, /* 4:4:4 */
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_luma2chroma_pixel) == X264_CHROMA_FORMAT_COUNT, "luma-to-chroma pixel table size must match chroma format count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_luma2chroma_pixel[0]) == X264_LUMA_PIXEL_TYPE_COUNT, "luma-to-chroma pixel table width must match luma pixel type count" );
 
 typedef struct
 {
@@ -147,6 +157,28 @@ typedef struct
     int (*intra_sa8d_x9_8x8) ( pixel *fenc, pixel *fdec, pixel edge[36], uint16_t *bitcosts, uint16_t *satds );
     int (*intra_sad_x9_8x8)  ( pixel *fenc, pixel *fdec, pixel edge[36], uint16_t *bitcosts, uint16_t *satds );
 } x264_pixel_function_t;
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_pixel_function_t*)0)->sad) == 8, "pixel SAD table size must match pixel type domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_pixel_function_t*)0)->ssd) == 8, "pixel SSD table size must match pixel type domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_pixel_function_t*)0)->nssd) == 8, "pixel NSSD table size must match pixel type domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_pixel_function_t*)0)->satd) == 8, "pixel SATD table size must match pixel type domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_pixel_function_t*)0)->ssim) == 7, "pixel SSIM table size must match luma pixel type domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_pixel_function_t*)0)->sa8d) == 4, "pixel SA8D table size must match square block domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_pixel_function_t*)0)->rdcmp) == 8, "pixel RD compare table size must match pixel type domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_pixel_function_t*)0)->mbcmp) == 8, "pixel MB compare table size must match pixel type domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_pixel_function_t*)0)->mbcmp_unaligned) == 8, "unaligned pixel MB compare table size must match pixel type domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_pixel_function_t*)0)->fpelcmp) == 8, "fullpel compare table size must match pixel type domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_pixel_function_t*)0)->fpelcmp_x3) == 7, "fullpel x3 compare table size must match luma pixel type domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_pixel_function_t*)0)->fpelcmp_x4) == 7, "fullpel x4 compare table size must match luma pixel type domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_pixel_function_t*)0)->sad_aligned) == 8, "aligned SAD table size must match pixel type domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_pixel_function_t*)0)->var) == 4, "pixel variance table size must match square block domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_pixel_function_t*)0)->var2) == 4, "pixel variance-pair table size must match square block domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_pixel_function_t*)0)->hadamard_ac) == 4, "pixel hadamard AC table size must match square block domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_pixel_function_t*)0)->sad_x3) == 7, "SAD x3 table size must match luma pixel type domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_pixel_function_t*)0)->sad_x4) == 7, "SAD x4 table size must match luma pixel type domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_pixel_function_t*)0)->satd_x3) == 7, "SATD x3 table size must match luma pixel type domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_pixel_function_t*)0)->satd_x4) == 7, "SATD x4 table size must match luma pixel type domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_pixel_function_t*)0)->ads) == 7, "ADS table size must match luma pixel type domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_pixel_function_t*)0)->pixel_count) == 4, "pixel count table size must match square block domain" );
 
 #define x264_pixel_init x264_template(pixel_init)
 void x264_pixel_init( uint32_t cpu, x264_pixel_function_t *pixf );

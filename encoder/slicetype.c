@@ -30,7 +30,11 @@
 #include "me.h"
 
 // Indexed by pic_struct values
-static const uint8_t delta_tfi_divisor[10] = { 0, 2, 1, 1, 2, 2, 3, 3, 4, 6 };
+#define X264_DELTA_TFI_DIVISOR_COUNT 10
+#define X264_WEIGHT_CHECK_DISTANCE_COUNT 12
+#define X264_WEIGHT_CHECK_DISTANCE_COMPONENTS 2
+static const uint8_t delta_tfi_divisor[] = { 0, 2, 1, 1, 2, 2, 3, 3, 4, 6 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(delta_tfi_divisor) == X264_DELTA_TFI_DIVISOR_COUNT, "delta TFI divisor table size must match pic_struct domain" );
 
 static int slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
                                  x264_frame_t **frames, int p0, int p1, int b );
@@ -343,7 +347,7 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
         if( plane )
         {
             weights[plane].i_denom = chroma_denom;
-            weights[plane].i_scale = x264_clip3( round( guess_scale[plane] * (1<<chroma_denom) ), 0, 255 );
+            weights[plane].i_scale = x264_clip3( roundf( guess_scale[plane] * (1<<chroma_denom) ), 0, 255 );
             if( weights[plane].i_scale > 127 )
             {
                 weights[1].weightfn = weights[2].weightfn = NULL;
@@ -351,7 +355,7 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
             }
         }
         else
-            weight_get_h264( round( guess_scale[plane] * 128 ), 0, &weights[plane] );
+            weight_get_h264( roundf( guess_scale[plane] * 128.0f ), 0, &weights[plane] );
 
         found = 0;
         mindenom = weights[plane].i_denom;
@@ -392,12 +396,14 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
             continue;
 
         /* Picked somewhat arbitrarily */
-        static const uint8_t weight_check_distance[][2] =
+        static const uint8_t weight_check_distance[][X264_WEIGHT_CHECK_DISTANCE_COMPONENTS] =
         {
             {0,0},{0,0},{0,1},{0,1},
             {0,1},{0,1},{0,1},{1,1},
             {1,1},{2,1},{2,1},{4,2}
         };
+        X264_STATIC_ASSERT( ARRAY_ELEMS(weight_check_distance) == X264_WEIGHT_CHECK_DISTANCE_COUNT, "weight check distance table size must match subpel refine range" );
+        X264_STATIC_ASSERT( ARRAY_ELEMS(weight_check_distance[0]) == X264_WEIGHT_CHECK_DISTANCE_COMPONENTS, "weight check distance table width must match scale and offset components" );
         int scale_dist =  b_lookahead ? 0 : weight_check_distance[h->param.analyse.i_subpel_refine][0];
         int offset_dist = b_lookahead ? 0 : weight_check_distance[h->param.analyse.i_subpel_refine][1];
 
@@ -1028,10 +1034,10 @@ static int slicetype_frame_cost_recalculate( x264_t *h, x264_frame_t **frames, i
 
 static void macroblock_tree_finish( x264_t *h, x264_frame_t *frame, float average_duration, int ref0_distance )
 {
-    int fps_factor = round( CLIP_DURATION(average_duration) / CLIP_DURATION(frame->f_duration) * 256 / MBTREE_PRECISION );
-    float weightdelta = 0.0;
+    int fps_factor = roundf( CLIP_DURATION(average_duration) / CLIP_DURATION(frame->f_duration) * 256.0f / MBTREE_PRECISION );
+    float weightdelta = 0.0f;
     if( ref0_distance && frame->f_weighted_cost_delta[ref0_distance-1] > 0 )
-        weightdelta = (1.0 - frame->f_weighted_cost_delta[ref0_distance-1]) * 10.0f * h->param.rc.f_fade_compensate;
+        weightdelta = (1.0f - frame->f_weighted_cost_delta[ref0_distance-1]) * 10.0f * h->param.rc.f_fade_compensate;
 
     /* Allow the strength to be adjusted via qcompress, since the two
      * concepts are very similar. */
@@ -1395,9 +1401,9 @@ static int scenecut_internal( x264_t *h, x264_mb_analysis_t *a, x264_frame_t **f
     int pcost = frame->i_cost_est[p1-p0][0];
     float f_bias;
     int i_gop_size = frame->i_frame - h->lookahead->i_last_keyframe;
-    float f_thresh_max = h->param.i_scenecut_threshold / 100.0;
+    float f_thresh_max = h->param.i_scenecut_threshold / 100.0f;
     /* magic numbers pulled out of thin air */
-    float f_thresh_min = f_thresh_max * 0.25;
+    float f_thresh_min = f_thresh_max * 0.25f;
     int res;
 
     if( h->param.i_keyint_min == h->param.i_keyint_max )

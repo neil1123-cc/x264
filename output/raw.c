@@ -25,6 +25,15 @@
  *****************************************************************************/
 
 #include "output.h"
+#include <limits.h>
+
+static int add_payload_size( int *dst, int payload )
+{
+    if( payload < 0 || *dst > INT_MAX - payload )
+        return -1;
+    *dst += payload;
+    return 0;
+}
 
 static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt, hnd_t audio_filters, char *audio_enc, char *audio_params )
 {
@@ -46,16 +55,21 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
 
 static int write_headers( hnd_t handle, x264_nal_t *p_nal )
 {
-    int size = p_nal[0].i_payload + p_nal[1].i_payload + p_nal[2].i_payload;
+    int size = 0;
 
-    if( fwrite( p_nal[0].p_payload, size, 1, (FILE*)handle ) )
+    if( handle && p_nal &&
+        !add_payload_size( &size, p_nal[0].i_payload ) &&
+        !add_payload_size( &size, p_nal[1].i_payload ) &&
+        !add_payload_size( &size, p_nal[2].i_payload ) &&
+        (!size || p_nal[0].p_payload) &&
+        fwrite( p_nal[0].p_payload, (size_t)size, 1, (FILE*)handle ) )
         return size;
     return -1;
 }
 
 static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_t *p_picture )
 {
-    if( fwrite( p_nalu, i_size, 1, (FILE*)handle ) )
+    if( handle && i_size >= 0 && (!i_size || p_nalu) && fwrite( p_nalu, (size_t)i_size, 1, (FILE*)handle ) )
         return i_size;
     return -1;
 }

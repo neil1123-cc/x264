@@ -54,6 +54,11 @@ typedef struct
     int cost;           /* satd + lambda * nbits */
     ALIGNED_8( int16_t mv[2] );
 } ALIGNED_64( x264_me_t );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_me_t*)0)->p_fref) == 12, "ME reference plane count must match subpel filter variants" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_me_t*)0)->p_fenc) == 3, "ME fenc plane count must match color planes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_me_t*)0)->i_stride) == 3, "ME stride count must match color planes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_me_t*)0)->mvp) == 2, "ME predictor vector size must match motion vector components" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_me_t*)0)->mv) == 2, "ME motion vector size must match motion vector components" );
 
 #define x264_me_search_ref x264_template(me_search_ref)
 void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, int *p_fullpel_thresh );

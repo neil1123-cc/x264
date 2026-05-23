@@ -70,6 +70,12 @@
 #define va_copy(dst, src) ((dst) = (src))
 #endif
 
+#if defined(__GNUC__)
+#define X264_FORMAT_PRINTF(fmt, arg) __attribute__((format(printf, fmt, arg)))
+#else
+#define X264_FORMAT_PRINTF(fmt, arg)
+#endif
+
 #if !defined(isfinite) && (SYS_OPENBSD || SYS_SunOS)
 #define isfinite finite
 #endif
@@ -206,6 +212,7 @@ static inline int x264_stat( const char *path, x264_struct_stat *buf )
 X264_API int64_t x264_mdate( void );
 
 #if defined(_WIN32) && !HAVE_WINRT
+static inline int x264_vfprintf( FILE *stream, const char *format, va_list arg ) X264_FORMAT_PRINTF( 2, 0 );
 static inline int x264_vfprintf( FILE *stream, const char *format, va_list arg )
 {
     HANDLE console = NULL;
@@ -277,6 +284,14 @@ static inline int x264_is_regular_file( FILE *filehandle )
 
 #define x264_glue3_expand(x,y,z) x##_##y##_##z
 #define x264_glue3(x,y,z) x264_glue3_expand(x,y,z)
+
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#define X264_STATIC_ASSERT( cond, msg ) _Static_assert( cond, msg )
+#elif defined(__COUNTER__)
+#define X264_STATIC_ASSERT( cond, msg ) enum { x264_glue3(x264_static_assert,__COUNTER__,e) = 1 / (!!(cond)) }
+#else
+#define X264_STATIC_ASSERT( cond, msg ) enum { x264_glue3(x264_static_assert,__LINE__,e) = 1 / (!!(cond)) }
+#endif
 
 #ifdef _MSC_VER
 #define DECLARE_ALIGNED( var, n ) __declspec(align(n)) var
@@ -500,9 +515,11 @@ static ALWAYS_INLINE uint16_t endian_fix16( uint16_t x )
 #endif
 
 /* For values with 4 bits or less. */
+#define X264_CTZ_4BIT_LUT_SIZE 16
 static ALWAYS_INLINE int x264_ctz_4bit( uint32_t x )
 {
-    static uint8_t lut[16] = {4,0,1,0,2,0,1,0,3,0,1,0,2,0,1,0};
+    static const uint8_t lut[] = {4,0,1,0,2,0,1,0,3,0,1,0,2,0,1,0};
+    X264_STATIC_ASSERT( (int)(sizeof(lut) / sizeof(lut[0])) == X264_CTZ_4BIT_LUT_SIZE, "ctz 4-bit LUT size must match nibble input domain" );
     return lut[x];
 }
 

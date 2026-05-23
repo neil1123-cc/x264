@@ -46,7 +46,7 @@ void flv_put_be32( flv_buffer *c, uint32_t val )
     flv_put_byte( c, val );
 }
 
-void flv_put_be64( flv_buffer *c, uint64_t val )
+static void flv_put_be64( flv_buffer *c, uint64_t val )
 {
     flv_put_be32( c, val >> 32 );
     flv_put_be32( c, val );
@@ -72,9 +72,10 @@ void flv_put_tag( flv_buffer *c, const char *tag )
 
 void flv_put_amf_string( flv_buffer *c, const char *str )
 {
-    uint16_t len = strlen( str );
-    flv_put_be16( c, len );
-    flv_append_data( c, (uint8_t*)str, len );
+    size_t len = strlen( str );
+    uint16_t amf_len = (uint16_t)len;
+    flv_put_be16( c, amf_len );
+    flv_append_data( c, (uint8_t*)str, amf_len );
 }
 
 void flv_put_amf_double( flv_buffer *c, double d )
@@ -112,6 +113,8 @@ flv_buffer *flv_create_writer( const char *filename )
 
 int flv_append_data( flv_buffer *c, uint8_t *data, unsigned size )
 {
+    if( size > UINT_MAX - c->d_cur )
+        return -1;
     unsigned ns = c->d_cur + size;
 
     if( ns > c->d_max )
@@ -119,7 +122,11 @@ int flv_append_data( flv_buffer *c, uint8_t *data, unsigned size )
         void *dp;
         unsigned dn = 16;
         while( ns > dn )
+        {
+            if( dn > UINT_MAX / 2 )
+                return -1;
             dn <<= 1;
+        }
 
         dp = realloc( c->data, dn );
         if( !dp )

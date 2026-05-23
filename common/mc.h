@@ -243,6 +243,8 @@ typedef struct x264_weight_t
     int32_t i_offset;
     weight_fn_t *weightfn;
 } ALIGNED_16( x264_weight_t );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_weight_t*)0)->cachea) == 8, "weight cache A size must match weight-cache loop width" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_weight_t*)0)->cacheb) == 8, "weight cache B size must match weight-cache loop width" );
 
 #define x264_weight_none ((const x264_weight_t*)x264_zero)
 
@@ -338,6 +340,8 @@ typedef struct
     void (*mbtree_fix8_pack)( uint16_t *dst, float *src, int count );
     void (*mbtree_fix8_unpack)( float *dst, uint16_t *src, int count );
 } x264_mc_functions_t;
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mc_functions_t*)0)->avg) == 12, "MC avg dispatch count must match pixel partition domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mc_functions_t*)0)->copy) == 7, "MC copy dispatch count must match pixel partition domain" );
 
 #define x264_mc_init x264_template(mc_init)
 void x264_mc_init( uint32_t cpu, x264_mc_functions_t *pf, int cpu_independent );

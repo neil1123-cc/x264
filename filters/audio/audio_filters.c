@@ -7,7 +7,7 @@ audio_info_t *x264_af_get_info( hnd_t handle )
     return &((audio_hnd_t*)handle)->info;
 }
 
-audio_filter_t *x264_af_get_filter( char *name )
+audio_filter_t *x264_af_get_filter( const char *name )
 {
 #if HAVE_AUDIO
 #define CHECK( filter )                                 \

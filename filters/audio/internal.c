@@ -2,21 +2,61 @@
 #include <stdint.h>
 #include <math.h>
 
+static int x264_af_mul_size( size_t a, size_t b, size_t *out )
+{
+    if( b && a > SIZE_MAX / b )
+        return -1;
+    *out = a * b;
+    return 0;
+}
+
+static int x264_af_buffer_size( unsigned channels, unsigned samplecount, size_t elem_size, size_t *size )
+{
+    size_t samples;
+    if( x264_af_mul_size( channels, samplecount, &samples ) || x264_af_mul_size( samples, elem_size, size ) )
+        return -1;
+    return 0;
+}
+
 float **x264_af_get_buffer( unsigned channels, unsigned samplecount )
 {
-    float **samples = malloc( sizeof( float* ) * channels );
-    for( int i = 0; i < channels; i++ ) {
-        samples[i] = malloc( sizeof( float ) * samplecount );
+    size_t sample_size;
+    size_t channels_size;
+    if( x264_af_mul_size( channels, sizeof(float*), &channels_size ) ||
+        x264_af_mul_size( samplecount, sizeof(float), &sample_size ) )
+        return NULL;
+    float **samples = malloc( channels_size );
+    if( !samples && channels_size )
+        return NULL;
+    for( unsigned i = 0; i < channels; i++ )
+    {
+        samples[i] = sample_size ? malloc( sample_size ) : NULL;
+        if( !samples[i] && sample_size )
+        {
+            x264_af_free_buffer( samples, i );
+            return NULL;
+        }
     }
     return samples;
 }
 
 int x264_af_resize_buffer( float **buffer, unsigned channels, unsigned samplecount )
 {
-    for( int c = 0; c < channels; c++ )
+    size_t sample_size;
+    if( x264_af_mul_size( samplecount, sizeof(float), &sample_size ) )
+        return -1;
+    for( unsigned c = 0; c < channels; c++ )
     {
-        if( !(buffer[c] = realloc( buffer[c], sizeof( float ) * samplecount )) )
+        if( !sample_size )
+        {
+            free( buffer[c] );
+            buffer[c] = NULL;
+            continue;
+        }
+        void *p = realloc( buffer[c], sample_size );
+        if( !p )
             return -1;
+        buffer[c] = p;
     }
     return 0;
 }
@@ -25,8 +65,8 @@ int x264_af_resize_fill_buffer( float **buffer, unsigned out_samplecount, unsign
 {
     if( x264_af_resize_buffer( buffer, channels, out_samplecount ) )
         return -1;
-    for( int c = 0; c < channels; c++ )
-        for( int s = in_samplecount; s < out_samplecount; s++ )
+    for( unsigned c = 0; c < channels; c++ )
+        for( unsigned s = in_samplecount; s < out_samplecount; s++ )
             buffer[c][s] = value;
     return 0;
 }
@@ -34,8 +74,10 @@ int x264_af_resize_fill_buffer( float **buffer, unsigned out_samplecount, unsign
 float **x264_af_dup_buffer( float **buffer, unsigned channels, unsigned samplecount )
 {
     float **buf = x264_af_get_buffer( channels, samplecount );
-    for( int c = 0; c < channels; c++ )
-        memcpy( buf[c], buffer[c], samplecount );
+    if( !buf )
+        return NULL;
+    for( unsigned c = 0; c < channels; c++ )
+        memcpy( buf[c], buffer[c], sizeof(float) * (size_t)samplecount );
     return buf;
 }
 
@@ -43,17 +85,19 @@ void x264_af_free_buffer( float **buffer, unsigned channels )
 {
     if( !buffer )
         return;
-    for( int c = 0; c < channels; c++ )
+    for( unsigned c = 0; c < channels; c++ )
         free( buffer[c] );
     free( buffer );
 }
 
 int x264_af_cat_buffer( float **buf, unsigned bufsamples, float **in, unsigned insamples, unsigned channels )
 {
+    if( bufsamples > UINT_MAX - insamples )
+        return -1;
     if( x264_af_resize_buffer( buf, channels, bufsamples + insamples ) < 0 )
         return -1;
-    for( int c = 0; c < channels; c++ )
-        for( int s = 0; s < insamples; s++ )
+    for( unsigned c = 0; c < channels; c++ )
+        for( unsigned s = 0; s < insamples; s++ )
             buf[c][bufsamples+s] = in[c][s];
     return 0;
 }
@@ -73,17 +117,24 @@ static inline int x264_interleaved_format(int fmt)
 float **x264_af_deinterleave ( float *samples, unsigned channels, unsigned samplecount )
 {
     float **deint = x264_af_get_buffer( channels, samplecount );
-    for( int s = 0; s < samplecount; s++ )
-        for( int c = 0; c < channels; c++ )
+    if( !deint )
+        return NULL;
+    for( unsigned s = 0; s < samplecount; s++ )
+        for( unsigned c = 0; c < channels; c++ )
             deint[c][s] = samples[s*channels + c];
     return deint;
 }
 
 float *x264_af_interleave ( float **in, unsigned channels, unsigned samplecount )
 {
-    float *inter = malloc( sizeof( float ) * channels * samplecount );
-    for( int c = 0; c < channels; c++ )
-        for( int s = 0; s < samplecount; s++ )
+    size_t size;
+    if( x264_af_buffer_size( channels, samplecount, sizeof(float), &size ) )
+        return NULL;
+    float *inter = size ? malloc( size ) : NULL;
+    if( !inter && size )
+        return NULL;
+    for( unsigned c = 0; c < channels; c++ )
+        for( unsigned s = 0; s < samplecount; s++ )
             inter[s*channels + c] = in[c][s];
     return inter;
 }
@@ -91,6 +142,8 @@ float *x264_af_interleave ( float **in, unsigned channels, unsigned samplecount 
 float **x264_af_deinterleave2( uint8_t *samples, enum SampleFmt fmt, unsigned channels, unsigned samplecount )
 {
     float  *in  = (float*) x264_af_convert( SMPFMT_FLT, samples, fmt, channels, samplecount );
+    if( !in )
+        return NULL;
     float **out;
 
     if (x264_is_interleaved_format(fmt))
@@ -98,6 +151,11 @@ float **x264_af_deinterleave2( uint8_t *samples, enum SampleFmt fmt, unsigned ch
     else {
         unsigned i, j;
         out = x264_af_get_buffer( channels, samplecount );
+        if( !out )
+        {
+            free( in );
+            return NULL;
+        }
         for (i = 0; i < channels; ++i) {
             float *base = &in[i * samplecount];
             for (j = 0; j < samplecount; ++j)
@@ -111,6 +169,8 @@ float **x264_af_deinterleave2( uint8_t *samples, enum SampleFmt fmt, unsigned ch
 uint8_t *x264_af_interleave2( enum SampleFmt outfmt, float **in, unsigned channels, unsigned samplecount )
 {
     float   *tmp = x264_af_interleave( in, channels, samplecount );
+    if( !tmp )
+        return NULL;
     uint8_t *out = x264_af_convert( outfmt, (uint8_t*) tmp, SMPFMT_FLT, channels, samplecount );
     free( tmp );
     return out;
@@ -119,11 +179,15 @@ uint8_t *x264_af_interleave2( enum SampleFmt outfmt, float **in, unsigned channe
 uint8_t *x264_af_interleave3( enum SampleFmt outfmt, float **in, unsigned channels, unsigned samplecount, int *map )
 {
     void *map_tmp[8];
-    for( int i=0; i<channels; i++ )
+    if( channels > ARRAY_ELEMS(map_tmp) )
+        return NULL;
+    for( unsigned i = 0; i < channels; i++ )
         map_tmp[i] = in[i];
-    for( int i=0; i<channels; i++ )
+    for( unsigned i = 0; i < channels; i++ )
         in[i] = map_tmp[map[i]];
     float   *tmp = x264_af_interleave( in, channels, samplecount );
+    if( !tmp )
+        return NULL;
     uint8_t *out = x264_af_convert( outfmt, (uint8_t*) tmp, SMPFMT_FLT, channels, samplecount );
     free( tmp );
     return out;
@@ -163,10 +227,13 @@ CLIPFUN( 32, int32_t, INT32_MIN, INT32_MAX )
 
 uint8_t *x264_af_convert( enum SampleFmt outfmt, uint8_t *in, enum SampleFmt fmt, unsigned channels, unsigned samplecount )
 {
-    int totalsamples = channels * samplecount;
-    int sz = samplesize( outfmt ) * totalsamples;
-    uint8_t *out = malloc( sz );
-    if( !out )
+    size_t totalsamples;
+    size_t sz;
+    if( x264_af_buffer_size( channels, samplecount, samplesize( outfmt ), &sz ) ||
+        x264_af_mul_size( channels, samplecount, &totalsamples ) )
+        return NULL;
+    uint8_t *out = sz ? malloc( sz ) : NULL;
+    if( !out && sz )
         return NULL;
 
     fmt = x264_interleaved_format(fmt);
@@ -180,7 +247,7 @@ uint8_t *x264_af_convert( enum SampleFmt outfmt, uint8_t *in, enum SampleFmt fmt
 
 #define CONVERT( ifmt, ofmt, otype, expr )                  \
     if( ifmt == fmt && ofmt == outfmt ) {                   \
-        for( int i = 0; i < totalsamples; i++ )             \
+        for( size_t i = 0; i < totalsamples; i++ )          \
         {                                                   \
             ((otype*)out)[i] = (otype)expr;                 \
         }                                                   \

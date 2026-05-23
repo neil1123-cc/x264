@@ -29,9 +29,15 @@
 
 #define bs_write_ue bs_write_ue_big
 
+#define X264_CLOCK_TS_PIC_STRUCT_COUNT 10
+#define X264_UUID_SIZE 16
+#define X264_AVCINTRA_UUID_SIZE X264_UUID_SIZE
+
 // Indexed by pic_struct values
-static const uint8_t num_clock_ts[10] = { 0, 1, 1, 1, 2, 2, 3, 3, 2, 3 };
+static const uint8_t num_clock_ts[] = { 0, 1, 1, 1, 2, 2, 3, 3, 2, 3 };
 static const uint8_t avcintra_uuid[] = {0xF7, 0x49, 0x3E, 0xB3, 0xD4, 0x00, 0x47, 0x96, 0x86, 0x86, 0xC9, 0x70, 0x7B, 0x64, 0x37, 0x2A};
+X264_STATIC_ASSERT( ARRAY_ELEMS(num_clock_ts) == X264_CLOCK_TS_PIC_STRUCT_COUNT, "clock timestamp table size must match pic_struct domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(avcintra_uuid) == X264_AVCINTRA_UUID_SIZE, "AVC-Intra UUID size must match UUID byte count" );
 
 static void transpose( uint8_t *buf, int w )
 {
@@ -595,11 +601,12 @@ void x264_sei_recovery_point_write( x264_t *h, bs_t *s, int recovery_frame_cnt )
 int x264_sei_version_write( x264_t *h, bs_t *s )
 {
     // random ID number generated according to ISO-11578
-    static const uint8_t uuid[16] =
+    static const uint8_t uuid[] =
     {
         0xdc, 0x45, 0xe9, 0xbd, 0xe6, 0xd9, 0x48, 0xb7,
         0x96, 0x2c, 0xd8, 0x20, 0xd9, 0x23, 0xee, 0xef
     };
+    X264_STATIC_ASSERT( ARRAY_ELEMS(uuid) == X264_UUID_SIZE, "SEI user data UUID size must match UUID byte count" );
     char *opts = x264_param2string( &h->param, 0 );
     char *payload;
     int offset = 16;

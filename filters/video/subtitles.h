@@ -68,4 +68,5 @@ extern csri_render_t csri_render;
 extern csri_close_t csri_close;
 #define subtitles_close csri_close
 
+int add_sub(char *filename);
 void* subtitles_new_renderer(const csri_fmt *fmt, uint32_t sarw, uint32_t sarh);

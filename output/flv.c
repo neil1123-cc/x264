@@ -102,7 +102,8 @@ static int audio_init( hnd_t handle, hnd_t filters, char *audio_enc, char *audio
         const audio_encoder_t *encoder = x264_select_audio_encoder( audio_enc, (char*[]){ "mp3", "aac", "raw", NULL }, &used_enc );
         FAIL_IF_ERR( !encoder, "flv", "unable to select audio encoder\n" );
 
-        snprintf( audio_params, MAX_ARGS, "%s,codec=%s", audio_parameters, used_enc );
+        int audio_params_len = snprintf( audio_params, sizeof(audio_params), "%s,codec=%s", audio_parameters, used_enc );
+        FAIL_IF_ERR( audio_params_len < 0 || (size_t)audio_params_len >= sizeof(audio_params), "flv", "audio encoder parameters are too long\n" );
         henc = x264_audio_encoder_open( encoder, filters, audio_params );
     }
     FAIL_IF_ERR( !henc, "flv", "error opening audio encoder\n" );
@@ -409,6 +410,9 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
 
         uint8_t *extradata;
         uint32_t extradata_size;
+#if HAVE_LSMASH
+        lsmash_codec_specific_t *conv = NULL;
+#endif
         if( a_flv->info->extradata_type == EXTRADATA_TYPE_LIBAVCODEC )
         {
             extradata = a_flv->info->extradata;
@@ -429,14 +433,13 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
 
             assert( orig->format == LSMASH_CODEC_SPECIFIC_FORMAT_UNSTRUCTURED );
 
-            lsmash_codec_specific_t *conv = lsmash_convert_codec_specific_format( orig, LSMASH_CODEC_SPECIFIC_FORMAT_STRUCTURED );
+            conv = lsmash_convert_codec_specific_format( orig, LSMASH_CODEC_SPECIFIC_FORMAT_STRUCTURED );
             FAIL_IF_ERR( !conv, "flv", "failed to convert format of AAC specific info.\n" );
 
             lsmash_mp4sys_decoder_parameters_t *param = (lsmash_mp4sys_decoder_parameters_t *)conv->data.structured;
             assert( param->objectTypeIndication == MP4SYS_OBJECT_TYPE_Audio_ISO_14496_3 );
 
             int err = lsmash_get_mp4sys_decoder_specific_info( param, &extradata, &extradata_size );
-            lsmash_destroy_codec_specific_data( conv );
             FAIL_IF_ERR( err, "flv", "failed to get AAC specific info.\n" );
         }
 #endif
@@ -447,15 +450,19 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
         }
 
         flv_put_byte( c, FLV_TAG_TYPE_AUDIO );
-        flv_put_be24( c, 2 + a_flv->info->extradata_size );
+        flv_put_be24( c, 2 + extradata_size );
         flv_put_be24( c, 0 );
         flv_put_byte( c, 0 );
         flv_put_be24( c, 0 );
 
         flv_put_byte( c, a_flv->header );
         flv_put_byte( c, 0 );
-        flv_append_data( c, a_flv->info->extradata, a_flv->info->extradata_size );
-        flv_put_be32( c, 11 + 2 + a_flv->info->extradata_size );
+        flv_append_data( c, extradata, extradata_size );
+        flv_put_be32( c, 11 + 2 + extradata_size );
+#if HAVE_LSMASH
+        if( conv )
+            lsmash_destroy_codec_specific_data( conv );
+#endif
     }
 #endif
 

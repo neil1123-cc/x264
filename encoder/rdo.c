@@ -72,11 +72,20 @@ static uint16_t cabac_size_5ones[128];
         sizeof(int) + (CHROMA444 ? 1024+12 : 460) )
 #define COPY_CABAC_PART( pos, size ) memcpy( &cb->state[pos], &h->cabac.state[pos], size )
 
+#define X264_RDO_HADAMARD_CACHE_SIZES 4
+#define X264_RDO_SATD_CACHE_SIZES 3
+#define X264_RDO_ZIGZAG_2X2_SIZE 4
+#define X264_RDO_ZIGZAG_2X4_SIZE 8
+#define X264_RDO_CTX_BLOCK_CAT_COUNT 14
+
 static ALWAYS_INLINE uint64_t cached_hadamard( x264_t *h, int size, int x, int y )
 {
-    static const uint8_t hadamard_shift_x[4] = {4,   4,   3,   3};
-    static const uint8_t hadamard_shift_y[4] = {4-0, 3-0, 4-1, 3-1};
-    static const uint8_t  hadamard_offset[4] = {0,   1,   3,   5};
+    static const uint8_t hadamard_shift_x[] = {4,   4,   3,   3};
+    static const uint8_t hadamard_shift_y[] = {4-0, 3-0, 4-1, 3-1};
+    static const uint8_t  hadamard_offset[] = {0,   1,   3,   5};
+    X264_STATIC_ASSERT( ARRAY_ELEMS(hadamard_shift_x) == X264_RDO_HADAMARD_CACHE_SIZES, "RDO hadamard X shift table size must match cache size domain" );
+    X264_STATIC_ASSERT( ARRAY_ELEMS(hadamard_shift_y) == X264_RDO_HADAMARD_CACHE_SIZES, "RDO hadamard Y shift table size must match cache size domain" );
+    X264_STATIC_ASSERT( ARRAY_ELEMS(hadamard_offset) == X264_RDO_HADAMARD_CACHE_SIZES, "RDO hadamard offset table size must match cache size domain" );
     int cache_index = (x >> hadamard_shift_x[size]) + (y >> hadamard_shift_y[size])
                     + hadamard_offset[size];
     uint64_t res = h->mb.pic.fenc_hadamard_cache[cache_index];
@@ -93,9 +102,12 @@ static ALWAYS_INLINE uint64_t cached_hadamard( x264_t *h, int size, int x, int y
 
 static ALWAYS_INLINE int cached_satd( x264_t *h, int size, int x, int y )
 {
-    static const uint8_t satd_shift_x[3] = {3,   2,   2};
-    static const uint8_t satd_shift_y[3] = {2-1, 3-2, 2-2};
-    static const uint8_t  satd_offset[3] = {0,   8,   16};
+    static const uint8_t satd_shift_x[] = {3,   2,   2};
+    static const uint8_t satd_shift_y[] = {2-1, 3-2, 2-2};
+    static const uint8_t  satd_offset[] = {0,   8,   16};
+    X264_STATIC_ASSERT( ARRAY_ELEMS(satd_shift_x) == X264_RDO_SATD_CACHE_SIZES, "RDO SATD X shift table size must match cache size domain" );
+    X264_STATIC_ASSERT( ARRAY_ELEMS(satd_shift_y) == X264_RDO_SATD_CACHE_SIZES, "RDO SATD Y shift table size must match cache size domain" );
+    X264_STATIC_ASSERT( ARRAY_ELEMS(satd_offset) == X264_RDO_SATD_CACHE_SIZES, "RDO SATD offset table size must match cache size domain" );
     int cache_index = (x >> satd_shift_x[size - PIXEL_8x4]) + (y >> satd_shift_y[size - PIXEL_8x4])
                     + satd_offset[size - PIXEL_8x4];
     int res = h->mb.pic.fenc_satd_cache[cache_index];
@@ -493,9 +505,9 @@ int trellis_dc_shortcut( int sign_coef, int quant_coef, int unquant_mf, int coef
 // encode one value of one coef in one context
 static ALWAYS_INLINE
 int trellis_coef( int j, int const_level, int abs_level, int prefix, int suffix_cost,
-                  int node_ctx, int level1_ctx, int levelgt1_ctx, uint64_t ssd, int cost_siglast[3],
-                  trellis_node_t *nodes_cur, trellis_node_t *nodes_prev,
-                  trellis_level_t *level_tree, int levels_used, int lambda2, uint8_t *level_state )
+                  int node_ctx, int level1_ctx, int levelgt1_ctx, uint64_t ssd, int cost_siglast[restrict 3],
+                  trellis_node_t *restrict nodes_cur, trellis_node_t *restrict nodes_prev,
+                  trellis_level_t *restrict level_tree, int levels_used, int lambda2, uint8_t *restrict level_state )
 {
     uint64_t score = nodes_prev[j].score + ssd;
     /* code the proposed level, and count how much entropy it would take */
@@ -535,8 +547,8 @@ int trellis_coef( int j, int const_level, int abs_level, int prefix, int suffix_
 // in ctx_hi, they're contiguous within each block of 4 ctxs, but not necessarily starting at the beginning,
 // so exploiting that would be more complicated.
 static NOINLINE
-int trellis_coef0_0( uint64_t ssd0, trellis_node_t *nodes_cur, trellis_node_t *nodes_prev,
-                     trellis_level_t *level_tree, int levels_used )
+int trellis_coef0_0( uint64_t ssd0, trellis_node_t *restrict nodes_cur, trellis_node_t *restrict nodes_prev,
+                     trellis_level_t *restrict level_tree, int levels_used )
 {
     nodes_cur[0].score = nodes_prev[0].score + ssd0;
     nodes_cur[0].level_idx = nodes_prev[0].level_idx;
@@ -551,8 +563,8 @@ int trellis_coef0_0( uint64_t ssd0, trellis_node_t *nodes_cur, trellis_node_t *n
 }
 
 static NOINLINE
-int trellis_coef0_1( uint64_t ssd0, trellis_node_t *nodes_cur, trellis_node_t *nodes_prev,
-                     trellis_level_t *level_tree, int levels_used )
+int trellis_coef0_1( uint64_t ssd0, trellis_node_t *restrict nodes_cur, trellis_node_t *restrict nodes_prev,
+                     trellis_level_t *restrict level_tree, int levels_used )
 {
     for( int j = 1; j < 8; j++ )
         // this branch only affects speed, not function; there's nothing wrong with updating invalid nodes in coef0.
@@ -575,10 +587,10 @@ int trellis_coef0_1( uint64_t ssd0, trellis_node_t *nodes_cur, trellis_node_t *n
         return levels_used;
 
 static NOINLINE
-int trellis_coef1_0( uint64_t ssd0, uint64_t ssd1, int cost_siglast[3],
-                     trellis_node_t *nodes_cur, trellis_node_t *nodes_prev,
-                     trellis_level_t *level_tree, int levels_used, int lambda2,
-                     uint8_t *level_state )
+int trellis_coef1_0( uint64_t ssd0, uint64_t ssd1, int cost_siglast[restrict 3],
+                     trellis_node_t *restrict nodes_cur, trellis_node_t *restrict nodes_prev,
+                     trellis_level_t *restrict level_tree, int levels_used, int lambda2,
+                     uint8_t *restrict level_state )
 {
     int abs_level = 1, prefix = 1, suffix_cost = 0;
     COEF( 1, 0, 0, 1, 1, 0 );
@@ -589,10 +601,10 @@ int trellis_coef1_0( uint64_t ssd0, uint64_t ssd1, int cost_siglast[3],
 }
 
 static NOINLINE
-int trellis_coef1_1( uint64_t ssd0, uint64_t ssd1, int cost_siglast[3],
-                     trellis_node_t *nodes_cur, trellis_node_t *nodes_prev,
-                     trellis_level_t *level_tree, int levels_used, int lambda2,
-                     uint8_t *level_state )
+int trellis_coef1_1( uint64_t ssd0, uint64_t ssd1, int cost_siglast[restrict 3],
+                     trellis_node_t *restrict nodes_cur, trellis_node_t *restrict nodes_prev,
+                     trellis_level_t *restrict level_tree, int levels_used, int lambda2,
+                     uint8_t *restrict level_state )
 {
     int abs_level = 1, prefix = 1, suffix_cost = 0;
     COEF( 1, 1, 1, 2, 2, 0 );
@@ -606,10 +618,10 @@ int trellis_coef1_1( uint64_t ssd0, uint64_t ssd1, int cost_siglast[3],
 }
 
 static NOINLINE
-int trellis_coefn_0( int abs_level, uint64_t ssd0, uint64_t ssd1, int cost_siglast[3],
-                     trellis_node_t *nodes_cur, trellis_node_t *nodes_prev,
-                     trellis_level_t *level_tree, int levels_used, int lambda2,
-                     uint8_t *level_state, int levelgt1_ctx )
+int trellis_coefn_0( int abs_level, uint64_t ssd0, uint64_t ssd1, int cost_siglast[restrict 3],
+                     trellis_node_t *restrict nodes_cur, trellis_node_t *restrict nodes_prev,
+                     trellis_level_t *restrict level_tree, int levels_used, int lambda2,
+                     uint8_t *restrict level_state, int levelgt1_ctx )
 {
     int prefix = X264_MIN( abs_level-1, 14 );
     int suffix_cost = abs_level >= 15 ? bs_size_ue_big( abs_level - 15 ) << CABAC_SIZE_BITS : 0;
@@ -621,10 +633,10 @@ int trellis_coefn_0( int abs_level, uint64_t ssd0, uint64_t ssd1, int cost_sigla
 }
 
 static NOINLINE
-int trellis_coefn_1( int abs_level, uint64_t ssd0, uint64_t ssd1, int cost_siglast[3],
-                     trellis_node_t *nodes_cur, trellis_node_t *nodes_prev,
-                     trellis_level_t *level_tree, int levels_used, int lambda2,
-                     uint8_t *level_state, int levelgt1_ctx )
+int trellis_coefn_1( int abs_level, uint64_t ssd0, uint64_t ssd1, int cost_siglast[restrict 3],
+                     trellis_node_t *restrict nodes_cur, trellis_node_t *restrict nodes_prev,
+                     trellis_level_t *restrict level_tree, int levels_used, int lambda2,
+                     uint8_t *restrict level_state, int levelgt1_ctx )
 {
     int prefix = X264_MIN( abs_level-1, 14 );
     int suffix_cost = abs_level >= 15 ? bs_size_ue_big( abs_level - 15 ) << CABAC_SIZE_BITS : 0;
@@ -761,6 +773,8 @@ int quant_trellis_cabac( x264_t *h, dctcoef *dct,
     // in 8x8 blocks, some positions share contexts, so we'll just have to hope that
     // cabac isn't too sensitive.
     int i = last_nnz;
+    int cost_siglast[3];
+    uint64_t ssd0[2], ssd1[2];
 #define TRELLIS_LOOP(ctx_hi)\
     for( ; i >= b_ac; i-- )\
     {\
@@ -786,7 +800,6 @@ int quant_trellis_cabac( x264_t *h, dctcoef *dct,
         int sign_coef = orig_coefs[zigzag[i]];\
         int abs_coef = abs( sign_coef );\
         int q = abs( quant_coefs[i] );\
-        int cost_siglast[3]; /* { zero, nonzero, nonzero-and-last } */\
         XCHG( trellis_node_t*, nodes_cur, nodes_prev );\
         for( int j = ctx_hi; j < 8; j++ )\
             nodes_cur[j].score = TRELLIS_SCORE_MAX;\
@@ -812,7 +825,6 @@ int quant_trellis_cabac( x264_t *h, dctcoef *dct,
          * but it's only around .003 dB, and skipping them ~doubles the speed of trellis.\
          * could also try q-2: that sometimes helps, but also sometimes decimates blocks\
          * that are better left coded, especially at QP > 40. */\
-        uint64_t ssd0[2], ssd1[2];\
         for( int k = 0; k < 2; k++ )\
         {\
             int abs_level = q-1+k;\
@@ -1108,8 +1120,10 @@ int x264_quant_luma_dc_trellis( x264_t *h, dctcoef *dct, int i_quant_cat, int i_
         DCT_LUMA_DC, h->mb.i_trellis_lambda2[0][b_intra], 0, 0, 1, 16, idx, 0 );
 }
 
-static const uint8_t zigzag_scan2x2[4] = { 0, 1, 2, 3 };
-static const uint8_t zigzag_scan2x4[8] = { 0, 2, 1, 4, 6, 3, 5, 7 };
+static const uint8_t zigzag_scan2x2[] = { 0, 1, 2, 3 };
+static const uint8_t zigzag_scan2x4[] = { 0, 2, 1, 4, 6, 3, 5, 7 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(zigzag_scan2x2) == X264_RDO_ZIGZAG_2X2_SIZE, "RDO 2x2 zigzag scan size must match DC coefficient count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(zigzag_scan2x4) == X264_RDO_ZIGZAG_2X4_SIZE, "RDO 2x4 zigzag scan size must match DC coefficient count" );
 
 int x264_quant_chroma_dc_trellis( x264_t *h, dctcoef *dct, int i_qp, int b_intra, int idx )
 {
@@ -1142,7 +1156,8 @@ int x264_quant_chroma_dc_trellis( x264_t *h, dctcoef *dct, int i_qp, int b_intra
 int x264_quant_4x4_trellis( x264_t *h, dctcoef *dct, int i_quant_cat,
                             int i_qp, int ctx_block_cat, int b_intra, int b_chroma, int idx )
 {
-    static const uint8_t ctx_ac[14] = {0,1,0,0,1,0,0,1,0,0,0,1,0,0};
+    static const uint8_t ctx_ac[] = {0,1,0,0,1,0,0,1,0,0,0,1,0,0};
+    X264_STATIC_ASSERT( ARRAY_ELEMS(ctx_ac) == X264_RDO_CTX_BLOCK_CAT_COUNT, "RDO AC context table size must match residual category count" );
     int b_ac = ctx_ac[ctx_block_cat];
     if( h->param.b_cabac )
         return quant_trellis_cabac( h, dct,

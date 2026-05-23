@@ -26,6 +26,7 @@
  *****************************************************************************/
 
 #include "filters.h"
+#include <errno.h>
 
 #define RETURN_IF_ERROR( cond, ... ) RETURN_IF_ERR( cond, "options", NULL, __VA_ARGS__ )
 
@@ -133,12 +134,13 @@ double x264_otof( const char *str, double def )
 
 int x264_otoi( const char *str, int def )
 {
-    int ret = def;
+    long ret = def;
     if( str )
     {
         char *end;
+        errno = 0;
         ret = strtol( str, &end, 0 );
-        if( end == str || *end != '\0' )
+        if( end == str || *end != '\0' || errno == ERANGE || ret < INT_MIN || ret > INT_MAX )
             ret = def;
     }
     return ret;

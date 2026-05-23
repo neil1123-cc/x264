@@ -150,7 +150,7 @@ const audio_encoder_t *x264_audio_encoder_by_name( const char *name, int mode, c
             ret = cur->encoder;
         else if( ( mode == QUERY_ENCODER ) && is_lavc )
         {
-            snprintf( ffprefixed_name, 31, "ff%s", cur->name );
+            snprintf( ffprefixed_name, sizeof(ffprefixed_name), "ff%s", cur->name );
             if( !strcmp( name, ffprefixed_name ) )
                 ret = cur->encoder;
         }
@@ -214,7 +214,7 @@ void x264_audio_encoder_list_codecs( int longhelp )
         return;
 
     const char *prev_name = "";
-    int len = strlen( INDENT ) + 6;
+    size_t len = strlen( INDENT ) + 6;
 
     printf( INDENT "    - " );
     for( int i=0; registered_audio_encoders[i].codec; i++ )
@@ -249,7 +249,7 @@ void x264_audio_encoder_list_encoders( int longhelp )
     if( longhelp < 2 )
         return;
 
-    int len = strlen( INDENT ) + 6;
+    size_t len = strlen( INDENT ) + 6;
 
     printf( INDENT "    - " );
     for( int i=0; registered_audio_encoders[i].codec; i++ )

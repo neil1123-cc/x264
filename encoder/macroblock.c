@@ -29,6 +29,8 @@
 #include "common/common.h"
 #include "macroblock.h"
 
+#define X264_CHROMA422_SCAN_SIZE 8
+
 /* These chroma DC functions don't have assembly versions and are only used here. */
 
 #define ZIG(i,y,x) level[i] = dct[x*2+y];
@@ -351,7 +353,8 @@ static ALWAYS_INLINE void mb_encode_chroma_internal( x264_t *h, int b_inter, int
 
         if( h->mb.b_lossless )
         {
-            static const uint8_t chroma422_scan[8] = { 0, 2, 1, 5, 3, 6, 4, 7 };
+            static const uint8_t chroma422_scan[] = { 0, 2, 1, 5, 3, 6, 4, 7 };
+            X264_STATIC_ASSERT( ARRAY_ELEMS(chroma422_scan) == X264_CHROMA422_SCAN_SIZE, "chroma422 scan table size must match chroma DC coefficients" );
 
             for( int i = 0; i < (chroma422?8:4); i++ )
             {

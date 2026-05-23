@@ -50,6 +50,8 @@ typedef struct
     /* for 16-byte alignment */
     uint8_t padding[12];
 } x264_cabac_t;
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_cabac_t*)0)->state) == 1024, "CABAC state cache size must match context domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_cabac_t*)0)->padding) == 12, "CABAC padding size must preserve alignment padding" );
 
 /* init the contexts given i_slice_type, the quantif and the model */
 #define x264_cabac_context_init x264_template(cabac_context_init)

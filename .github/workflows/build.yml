@@ -1,0 +1,770 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - '**'
+    tags:
+      - '**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      TMP: C:/Windows/Temp
+      TEMP: C:/Windows/Temp
+      TMPDIR: C:/Windows/Temp
+    strategy:
+      fail-fast: false
+      matrix:
+        target_cpu:
+          - x86-64
+          - haswell
+          - skylake
+          - alderlake
+          - raptorlake
+          - arrowlake
+          - znver2
+          - znver3
+          - znver4
+          - znver5
+    steps:
+    - name: Checkout x264
+      uses: actions/checkout@v6
+      with:
+        path: x264
+        fetch-depth: 0
+        fetch-tags: true
+
+    - name: Fetch VideoLAN version base
+      shell: bash
+      working-directory: x264
+      run: git fetch https://code.videolan.org/videolan/x264.git master:refs/remotes/videolan/master
+
+    - name: Fetch PGO Profdata
+      shell: bash
+      run: |
+        mkdir -p build
+        cd x264
+
+        fetch_profdata() {
+          local target="$1"
+          local primary_branch="$2"
+          local fallback_branch="$3"
+          local source_path="$4"
+          local destination="../build/${target}"
+          local branch last_branch=""
+
+          rm -f "$destination"
+
+          for branch in "$primary_branch" "$fallback_branch"; do
+            [ -n "$branch" ] || continue
+            [ "$branch" != "$last_branch" ] || continue
+            last_branch="$branch"
+
+            local ls_remote_output ls_remote_status
+            set +e
+            ls_remote_output=$(git ls-remote --exit-code --heads origin "$branch" 2>&1)
+            ls_remote_status=$?
+            set -e
+            if [ "$ls_remote_status" -eq 2 ]; then
+              echo "PGO profdata branch missing: $branch"
+              continue
+            fi
+            if [ "$ls_remote_status" -ne 0 ]; then
+              printf '%s\n' "$ls_remote_output"
+              return "$ls_remote_status"
+            fi
+
+            echo "=== Fetching PGO profdata from ${branch}:${source_path} ==="
+            git fetch --quiet origin "$branch" --depth=1
+
+            if ! git show "FETCH_HEAD:${source_path}" > "$destination" 2>/dev/null; then
+              echo "PGO profdata file missing: branch=${branch} path=${source_path}"
+              rm -f "$destination"
+              continue
+            fi
+
+            if [ "$branch" = "$fallback_branch" ] && [ "$primary_branch" != "$fallback_branch" ]; then
+              echo "PGO profdata fallback hit: primary=${primary_branch} fallback=${fallback_branch}"
+            else
+              echo "PGO profdata hit: branch=${branch}"
+            fi
+            echo "PGO profdata path: source=${source_path} destination=${destination}"
+            return 0
+          done
+
+          echo "PGO profdata unavailable: target=${target}"
+        }
+
+        fetch_profdata x264.profdata profdata-${{ matrix.target_cpu }} profdata-x86-64 x264.profdata
+
+    # === Dependency Caching ===
+    - name: Setup Shared Dependencies
+      uses: ./x264/.github/actions/setup-windows-deps
+      with:
+        ffmpeg-cache-suffix: minimal-v2-clang
+        extra-msys2-packages: mingw-w64-clang-x86_64-ffmpeg
+        ffmpeg-configure: |
+          ./configure --prefix=/usr/local --enable-gpl --enable-version3 \
+            --disable-runtime-cpudetect --disable-all --disable-autodetect \
+            --enable-avformat --enable-avcodec --enable-swscale --enable-swresample \
+            --disable-everything --disable-network \
+            --enable-demuxer=mpegts,mov,matroska,h264,hevc,rawvideo,yuv4mpegpipe \
+            --enable-decoder=h264,hevc,ffv1,ffvhuff,huffyuv,rawvideo,wrapped_avframe,aac,ac3,mp3 \
+            --enable-protocol=file \
+            --cc=cc --cxx=c++ --cpu=x86-64
+
+    - name: Setup Build Dirs
+      run: mkdir -p build/8b build/10b build/all
+
+    - name: Compile x264
+      run: |
+        set -euo pipefail
+        NPROC=$(nproc)
+        MAKE_JOBS_TRIPLE=$(( (NPROC + 2) / 3 ))
+        echo "Make job limits: single=${NPROC}, triple=${MAKE_JOBS_TRIPLE}"
+
+        wait_for_jobs() {
+          local status=0
+          local pid
+          for pid in "$@"; do
+            if ! wait "$pid"; then
+              status=1
+            fi
+          done
+          return "$status"
+        }
+
+        compile_x264() {
+          local label="$1"
+          local build_dir="$2"
+          local bit_depth="$3"
+          (
+            set -euo pipefail
+            cd "$build_dir"
+            export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
+            export X264_TARGET_CPU=${{ matrix.target_cpu }}
+            CFLAGS="-O3 -flto -ffat-lto-objects -fmerge-all-constants -momit-leaf-frame-pointer -I/usr/local/include -I/clang64/include -I../../ffmpeg"
+            LDFLAGS="-flto -L/usr/local/lib -L/clang64/lib"
+            if [ -f ../x264.profdata ]; then
+              CFLAGS="$CFLAGS -fprofile-instr-use=../x264.profdata"
+              LDFLAGS="$LDFLAGS -fprofile-instr-use=../x264.profdata"
+              echo "Using PGO profdata for ${label}"
+            else
+              echo "Building ${label} without PGO"
+            fi
+            CC=cc RC=/ucrt64/bin/windres ../../x264/configure --prefix=/usr/local --bit-depth="$bit_depth" --enable-lavf --enable-lsmash --enable-static \
+              --extra-cflags="$CFLAGS" \
+              --extra-ldflags="$LDFLAGS"
+            make -j"$MAKE_JOBS_TRIPLE"
+            strip -s x264.exe
+          )
+        }
+
+        compile_x264 8bit build/8b 8 &
+        build_8b_pid=$!
+        compile_x264 10bit build/10b 10 &
+        build_10b_pid=$!
+        compile_x264 all build/all all &
+        build_all_pid=$!
+        wait_for_jobs "$build_8b_pid" "$build_10b_pid" "$build_all_pid"
+
+    - name: Installed public consumer smoke
+      if: matrix.target_cpu == 'x86-64'
+      run: |
+        set -euo pipefail
+
+        check_installed_consumer() {
+          local label="$1"
+          local build_dir="$2"
+          local expected_bit_depth="${3:-}"
+          local prefix="$PWD/build/install-consumer/${label}"
+          local sysroot="$prefix/root"
+          local source="$prefix/consumer.c"
+          local binary="$prefix/consumer.exe"
+          local strict_source="$prefix/strict-consumer.c"
+          local strict_binary="$prefix/strict-consumer.exe"
+          local pkg_config_cflags
+          local cflags
+          local staged_cflags
+          local pkg_config_libs
+          local libs
+
+          rm -rf "$prefix"
+          mkdir -p "$prefix"
+          make -C "$build_dir" install-lib-static DESTDIR="$sysroot"
+
+          pkg_config_cflags=$(env -u PKG_CONFIG_PATH \
+            PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1 \
+            PKG_CONFIG_LIBDIR="$sysroot/usr/local/lib/pkgconfig" \
+            PKG_CONFIG_SYSROOT_DIR="$sysroot" \
+            pkg-config --cflags x264)
+          cflags=$(printf '%s\n' "$pkg_config_cflags" | sed 's/-DX264_API_IMPORTS//g')
+          staged_cflags="-I$sysroot/usr/local/include"
+          pkg_config_libs=$(env -u PKG_CONFIG_PATH \
+            PKG_CONFIG_ALLOW_SYSTEM_LIBS=1 \
+            PKG_CONFIG_LIBDIR="$sysroot/usr/local/lib/pkgconfig" \
+            PKG_CONFIG_SYSROOT_DIR="$sysroot" \
+            pkg-config --libs x264)
+          libs="$sysroot/usr/local/lib/libx264.a"
+          assert_pkg_config_install_paths "$label static" "$sysroot" "$pkg_config_cflags" "$pkg_config_libs"
+          assert_first_include_flag "$label static explicit include order" "$staged_cflags" $staged_cflags $cflags
+
+          {
+            printf '%s\n' '#include <stdint.h>'
+            printf '%s\n' '#include <x264.h>'
+            printf '%s\n' '#if !defined(X264_BIT_DEPTH) || !defined(X264_CHROMA_FORMAT)'
+            printf '%s\n' '#error missing installed x264_config.h macros'
+            printf '%s\n' '#endif'
+            if [ -n "$expected_bit_depth" ]; then
+              printf '%s\n' "#if X264_BIT_DEPTH != $expected_bit_depth"
+              printf '%s\n' '#error unexpected installed bit depth'
+              printf '%s\n' '#endif'
+            fi
+            printf '%s\n' 'int main(void)'
+            printf '%s\n' '{'
+            printf '%s\n' '    (void)x264_chroma_format;'
+            printf '%s\n' '    return 0;'
+            printf '%s\n' '}'
+          } > "$source"
+          cc -std=gnu17 -Wall -Wextra -Werror "$source" $staged_cflags $cflags "$libs" -o "$binary"
+          "$binary"
+          cc -std=gnu17 -Wall -Wextra -Werror "$source" $staged_cflags $cflags $pkg_config_libs -o "$binary.pkg-config"
+          "$binary.pkg-config"
+
+          {
+            printf '%s\n' '#include <stdint.h>'
+            printf '%s\n' '#include <x264.h>'
+            printf '%s\n' '#if defined(_GNU_SOURCE) || defined(_POSIX_C_SOURCE)'
+            printf '%s\n' '#error installed public cflags must not force feature-test macros'
+            printf '%s\n' '#endif'
+            printf '%s\n' '#if !defined(X264_BIT_DEPTH) || !defined(X264_CHROMA_FORMAT)'
+            printf '%s\n' '#error missing installed x264_config.h macros'
+            printf '%s\n' '#endif'
+            printf '%s\n' 'int main(void)'
+            printf '%s\n' '{'
+            printf '%s\n' '    (void)x264_chroma_format;'
+            printf '%s\n' '    return 0;'
+            printf '%s\n' '}'
+          } > "$strict_source"
+          cc -std=c17 -pedantic -Wall -Wextra -Werror "$strict_source" $staged_cflags $cflags "$libs" -o "$strict_binary"
+          "$strict_binary"
+        }
+
+        assert_token_present() {
+          local assert_label="$1"
+          local assert_text="$2"
+          local assert_token="$3"
+          case " $assert_text " in
+            *" $assert_token "*) ;;
+            *)
+              printf '%s\n' "missing expected token for $assert_label: $assert_token" >&2
+              printf '%s\n' "$assert_label tokens: $assert_text" >&2
+              exit 1
+              ;;
+          esac
+        }
+
+        assert_token_present_any() {
+          local assert_label="$1"
+          local assert_text="$2"
+          shift 2
+
+          local assert_token
+          for assert_token in "$@"; do
+            case " $assert_text " in
+              *" $assert_token "*) return 0 ;;
+            esac
+          done
+
+          printf '%s\n' "missing expected token for $assert_label: $*" >&2
+          printf '%s\n' "$assert_label tokens: $assert_text" >&2
+          exit 1
+        }
+
+        assert_no_feature_test_macro_leak() {
+          local assert_label="$1"
+          local assert_text="$2"
+          case " $assert_text " in
+            *"_GNU_SOURCE"*|*"_POSIX_C_SOURCE"*)
+              printf '%s\n' "feature-test macro leaked through $assert_label: $assert_text" >&2
+              exit 1
+              ;;
+          esac
+        }
+
+        assert_first_include_flag() {
+          local assert_label="$1"
+          local assert_expected="$2"
+          shift 2
+
+          local assert_flag
+          for assert_flag in "$@"; do
+            case "$assert_flag" in
+              -I*)
+                if [ "$assert_flag" != "$assert_expected" ]; then
+                  printf '%s\n' "unexpected first include flag for $assert_label: got $assert_flag expected $assert_expected" >&2
+                  exit 1
+                fi
+                return 0
+                ;;
+            esac
+          done
+
+          printf '%s\n' "missing include flags for $assert_label" >&2
+          exit 1
+        }
+
+        assert_pkg_config_install_paths() {
+          local assert_label="$1"
+          local assert_sysroot="$2"
+          local assert_cflags_text="$3"
+          local assert_libs_text="$4"
+          local assert_sysroot_diag
+
+          assert_sysroot_diag=$(cygpath -m "$assert_sysroot" 2>/dev/null || printf '%s\n' "$assert_sysroot")
+          assert_no_feature_test_macro_leak "$assert_label pkg-config cflags" "$assert_cflags_text"
+          assert_no_feature_test_macro_leak "$assert_label pkg-config libs" "$assert_libs_text"
+          assert_token_present_any "$assert_label pkg-config cflags" "$assert_cflags_text" \
+            "-I$assert_sysroot/usr/local/include" "-I$assert_sysroot_diag/usr/local/include"
+          assert_token_present_any "$assert_label pkg-config libs" "$assert_libs_text" \
+            "-L$assert_sysroot/usr/local/lib" "-L$assert_sysroot_diag/usr/local/lib"
+        }
+
+        check_cxx_consumer() {
+          local prefix="$PWD/build/cxx-consumer"
+          local sysroot="$PWD/build/install-consumer/8b/root"
+          local pkg_config_cflags
+          local cxx_cflags
+          local pkg_config_libs
+
+          mkdir -p "$prefix"
+          {
+            printf '%s\n' '#include <stdint.h>'
+            printf '%s\n' 'extern "C" {'
+            printf '%s\n' '#include <x264.h>'
+            printf '%s\n' '}'
+            printf '%s\n' 'int main()'
+            printf '%s\n' '{'
+            printf '%s\n' '    (void)x264_chroma_format;'
+            printf '%s\n' '    return X264_BIT_DEPTH == 8 ? 0 : 1;'
+            printf '%s\n' '}'
+          } > "$prefix/consumer.cpp"
+          pkg_config_cflags=$(env -u PKG_CONFIG_PATH \
+            PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1 \
+            PKG_CONFIG_LIBDIR="$sysroot/usr/local/lib/pkgconfig" \
+            PKG_CONFIG_SYSROOT_DIR="$sysroot" \
+            pkg-config --cflags x264)
+          cxx_cflags=$(printf '%s\n' "$pkg_config_cflags" | sed 's/-DX264_API_IMPORTS//g')
+          pkg_config_libs=$(env -u PKG_CONFIG_PATH \
+            PKG_CONFIG_ALLOW_SYSTEM_LIBS=1 \
+            PKG_CONFIG_LIBDIR="$sysroot/usr/local/lib/pkgconfig" \
+            PKG_CONFIG_SYSROOT_DIR="$sysroot" \
+            pkg-config --libs x264)
+          assert_pkg_config_install_paths "8b cxx static" "$sysroot" "$pkg_config_cflags" "$pkg_config_libs"
+          assert_first_include_flag "8b cxx static explicit include order" "-I$sysroot/usr/local/include" "-I$sysroot/usr/local/include" $cxx_cflags
+          c++ -std=c++17 -Wall -Wextra -Werror "$prefix/consumer.cpp" "-I$sysroot/usr/local/include" $cxx_cflags \
+            "$sysroot/usr/local/lib/libx264.a" -o "$prefix/consumer.exe"
+          "$prefix/consumer.exe"
+        }
+
+        check_installed_consumer 8b build/8b 8
+        check_installed_consumer 10b build/10b 10
+        check_installed_consumer all build/all
+        check_cxx_consumer
+
+    - name: Shared public consumer smoke
+      if: matrix.target_cpu == 'x86-64'
+      run: |
+        set -euo pipefail
+
+        assert_token_present() {
+          local assert_label="$1"
+          local assert_text="$2"
+          local assert_token="$3"
+          case " $assert_text " in
+            *" $assert_token "*) ;;
+            *)
+              printf '%s\n' "missing expected token for $assert_label: $assert_token" >&2
+              printf '%s\n' "$assert_label tokens: $assert_text" >&2
+              exit 1
+              ;;
+          esac
+        }
+
+        assert_token_present_any() {
+          local assert_label="$1"
+          local assert_text="$2"
+          shift 2
+
+          local assert_token
+          for assert_token in "$@"; do
+            case " $assert_text " in
+              *" $assert_token "*) return 0 ;;
+            esac
+          done
+
+          printf '%s\n' "missing expected token for $assert_label: $*" >&2
+          printf '%s\n' "$assert_label tokens: $assert_text" >&2
+          exit 1
+        }
+
+        assert_no_feature_test_macro_leak() {
+          local assert_label="$1"
+          local assert_text="$2"
+          case " $assert_text " in
+            *"_GNU_SOURCE"*|*"_POSIX_C_SOURCE"*)
+              printf '%s\n' "feature-test macro leaked through $assert_label: $assert_text" >&2
+              exit 1
+              ;;
+          esac
+        }
+
+        assert_first_include_flag() {
+          local assert_label="$1"
+          local assert_expected="$2"
+          shift 2
+
+          local assert_flag
+          for assert_flag in "$@"; do
+            case "$assert_flag" in
+              -I*)
+                if [ "$assert_flag" != "$assert_expected" ]; then
+                  printf '%s\n' "unexpected first include flag for $assert_label: got $assert_flag expected $assert_expected" >&2
+                  exit 1
+                fi
+                return 0
+                ;;
+            esac
+          done
+
+          printf '%s\n' "missing include flags for $assert_label" >&2
+          exit 1
+        }
+
+        assert_pkg_config_install_paths() {
+          local assert_label="$1"
+          local assert_sysroot="$2"
+          local assert_cflags_text="$3"
+          local assert_libs_text="$4"
+          local assert_sysroot_diag
+
+          assert_sysroot_diag=$(cygpath -m "$assert_sysroot" 2>/dev/null || printf '%s\n' "$assert_sysroot")
+          assert_no_feature_test_macro_leak "$assert_label pkg-config cflags" "$assert_cflags_text"
+          assert_no_feature_test_macro_leak "$assert_label pkg-config libs" "$assert_libs_text"
+          assert_token_present_any "$assert_label pkg-config cflags" "$assert_cflags_text" \
+            "-I$assert_sysroot/usr/local/include" "-I$assert_sysroot_diag/usr/local/include"
+          assert_token_present_any "$assert_label pkg-config libs" "$assert_libs_text" \
+            "-L$assert_sysroot/usr/local/lib" "-L$assert_sysroot_diag/usr/local/lib"
+        }
+
+        build_dir="$PWD/build/shared-smoke"
+        prefix="$PWD/build/install-consumer/shared-smoke"
+        sysroot="$prefix/root"
+        source="$prefix/consumer.c"
+        strict_source="$prefix/strict-consumer.c"
+        mkdir -p "$build_dir" "$prefix"
+
+        (
+          cd "$build_dir"
+          PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig \
+          CC=cc RC=/ucrt64/bin/windres ../../x264/configure --prefix=/usr/local --bit-depth=8 --chroma-format=420 --enable-shared --disable-cli --disable-asm \
+            --disable-audio --disable-avs --disable-lavf --disable-ffms --disable-lsmash
+          make -j"$(nproc)" lib-shared
+          make install-lib-shared DESTDIR="$sysroot"
+        )
+
+        cflags=$(env -u PKG_CONFIG_PATH \
+          PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1 \
+          PKG_CONFIG_LIBDIR="$sysroot/usr/local/lib/pkgconfig" \
+          PKG_CONFIG_SYSROOT_DIR="$sysroot" \
+          pkg-config --cflags x264)
+        staged_cflags="-I$sysroot/usr/local/include"
+        pkg_config_libs=$(env -u PKG_CONFIG_PATH \
+          PKG_CONFIG_ALLOW_SYSTEM_LIBS=1 \
+          PKG_CONFIG_LIBDIR="$sysroot/usr/local/lib/pkgconfig" \
+          PKG_CONFIG_SYSROOT_DIR="$sysroot" \
+          pkg-config --libs x264)
+        libs="$sysroot/usr/local/lib/libx264.dll.a"
+        dll_name=$(awk -F= '/^SONAME=/ { print $2 }' "$build_dir/config.mak")
+        test -s "$libs"
+        test -s "$sysroot/usr/local/bin/$dll_name"
+        assert_pkg_config_install_paths "shared-smoke shared" "$sysroot" "$cflags" "$pkg_config_libs"
+        assert_token_present "shared-smoke shared pkg-config cflags" "$cflags" "-DX264_API_IMPORTS"
+        assert_first_include_flag "shared-smoke shared explicit include order" "$staged_cflags" $staged_cflags $cflags
+
+        {
+          printf '%s\n' '#include <stdint.h>'
+          printf '%s\n' '#include <x264.h>'
+          printf '%s\n' '#if !defined(X264_API_IMPORTS)'
+          printf '%s\n' '#error shared pkg-config cflags must request API imports'
+          printf '%s\n' '#endif'
+          printf '%s\n' '#if X264_BIT_DEPTH != 8'
+          printf '%s\n' '#error unexpected shared bit depth'
+          printf '%s\n' '#endif'
+          printf '%s\n' 'int main(void)'
+          printf '%s\n' '{'
+          printf '%s\n' '    return 0;'
+          printf '%s\n' '}'
+        } > "$source"
+        cc -std=gnu17 -Wall -Wextra -Werror "$source" $staged_cflags $cflags "$libs" -o "$prefix/consumer.exe"
+        PATH="$sysroot/usr/local/bin:$PATH" "$prefix/consumer.exe"
+        cc -std=gnu17 -Wall -Wextra -Werror "$source" $staged_cflags $cflags $pkg_config_libs -o "$prefix/consumer.pkg-config.exe"
+        PATH="$sysroot/usr/local/bin:$PATH" "$prefix/consumer.pkg-config.exe"
+
+        {
+          printf '%s\n' '#include <stdint.h>'
+          printf '%s\n' '#include <x264.h>'
+          printf '%s\n' '#if !defined(X264_API_IMPORTS)'
+          printf '%s\n' '#error shared pkg-config cflags must request API imports'
+          printf '%s\n' '#endif'
+          printf '%s\n' '#if defined(_GNU_SOURCE) || defined(_POSIX_C_SOURCE)'
+          printf '%s\n' '#error installed shared cflags must not force feature-test macros'
+          printf '%s\n' '#endif'
+          printf '%s\n' '#if !defined(X264_BIT_DEPTH) || !defined(X264_CHROMA_FORMAT)'
+          printf '%s\n' '#error missing installed shared config macros'
+          printf '%s\n' '#endif'
+          printf '%s\n' 'int main(void)'
+          printf '%s\n' '{'
+          printf '%s\n' '    (void)x264_chroma_format;'
+          printf '%s\n' '    return 0;'
+          printf '%s\n' '}'
+        } > "$strict_source"
+        cc -std=c17 -pedantic -Wall -Wextra -Werror "$strict_source" $staged_cflags $cflags "$libs" -o "$prefix/strict-consumer.exe"
+        PATH="$sysroot/usr/local/bin:$PATH" "$prefix/strict-consumer.exe"
+
+    - name: Checkasm smoke
+      if: matrix.target_cpu == 'x86-64'
+      run: |
+        set -euo pipefail
+        make -C build/8b -j"$(nproc)" checkasm
+        make -C build/10b -j"$(nproc)" checkasm
+        build/8b/checkasm8.exe 0
+        build/10b/checkasm10.exe 0
+
+    - name: MP4 smoke (8bit CLI)
+      if: matrix.target_cpu == 'x86-64'
+      run: |
+        trap 'status=$?; if [ $status -ne 0 ]; then echo "=== x264 mp4 smoke diagnostics ==="; for f in smoke_format.txt smoke_stream.txt smoke_timing.txt smoke_count.txt smoke_packets.csv smoke_frames.csv; do if [ -f "$f" ]; then echo "--- $f ---"; cat "$f"; fi; done; fi; exit $status' EXIT
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24 -frames:v 16 -pix_fmt yuv420p smoke.y4m
+        build/8b/x264.exe --fps 24/1 --frames 16 --bframes 4 --keyint 8 --min-keyint 8 -o smoke.mp4 smoke.y4m
+        ffprobe -v error -show_streams -select_streams v:0 smoke.mp4 > smoke_stream.txt
+        ffprobe -v error -show_entries stream=time_base,r_frame_rate,avg_frame_rate,duration,nal_length_size -select_streams v:0 -of default=noprint_wrappers=1 smoke.mp4 > smoke_timing.txt
+        ffprobe -v error -show_entries format=format_name,duration -of default=noprint_wrappers=1 smoke.mp4 > smoke_format.txt
+        ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=noprint_wrappers=1 smoke.mp4 > smoke_count.txt
+        ffprobe -v error -show_packets -select_streams v:0 -show_entries packet=pts_time,dts_time,flags -of csv=p=0 smoke.mp4 > smoke_packets.csv
+        ffprobe -v error -select_streams v:0 -show_entries frame=pts_time,pkt_dts_time,pkt_duration_time,key_frame -of csv=p=0 smoke.mp4 > smoke_frames.csv
+        grep -q "format_name=mov,mp4,m4a,3gp,3g2,mj2" smoke_format.txt
+        grep -q "duration=" smoke_format.txt
+        grep -q "codec_name=h264" smoke_stream.txt
+        grep -q "codec_tag_string=avc1" smoke_stream.txt
+        grep -q "codec_type=video" smoke_stream.txt
+        grep -q "width=128" smoke_stream.txt
+        grep -q "height=72" smoke_stream.txt
+        grep -q "pix_fmt=yuv420p" smoke_stream.txt
+        awk -F= '/^extradata_size=/{ if (($2+0) > 0) found=1 } END { if (!found) exit 1 }' smoke_stream.txt
+        grep -q "time_base=" smoke_timing.txt
+        grep -q "r_frame_rate=24/1" smoke_timing.txt
+        grep -q "avg_frame_rate=24/1" smoke_timing.txt
+        grep -q "nb_read_frames=16" smoke_count.txt
+        test -s smoke_packets.csv
+        test -s smoke_frames.csv
+        awk -F, 'NR == 1 { if (NF < 3 || $3 !~ /K/) exit 1 } END { if (NR != 16) exit 1 }' smoke_packets.csv
+        awk -F, 'NF >= 3 && $1 != "N/A" && $2 != "N/A" { if (($1+0) > ($2+0)) diff=1 } END { if (!diff) exit 1 }' smoke_packets.csv
+        awk -F, 'NF >= 3 && $3 != "N/A" { if (seen && ($3+0) < prev) exit 1; prev=$3+0; seen=1 } END { if (!seen) exit 1 }' smoke_frames.csv
+        awk -F, 'NR == 1 { if (NF < 1 || $1 != 1) exit 1 }' smoke_frames.csv
+        awk -F, 'END { if (NR != 16) exit 1 }' smoke_frames.csv
+
+    - name: MP4 smoke (8bit CLI open GOP)
+      if: matrix.target_cpu == 'x86-64'
+      run: |
+        trap 'status=$?; if [ $status -ne 0 ]; then echo "=== x264 mp4 open-gop diagnostics ==="; for f in smoke_open_format.txt smoke_open_stream.txt smoke_open_timing.txt smoke_open_count.txt smoke_open_packets.csv smoke_open_frames.csv; do if [ -f "$f" ]; then echo "--- $f ---"; cat "$f"; fi; done; fi; exit $status' EXIT
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24 -frames:v 16 -pix_fmt yuv420p smoke_open.y4m
+        build/8b/x264.exe --fps 24/1 --frames 16 --bframes 4 --keyint 8 --min-keyint 8 --open-gop -o smoke_open.mp4 smoke_open.y4m
+        ffprobe -v error -show_streams -select_streams v:0 smoke_open.mp4 > smoke_open_stream.txt
+        ffprobe -v error -show_entries stream=time_base,r_frame_rate,avg_frame_rate,duration,nal_length_size -select_streams v:0 -of default=noprint_wrappers=1 smoke_open.mp4 > smoke_open_timing.txt
+        ffprobe -v error -show_entries format=format_name,duration -of default=noprint_wrappers=1 smoke_open.mp4 > smoke_open_format.txt
+        ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=noprint_wrappers=1 smoke_open.mp4 > smoke_open_count.txt
+        ffprobe -v error -show_packets -select_streams v:0 -show_entries packet=pts_time,dts_time,flags -of csv=p=0 smoke_open.mp4 > smoke_open_packets.csv
+        ffprobe -v error -select_streams v:0 -show_entries frame=pts_time,pkt_dts_time,pkt_duration_time,key_frame -of csv=p=0 smoke_open.mp4 > smoke_open_frames.csv
+        grep -q "format_name=mov,mp4,m4a,3gp,3g2,mj2" smoke_open_format.txt
+        grep -q "codec_name=h264" smoke_open_stream.txt
+        grep -q "codec_tag_string=avc1" smoke_open_stream.txt
+        grep -q "nb_read_frames=16" smoke_open_count.txt
+        test -s smoke_open_packets.csv
+        test -s smoke_open_frames.csv
+        awk -F, 'NR == 1 { if (NF < 3 || $3 !~ /K/) exit 1 } END { if (NR != 16) exit 1 }' smoke_open_packets.csv
+        awk -F, 'NF >= 3 && $1 != "N/A" && $2 != "N/A" { if (($1+0) > ($2+0)) diff=1 } END { if (!diff) exit 1 }' smoke_open_packets.csv
+        awk -F, 'NF >= 3 && $3 != "N/A" { if (seen && ($3+0) < prev) exit 1; prev=$3+0; seen=1 } END { if (!seen) exit 1 }' smoke_open_frames.csv
+
+    - name: MP4 smoke (8bit CLI single frame)
+      if: matrix.target_cpu == 'x86-64'
+      run: |
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24 -frames:v 1 -pix_fmt yuv420p smoke_single.y4m
+        build/8b/x264.exe --fps 24/1 --frames 1 --bframes 0 --keyint 1 --min-keyint 1 -o smoke_single.mp4 smoke_single.y4m
+        ffprobe -v error -show_entries format=format_name,duration -of default=noprint_wrappers=1 smoke_single.mp4 > smoke_single_format.txt
+        ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=noprint_wrappers=1 smoke_single.mp4 > smoke_single_count.txt
+        ffprobe -v error -show_packets -select_streams v:0 -show_entries packet=flags -of csv=p=0 smoke_single.mp4 > smoke_single_packets.csv
+        grep -q "format_name=mov,mp4,m4a,3gp,3g2,mj2" smoke_single_format.txt
+        grep -q "nb_read_frames=1" smoke_single_count.txt
+        awk -F, 'NR == 1 { if ($1 !~ /K/) exit 1 } END { if (NR != 1) exit 1 }' smoke_single_packets.csv
+
+    - name: MP4 smoke (8bit CLI frames=0 means encode available input)
+      if: matrix.target_cpu == 'x86-64'
+      run: |
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24 -frames:v 1 -pix_fmt yuv420p smoke_zero.y4m
+        build/8b/x264.exe --fps 24/1 --frames 0 --bframes 0 --keyint 1 --min-keyint 1 -o smoke_zero.mp4 smoke_zero.y4m
+        ffprobe -v error -show_entries format=format_name,duration -of default=noprint_wrappers=1 smoke_zero.mp4 > smoke_zero_format.txt
+        ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=noprint_wrappers=1 smoke_zero.mp4 > smoke_zero_count.txt
+        grep -q "format_name=mov,mp4,m4a,3gp,3g2,mj2" smoke_zero_format.txt
+        grep -q "nb_read_frames=1" smoke_zero_count.txt
+        test -s smoke_zero.mp4
+
+    - name: MP4 smoke (8bit CLI b-pyramid)
+      if: matrix.target_cpu == 'x86-64'
+      run: |
+        trap 'status=$?; if [ $status -ne 0 ]; then echo "=== x264 mp4 b-pyramid diagnostics ==="; for f in smoke_bp_format.txt smoke_bp_stream.txt smoke_bp_timing.txt smoke_bp_count.txt smoke_bp_packets.csv smoke_bp_frames.csv; do if [ -f "$f" ]; then echo "--- $f ---"; cat "$f"; fi; done; fi; exit $status' EXIT
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24 -frames:v 16 -pix_fmt yuv420p smoke_bp.y4m
+        build/8b/x264.exe --fps 24/1 --frames 16 --bframes 4 --b-pyramid normal --keyint 8 --min-keyint 8 -o smoke_bp.mp4 smoke_bp.y4m
+        ffprobe -v error -show_streams -select_streams v:0 smoke_bp.mp4 > smoke_bp_stream.txt
+        ffprobe -v error -show_entries stream=time_base,r_frame_rate,avg_frame_rate,duration,nal_length_size -select_streams v:0 -of default=noprint_wrappers=1 smoke_bp.mp4 > smoke_bp_timing.txt
+        ffprobe -v error -show_entries format=format_name,duration -of default=noprint_wrappers=1 smoke_bp.mp4 > smoke_bp_format.txt
+        ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=noprint_wrappers=1 smoke_bp.mp4 > smoke_bp_count.txt
+        ffprobe -v error -show_packets -select_streams v:0 -show_entries packet=pts_time,dts_time,flags -of csv=p=0 smoke_bp.mp4 > smoke_bp_packets.csv
+        ffprobe -v error -select_streams v:0 -show_entries frame=pts_time,pkt_dts_time,pkt_duration_time,key_frame -of csv=p=0 smoke_bp.mp4 > smoke_bp_frames.csv
+        grep -q "format_name=mov,mp4,m4a,3gp,3g2,mj2" smoke_bp_format.txt
+        grep -q "codec_name=h264" smoke_bp_stream.txt
+        grep -q "codec_tag_string=avc1" smoke_bp_stream.txt
+        grep -q "r_frame_rate=24/1" smoke_bp_timing.txt
+        grep -q "avg_frame_rate=24/1" smoke_bp_timing.txt
+        grep -q "nb_read_frames=16" smoke_bp_count.txt
+        test -s smoke_bp_packets.csv
+        test -s smoke_bp_frames.csv
+        awk -F, 'NR == 1 { if (NF < 3 || $3 !~ /K/) exit 1 } END { if (NR != 16) exit 1 }' smoke_bp_packets.csv
+        awk -F, 'NF >= 3 && $1 != "N/A" && $2 != "N/A" { if (($1+0) > ($2+0)) diff=1 } END { if (!diff) exit 1 }' smoke_bp_packets.csv
+        awk -F, 'END { if (NR != 16) exit 1 }' smoke_bp_frames.csv
+
+    - name: MP4 smoke (8bit CLI 24000/1001)
+      if: matrix.target_cpu == 'x86-64'
+      run: |
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24000/1001 -frames:v 1 -pix_fmt yuv420p smoke_frac.y4m
+        build/8b/x264.exe --fps 24000/1001 --frames 1 --bframes 0 --keyint 1 --min-keyint 1 -o smoke_frac.mp4 smoke_frac.y4m
+        ffprobe -v error -show_entries stream=r_frame_rate,avg_frame_rate -select_streams v:0 -of default=noprint_wrappers=1 smoke_frac.mp4 > smoke_frac_timing.txt
+        ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=noprint_wrappers=1 smoke_frac.mp4 > smoke_frac_count.txt
+        grep -q "r_frame_rate=24000/1001" smoke_frac_timing.txt
+        grep -q "avg_frame_rate=24000/1001" smoke_frac_timing.txt
+        grep -q "nb_read_frames=1" smoke_frac_count.txt
+
+    - name: MP4 smoke (8bit CLI 24000/1001 multi-frame)
+      if: matrix.target_cpu == 'x86-64'
+      run: |
+        trap 'status=$?; if [ $status -ne 0 ]; then echo "=== x264 mp4 fractional diagnostics ==="; for f in smoke_frac_multi_timing.txt smoke_frac_multi_count.txt smoke_frac_multi_packets.csv; do if [ -f "$f" ]; then echo "--- $f ---"; cat "$f"; fi; done; fi; exit $status' EXIT
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24000/1001 -frames:v 24 -pix_fmt yuv420p smoke_frac_multi.y4m
+        build/8b/x264.exe --fps 24000/1001 --frames 24 --bframes 4 --keyint 12 --min-keyint 12 -o smoke_frac_multi.mp4 smoke_frac_multi.y4m
+        ffprobe -v error -show_entries stream=r_frame_rate,avg_frame_rate -select_streams v:0 -of default=noprint_wrappers=1 smoke_frac_multi.mp4 > smoke_frac_multi_timing.txt
+        ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=noprint_wrappers=1 smoke_frac_multi.mp4 > smoke_frac_multi_count.txt
+        ffprobe -v error -show_packets -select_streams v:0 -show_entries packet=pts_time,dts_time,flags -of csv=p=0 smoke_frac_multi.mp4 > smoke_frac_multi_packets.csv
+        grep -q "r_frame_rate=24000/1001" smoke_frac_multi_timing.txt
+        grep -q "avg_frame_rate=24000/1001" smoke_frac_multi_timing.txt
+        grep -q "nb_read_frames=24" smoke_frac_multi_count.txt
+        test -s smoke_frac_multi_packets.csv
+        awk -F, 'NR == 1 { if (NF < 3 || $3 !~ /K/) exit 1 } END { if (NR != 24) exit 1 }' smoke_frac_multi_packets.csv
+        awk -F, 'NF >= 3 && $1 != "N/A" && $2 != "N/A" { if (($1+0) > ($2+0)) diff=1 } END { if (!diff) exit 1 }' smoke_frac_multi_packets.csv
+
+    - name: MP4 smoke (8bit CLI AUD request stays valid)
+      if: matrix.target_cpu == 'x86-64'
+      run: |
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24 -frames:v 16 -pix_fmt yuv420p smoke_aud.y4m
+        build/8b/x264.exe --fps 24/1 --frames 16 --bframes 4 --keyint 8 --min-keyint 8 --aud -o smoke_aud.mp4 smoke_aud.y4m
+        ffprobe -v error -show_entries format=format_name -of default=noprint_wrappers=1 smoke_aud.mp4 > smoke_aud_format.txt
+        ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=noprint_wrappers=1 smoke_aud.mp4 > smoke_aud_count.txt
+        ffprobe -v error -show_packets -select_streams v:0 -show_entries packet=pts_time,dts_time,flags -of csv=p=0 smoke_aud.mp4 > smoke_aud_packets.csv
+        grep -q "format_name=mov,mp4,m4a,3gp,3g2,mj2" smoke_aud_format.txt
+        grep -q "nb_read_frames=16" smoke_aud_count.txt
+        test -s smoke_aud_packets.csv
+
+    - name: MP4 smoke (8bit CLI warns and downgrades cbr nal-hrd)
+      if: matrix.target_cpu == 'x86-64'
+      run: |
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24 -frames:v 16 -pix_fmt yuv420p smoke_hrd.y4m
+        build/8b/x264.exe --fps 24/1 --frames 16 --bframes 4 --keyint 8 --min-keyint 8 --vbv-bufsize 1000 --vbv-maxrate 1000 --nal-hrd cbr -o smoke_hrd.mp4 smoke_hrd.y4m > smoke_hrd.log 2>&1
+        grep -q "cbr nal-hrd is not compatible with mp4" smoke_hrd.log
+        grep -q "nal_hrd=vbr" smoke_hrd.log
+        test -s smoke_hrd.mp4
+
+    - name: MP4 smoke (8bit CLI warns and normalizes intra-refresh open-gop)
+      if: matrix.target_cpu == 'x86-64'
+      run: |
+        trap 'status=$?; if [ $status -ne 0 ]; then echo "=== x264 mp4 intra-refresh diagnostics ==="; for f in smoke_ir_format.txt smoke_ir_stream.txt smoke_ir_count.txt smoke_ir_packets.csv smoke_ir_frames.csv smoke_ir.log; do if [ -f "$f" ]; then echo "--- $f ---"; cat "$f"; fi; done; fi; exit $status' EXIT
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24 -frames:v 16 -pix_fmt yuv420p smoke_ir.y4m
+        build/8b/x264.exe --fps 24/1 --frames 16 --bframes 1 --b-pyramid none --ref 1 --keyint 8 --min-keyint 8 --intra-refresh --open-gop -o smoke_ir.mp4 smoke_ir.y4m > smoke_ir.log 2>&1
+        grep -q "intra-refresh is not compatible with open-gop" smoke_ir.log
+        ffprobe -v error -show_streams -select_streams v:0 smoke_ir.mp4 > smoke_ir_stream.txt
+        ffprobe -v error -show_entries format=format_name -of default=noprint_wrappers=1 smoke_ir.mp4 > smoke_ir_format.txt
+        ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=noprint_wrappers=1 smoke_ir.mp4 > smoke_ir_count.txt
+        ffprobe -v error -show_packets -select_streams v:0 -show_entries packet=pts_time,dts_time,flags -of csv=p=0 smoke_ir.mp4 > smoke_ir_packets.csv
+        ffprobe -v error -select_streams v:0 -show_entries frame=pts_time,pkt_dts_time,pkt_duration_time,key_frame -of csv=p=0 smoke_ir.mp4 > smoke_ir_frames.csv
+        grep -q "format_name=mov,mp4,m4a,3gp,3g2,mj2" smoke_ir_format.txt
+        grep -q "codec_name=h264" smoke_ir_stream.txt
+        grep -q "codec_tag_string=avc1" smoke_ir_stream.txt
+        grep -q "nb_read_frames=16" smoke_ir_count.txt
+        test -s smoke_ir.mp4
+        test -s smoke_ir_packets.csv
+        test -s smoke_ir_frames.csv
+
+    - name: Package
+      run: |
+        mkdir dist
+        cp build/8b/x264.exe dist/x264-win64-${{ matrix.target_cpu }}-8bit.exe
+        cp build/10b/x264.exe dist/x264-win64-${{ matrix.target_cpu }}-10bit.exe
+        cp build/all/x264.exe dist/x264-win64-${{ matrix.target_cpu }}-all.exe
+
+    - name: Get Package Version
+      id: package_version
+      shell: bash
+      run: |
+        version_line=$(./build/all/x264.exe --version | head -n 1)
+        version=$(printf '%s\n' "$version_line" | awk '{print $2 "-" $3}')
+        release_version=$(printf '%s\n' "$version_line" | awk '{print $2}')
+        test -n "$version"
+        test -n "$release_version"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "release_version=$release_version" >> "$GITHUB_OUTPUT"
+
+    - name: Compress Package
+      run: |
+        cd dist
+        archive="x264-win64-${{ matrix.target_cpu }}-clang.${{ steps.package_version.outputs.version }}.7z"
+        release_archive="x264-win64-${{ matrix.target_cpu }}-clang.${{ steps.package_version.outputs.release_version }}.7z"
+        7za a -t7z -mx=9 "../$archive" ./*.exe
+        cp "../$archive" "../$release_archive"
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: x264-win64-${{ matrix.target_cpu }}-clang.${{ steps.package_version.outputs.version }}
+        path: x264-win64-${{ matrix.target_cpu }}-clang.${{ steps.package_version.outputs.version }}.7z
+        compression-level: 0
+
+    - name: Release
+      uses: softprops/action-gh-release@v3
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        tag_name: ${{ github.ref_name }}
+        files: x264-win64-${{ matrix.target_cpu }}-clang.${{ steps.package_version.outputs.release_version }}.7z
+        fail_on_unmatched_files: true
+        overwrite_files: true
+        generate_release_notes: false
+        prerelease: true

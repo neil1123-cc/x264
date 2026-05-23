@@ -28,6 +28,10 @@
 
 #include "common.h"
 
+#define X264_MBAFF_OFFSET_INTERLACE_MODES 2
+#define X264_MBAFF_OFFSET_PARITY_MODES 2
+#define X264_MBAFF_OFFSET_COUNT 8
+
 #define MC_LUMA(list,p) \
     h->mc.mc_luma( &h->mb.pic.p_fdec[p][4*y*FDEC_STRIDE+4*x], FDEC_STRIDE, \
                    &h->mb.pic.p_fref[list][i_ref][p*4], h->mb.pic.i_stride[p], \
@@ -659,7 +663,9 @@ static ALWAYS_INLINE void macroblock_load_pic_pointers( x264_t *h, int mb_x, int
         }
 }
 
-static const x264_left_table_t left_indices[4] =
+#define X264_LEFT_INDEX_TABLES 4
+
+static const x264_left_table_t left_indices[] =
 {
     /* Current is progressive */
     {{ 4, 4, 5, 5}, { 3,  3,  7,  7}, {16+1, 16+1, 32+1, 32+1}, {0, 0, 1, 1}, {0, 0, 0, 0}},
@@ -669,6 +675,7 @@ static const x264_left_table_t left_indices[4] =
     /* Both same */
     {{ 4, 5, 6, 3}, { 3,  7, 11, 15}, {16+1, 16+5, 32+1, 32+5}, {0, 1, 2, 3}, {0, 0, 1, 1}}
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(left_indices) == X264_LEFT_INDEX_TABLES, "left index table size must match neighbour field modes" );
 
 static ALWAYS_INLINE void macroblock_cache_load_neighbours( x264_t *h, int mb_x, int mb_y, int b_interlaced )
 {
@@ -1365,12 +1372,15 @@ static void macroblock_deblock_strength_mbaff( x264_t *h, uint8_t (*bs)[8][4] )
 {
     if( (h->mb.i_neighbour & MB_LEFT) && h->mb.field[h->mb.i_mb_left_xy[0]] != MB_INTERLACED )
     {
-        static const uint8_t offset[2][2][8] =
+        static const uint8_t offset[][X264_MBAFF_OFFSET_PARITY_MODES][X264_MBAFF_OFFSET_COUNT] =
         {   {   { 0, 0, 0, 0, 1, 1, 1, 1 },
                 { 2, 2, 2, 2, 3, 3, 3, 3 }, },
             {   { 0, 1, 2, 3, 0, 1, 2, 3 },
                 { 0, 1, 2, 3, 0, 1, 2, 3 }, }
         };
+        X264_STATIC_ASSERT( ARRAY_ELEMS(offset) == X264_MBAFF_OFFSET_INTERLACE_MODES, "MBAFF offset table size must match interlace modes" );
+        X264_STATIC_ASSERT( ARRAY_ELEMS(offset[0]) == X264_MBAFF_OFFSET_PARITY_MODES, "MBAFF offset table height must match parity modes" );
+        X264_STATIC_ASSERT( ARRAY_ELEMS(offset[0][0]) == X264_MBAFF_OFFSET_COUNT, "MBAFF offset table width must match boundary slots" );
         ALIGNED_ARRAY_8( uint8_t, tmpbs, [8] );
 
         const uint8_t *off = offset[MB_INTERLACED][h->mb.i_mb_y&1];

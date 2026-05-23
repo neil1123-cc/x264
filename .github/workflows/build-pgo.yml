@@ -1,0 +1,340 @@
+name: Generate PGO Profdata
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-x86-64
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      TMP: C:/Windows/Temp
+      TEMP: C:/Windows/Temp
+      TMPDIR: C:/Windows/Temp
+    steps:
+    - name: Checkout x264
+      uses: actions/checkout@v6
+      with:
+        path: x264
+        fetch-depth: 0
+
+    - name: Fetch VideoLAN version base
+      shell: bash
+      working-directory: x264
+      run: git fetch https://code.videolan.org/videolan/x264.git master:refs/remotes/videolan/master
+
+    # === Dependency Caching ===
+    - name: Setup Shared Dependencies
+      uses: ./x264/.github/actions/setup-windows-deps
+      with:
+        ffmpeg-cache-suffix: minimal-v2-clang
+        extra-msys2-packages: mingw-w64-clang-x86_64-ffmpeg
+        ffmpeg-configure: |
+          ./configure --prefix=/usr/local --enable-gpl --enable-version3 \
+            --disable-runtime-cpudetect --disable-all --disable-autodetect \
+            --enable-avformat --enable-avcodec --enable-swscale --enable-swresample \
+            --disable-everything --disable-network \
+            --enable-demuxer=mpegts,mov,matroska,h264,hevc,rawvideo,yuv4mpegpipe \
+            --enable-decoder=h264,hevc,ffv1,ffvhuff,huffyuv,rawvideo,wrapped_avframe,aac,ac3,mp3 \
+            --enable-protocol=file \
+            --cc=cc --cxx=c++ --cpu=x86-64
+
+    - name: Setup Build Dir
+      run: mkdir -p build/all
+
+    - name: Compile x264 Profiling Version
+      working-directory: build/all
+      run: |
+        export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/clang64/lib/pkgconfig
+        export X264_TARGET_CPU=x86-64
+        CC=cc RC=/ucrt64/bin/windres ../../x264/configure --prefix=/usr/local --bit-depth=all --enable-lavf --enable-lsmash --enable-static \
+          --extra-cflags="-O3 -fmerge-all-constants -momit-leaf-frame-pointer -I/usr/local/include -I/clang64/include -I../../ffmpeg" \
+          --extra-ldflags="-L/usr/local/lib -L/clang64/lib"
+        cat >> config.mak <<'EOF'
+        CFLAGS+= -flto -ffat-lto-objects -fprofile-instr-generate -fprofile-update=atomic
+        LDFLAGS+= -flto -fprofile-instr-generate
+        EOF
+        make -j$(nproc)
+        mv x264.exe x264-profiling.exe
+
+    - name: MP4 smoke (PGO profiling binary)
+      working-directory: build/all
+      run: |
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=128x72:rate=24 -frames:v 8 -pix_fmt yuv420p smoke_pgo.y4m
+        ./x264-profiling.exe --fps 24/1 --frames 8 --bframes 2 --keyint 4 --min-keyint 4 -o smoke_pgo.mp4 smoke_pgo.y4m
+        ffprobe -v error -show_entries format=format_name -of default=noprint_wrappers=1 smoke_pgo.mp4 > smoke_pgo_format.txt
+        ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames,codec_name,codec_tag_string -of default=noprint_wrappers=1 smoke_pgo.mp4 > smoke_pgo_stream.txt
+        grep -q "format_name=mov,mp4,m4a,3gp,3g2,mj2" smoke_pgo_format.txt
+        grep -q "codec_name=h264" smoke_pgo_stream.txt
+        grep -q "codec_tag_string=avc1" smoke_pgo_stream.txt
+        grep -q "nb_read_frames=8" smoke_pgo_stream.txt
+
+    - name: Generate test videos for PGO
+      working-directory: build
+      run: |
+        mkdir -p test-videos
+
+        echo "=== Generating short representative PGO sources ==="
+
+        ffmpeg -f lavfi -i "mandelbrot=size=2560x1440:rate=30" -t 3 -c:v rawvideo -pix_fmt yuv420p test-videos/1440p_mandelbrot.y4m
+        ffmpeg -f lavfi -i "testsrc2=duration=5:size=1920x1080:rate=30,zoompan=z='min(zoom+0.0015,1.5)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=30" -c:v rawvideo -pix_fmt yuv420p test-videos/1080p_motion.y4m
+        ffmpeg -f lavfi -i "testsrc2=duration=4:size=1920x1080:rate=24,noise=alls=18:allf=t,hue=s=0.85" -c:v rawvideo -pix_fmt yuv420p test-videos/1080p_grain_24fps.y4m
+        ffmpeg -f lavfi -i "nullsrc=s=1920x1080:r=24,drawbox=x=0:y=0:w=1920:h=1080:color=0x9fc0ff:t=fill,drawbox=x=0:y=760:w=1920:h=320:color=0x38598c:t=fill,drawbox=x=220:y=180:w=420:h=720:color=0xffd7c2:t=fill,drawbox=x=900:y=220:w=200:h=200:color=0xffffff:t=fill,drawbox=x=940:y=280:w=28:h=28:color=0x202020:t=fill,drawbox=x=1025:y=280:w=28:h=28:color=0x202020:t=fill,drawbox=x=860:y=620:w=360:h=18:color=0xd51f2a:t=fill" -t 4 -c:v rawvideo -pix_fmt yuv420p test-videos/1080p_anime_24fps.y4m
+        ffmpeg -f lavfi -i "nullsrc=s=1280x720:r=24,drawbox=x=0:y=0:w=1280:h=720:color=0x06090f:t=fill,drawbox=x=120:y=80:w=320:h=240:color=0x101722:t=fill,drawbox=x=620:y=140:w=220:h=420:color=0x141012:t=fill,drawbox=x=980:y=100:w=180:h=300:color=0x181820:t=fill,noise=alls=5:allf=t" -t 4 -c:v rawvideo -pix_fmt yuv420p test-videos/720p_dark_24fps.y4m
+        ffmpeg -f lavfi -i "testsrc=duration=2:size=1280x720:rate=30" -f lavfi -i "smptebars=duration=2:size=1280x720:rate=30" -f lavfi -i "testsrc2=duration=2:size=1280x720:rate=30" -filter_complex "[0:v][1:v][2:v]concat=n=3:v=1:a=0,format=yuv420p" -c:v rawvideo -pix_fmt yuv420p test-videos/720p_scenechange.y4m
+        ffmpeg -f lavfi -i "life=s=1280x720:r=30:mold=10:ratio=0.4" -t 4 -c:v rawvideo -pix_fmt yuv420p test-videos/720p_life_pattern.y4m
+        ffmpeg -f lavfi -i "smptebars=duration=4:size=854x480:rate=30" -c:v rawvideo -pix_fmt yuv420p test-videos/480p_smpte.y4m
+        ffmpeg -f lavfi -i "testsrc2=duration=4:size=640x360:rate=60" -c:v rawvideo -pix_fmt yuv420p test-videos/360p_fast_60fps.y4m
+
+        echo "=== Test videos generated ==="
+        ls -la test-videos/
+
+    - name: Run PGO profiling workload
+      working-directory: build/all
+      run: |
+        # === Hot-path option sets ===
+        OPT8_ULTRAFAST="--crf 28 --preset ultrafast --threads 4"
+        OPT8_FAST="--crf 24 --preset fast --threads 4"
+        OPT8_MEDIUM="--crf 22 --preset medium --threads 4"
+        OPT8_AQ="--crf 24 --preset medium --aq-mode 2 --threads 4"
+        OPT8_PSY_AQ3="--crf 22 --preset medium --psy-rd 1.0:0.15 --aq-mode 3 --threads 4"
+        OPT8_LOOKAHEAD="--crf 22 --preset medium --rc-lookahead 40 --bframes 6 --b-adapt 2 --threads 4"
+        OPT8_ANALYSIS="--crf 20 --preset slow --ref 5 --subme 8 --trellis 2 --direct auto --weightp 2 --merange 32 --threads 4"
+        OPT8_SLOWER="--crf 22 --preset slower --threads 2"
+        OPT8_VERYSLOW="--crf 20 --preset veryslow --threads 2"
+        OPT8_OPEN_GOP="--crf 22 --preset medium --bframes 4 --b-adapt 2 --keyint 48 --min-keyint 24 --open-gop --threads 4"
+
+        OPT10_MEDIUM="--output-depth 10 --crf 22 --preset medium --threads 4"
+        OPT10_AQ="--output-depth 10 --crf 24 --preset medium --aq-mode 2 --threads 4"
+        OPT10_PSY_AQ3="--output-depth 10 --crf 22 --preset medium --psy-rd 1.0:0.15 --aq-mode 3 --threads 4"
+        OPT10_ANALYSIS="--output-depth 10 --crf 20 --preset slow --ref 5 --subme 8 --trellis 2 --direct auto --weightp 2 --merange 32 --threads 4"
+
+        run_profile() {
+          local label="$1"
+          local opt="$2"
+          local input="$3"
+          echo ">>> [$label] ./x264-profiling.exe $opt $input -o /dev/null"
+          ./x264-profiling.exe $opt "$input" -o /dev/null 2>/dev/null || true
+        }
+
+        echo "=== Hot path: motion estimation and subpel analysis ==="
+        run_profile motion-medium "$OPT8_MEDIUM" ../test-videos/1080p_motion.y4m
+        run_profile motion-analysis "$OPT8_ANALYSIS" ../test-videos/1080p_motion.y4m
+        run_profile texture-1440p "$OPT8_MEDIUM" ../test-videos/1440p_mandelbrot.y4m
+
+        echo "=== Hot path: lookahead, scenecut and B-adapt ==="
+        run_profile lookahead-motion "$OPT8_LOOKAHEAD" ../test-videos/1080p_motion.y4m
+        run_profile lookahead-scenechange "$OPT8_LOOKAHEAD" ../test-videos/720p_scenechange.y4m
+        run_profile open-gop-scenechange "$OPT8_OPEN_GOP" ../test-videos/720p_scenechange.y4m
+
+        echo "=== Hot path: AQ, psy and texture masking ==="
+        run_profile aq-grain "$OPT8_AQ" ../test-videos/1080p_grain_24fps.y4m
+        run_profile psy-grain "$OPT8_PSY_AQ3" ../test-videos/1080p_grain_24fps.y4m
+        run_profile psy-dark "$OPT8_PSY_AQ3" ../test-videos/720p_dark_24fps.y4m
+        run_profile aq-animation "$OPT8_AQ" ../test-videos/1080p_anime_24fps.y4m
+
+        echo "=== Hot path: transforms, quant and entropy coding ==="
+        run_profile analysis-life "$OPT8_ANALYSIS" ../test-videos/720p_life_pattern.y4m
+        run_profile slower-smpte "$OPT8_SLOWER" ../test-videos/480p_smpte.y4m
+        run_profile veryslow-dark "$OPT8_VERYSLOW" ../test-videos/720p_dark_24fps.y4m
+
+        echo "=== Hot path: fast presets and high frame rate threading ==="
+        run_profile ultrafast-360p60 "$OPT8_ULTRAFAST" ../test-videos/360p_fast_60fps.y4m
+        run_profile fast-360p60 "$OPT8_FAST" ../test-videos/360p_fast_60fps.y4m
+        run_profile medium-360p60 "$OPT8_MEDIUM" ../test-videos/360p_fast_60fps.y4m
+
+        echo "=== Hot path: 10-bit linked encoder paths ==="
+        run_profile 10bit-motion "$OPT10_MEDIUM" ../test-videos/1080p_motion.y4m
+        run_profile 10bit-aq-grain "$OPT10_AQ" ../test-videos/1080p_grain_24fps.y4m
+        run_profile 10bit-psy-dark "$OPT10_PSY_AQ3" ../test-videos/720p_dark_24fps.y4m
+        run_profile 10bit-analysis-life "$OPT10_ANALYSIS" ../test-videos/720p_life_pattern.y4m
+
+        echo "=== Hot path: LAVF and FFMS demuxers ==="
+        ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=640x360:rate=24 -frames:v 16 -pix_fmt yuv420p -c:v ffv1 ../test-videos/lavf_input.mkv
+        run_profile lavf-input "--demuxer lavf --frames 16 --crf 23 --preset medium --threads 4" ../test-videos/lavf_input.mkv
+        run_profile ffms-input "--demuxer ffms --frames 16 --crf 23 --preset medium --threads 4" ../test-videos/lavf_input.mkv
+
+        echo "=== Hot path: MP4 muxing and open-GOP metadata ==="
+        ./x264-profiling.exe --fps 24/1 --frames 16 --bframes 4 --keyint 8 --min-keyint 8 --open-gop --threads 4 -o smoke_open.mp4 ../test-videos/360p_fast_60fps.y4m 2>/dev/null || true
+
+        llvm-profdata merge -output=../x264.profdata *.profraw
+        echo "=== Profile data generated ==="
+        ls -la ../x264.profdata
+
+    - name: Push profdata to branch
+      run: |
+        set -euo pipefail
+
+        target_cpu="x86-64"
+        profdata_branch="profdata-${target_cpu}"
+        profdata_push_dir=$(mktemp -d)
+        remote_url="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+        trap 'rm -rf "$profdata_push_dir"' EXIT
+
+        git init "$profdata_push_dir"
+        git -C "$profdata_push_dir" config user.name "github-actions[bot]"
+        git -C "$profdata_push_dir" config user.email "github-actions[bot]@users.noreply.github.com"
+        git -C "$profdata_push_dir" remote add origin "$remote_url"
+
+        branch_exists=false
+        if git -C "$profdata_push_dir" fetch origin "$profdata_branch" --depth=1; then
+          branch_exists=true
+          git -C "$profdata_push_dir" checkout -B "$profdata_branch" FETCH_HEAD
+        else
+          echo "Branch not found: $profdata_branch; creating it"
+          git -C "$profdata_push_dir" checkout --orphan "$profdata_branch"
+        fi
+
+        scratch_dir="$profdata_push_dir/.window"
+        profiles_dir="$scratch_dir/profiles"
+        mkdir -p "$profiles_dir"
+
+        copy_if_exists() {
+          local source_path="$1"
+          local destination_path="$2"
+          if [ -f "$profdata_push_dir/$source_path" ]; then
+            mkdir -p "$(dirname "$destination_path")"
+            cp "$profdata_push_dir/$source_path" "$destination_path"
+          fi
+        }
+
+        fresh_profdata="$GITHUB_WORKSPACE/build/x264.profdata"
+        test -f "$fresh_profdata"
+
+        copy_if_exists "profiles/0.profdata" "$profiles_dir/1.profdata"
+        copy_if_exists "profiles/1.profdata" "$profiles_dir/2.profdata"
+        copy_if_exists "profiles/2.profdata" "$profiles_dir/3.profdata"
+        cp "$fresh_profdata" "$profiles_dir/0.profdata"
+
+        (
+          cd "$scratch_dir"
+          merge_args=()
+          for slot in 0 1 2 3; do
+            if [ -f "profiles/${slot}.profdata" ]; then
+              if llvm-profdata show "profiles/${slot}.profdata" >/dev/null 2>&1; then
+                merge_args+=("--weighted-input=$((4 - slot)),profiles/${slot}.profdata")
+              else
+                echo "Skipping incompatible profdata window slot: profiles/${slot}.profdata"
+                rm -f "profiles/${slot}.profdata"
+              fi
+            fi
+          done
+
+          test "${#merge_args[@]}" -gt 0
+          llvm-profdata merge -o x264.profdata "${merge_args[@]}"
+          llvm-profdata show x264.profdata >/dev/null
+        )
+
+        if [ "$branch_exists" = true ]; then
+          git -C "$profdata_push_dir" checkout --orphan "$profdata_branch-tmp"
+        fi
+
+        find "$profdata_push_dir" -mindepth 1 -maxdepth 1 ! -name .git ! -name .window -exec rm -rf {} +
+        git -C "$profdata_push_dir" rm -rf . >/dev/null 2>&1 || true
+
+        mkdir -p "$profdata_push_dir/profiles"
+        cp "$scratch_dir/x264.profdata" "$profdata_push_dir/x264.profdata"
+        for slot in 0 1 2 3; do
+          if [ -f "$profiles_dir/${slot}.profdata" ]; then
+            cp "$profiles_dir/${slot}.profdata" "$profdata_push_dir/profiles/${slot}.profdata"
+          fi
+        done
+
+        action_default() {
+          local action_file="$1"
+          local input_name="$2"
+          awk -v input="  ${input_name}:" '
+            $0 == input { in_input = 1; next }
+            in_input && /^  [^[:space:]].*:$/ { exit }
+            in_input && /^[[:space:]]+default:/ { print $2; exit }
+          ' "$action_file"
+        }
+
+        setup_deps_action="$GITHUB_WORKSPACE/x264/.github/actions/setup-windows-deps/action.yml"
+        ffmpeg_ref=$(action_default "$setup_deps_action" ffmpeg-ref)
+        ffmpeg_cache_suffix="full-v1-clang"
+        mimalloc_ref=$(action_default "$setup_deps_action" mimalloc-ref)
+        obuparse_ref=$(action_default "$setup_deps_action" obuparse-ref)
+        obuparse_cache_key=$(action_default "$setup_deps_action" obuparse-cache-key)
+        ffms2_repository=$(action_default "$setup_deps_action" ffms2-repository)
+        ffms2_ref=$(action_default "$setup_deps_action" ffms2-ref)
+        ffms2_cache_key=$(action_default "$setup_deps_action" ffms2-cache-key)
+        lsmash_repository=$(action_default "$setup_deps_action" lsmash-repository)
+        lsmash_ref=$(action_default "$setup_deps_action" lsmash-ref)
+        lsmash_cache_key=$(action_default "$setup_deps_action" lsmash-cache-key)
+        test -n "$ffmpeg_ref"
+        test -n "$mimalloc_ref"
+        test -n "$obuparse_ref"
+        test -n "$obuparse_cache_key"
+        test -n "$ffms2_repository"
+        test -n "$ffms2_ref"
+        test -n "$ffms2_cache_key"
+        test -n "$lsmash_repository"
+        test -n "$lsmash_ref"
+        test -n "$lsmash_cache_key"
+
+        source_commit=$(git -C "$GITHUB_WORKSPACE/x264" rev-parse HEAD)
+        source_ref=$(git -C "$GITHUB_WORKSPACE/x264" rev-parse --abbrev-ref HEAD || true)
+        if [ "$source_ref" = "HEAD" ]; then
+          source_ref="${GITHUB_REF_NAME}"
+        fi
+        generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+        cat > "$profdata_push_dir/metadata.json" <<EOF
+        {
+          "schema_version": 1,
+          "generated_at": "${generated_at}",
+          "repository": "${GITHUB_REPOSITORY}",
+          "workflow": "${GITHUB_WORKFLOW}",
+          "run_id": "${GITHUB_RUN_ID}",
+          "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+          "source_ref": "${source_ref}",
+          "source_commit": "${source_commit}",
+          "target_cpu": "${target_cpu}",
+          "profdata_branch": "${profdata_branch}",
+          "layout": "per-cpu-bounded-window",
+          "window": {
+            "slots": 4,
+            "fresh_slot": "profiles/0.profdata",
+            "weights_newest_to_oldest": [4, 3, 2, 1]
+          },
+          "dependencies": {
+            "ffmpeg_ref": "${ffmpeg_ref}",
+            "ffmpeg_cache_suffix": "${ffmpeg_cache_suffix}",
+            "mimalloc_ref": "${mimalloc_ref}",
+            "obuparse_ref": "${obuparse_ref}",
+            "obuparse_cache_key": "${obuparse_cache_key}",
+            "ffms2_repository": "${ffms2_repository}",
+            "ffms2_ref": "${ffms2_ref}",
+            "ffms2_cache_key": "${ffms2_cache_key}",
+            "lsmash_repository": "${lsmash_repository}",
+            "lsmash_ref": "${lsmash_ref}",
+            "lsmash_cache_key": "${lsmash_cache_key}-${lsmash_ref}"
+          }
+        }
+        EOF
+
+        rm -rf "$scratch_dir"
+        if [ "$branch_exists" = true ]; then
+          git -C "$profdata_push_dir" branch -D "$profdata_branch" || true
+          git -C "$profdata_push_dir" branch -m "$profdata_branch"
+        fi
+
+        git -C "$profdata_push_dir" add x264.profdata profiles metadata.json
+
+        if git -C "$profdata_push_dir" diff --cached --quiet; then
+          echo "No profdata changes to publish for $target_cpu"
+          exit 0
+        fi
+
+        git -C "$profdata_push_dir" commit -m "Update PGO profdata (${target_cpu}) - $(date +%Y%m%d-%H%M)"
+        git -C "$profdata_push_dir" push -f origin HEAD:"$profdata_branch"

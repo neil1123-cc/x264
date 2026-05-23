@@ -32,6 +32,13 @@
 #define RDO_SKIP_BS 0
 #endif
 
+#define X264_CABAC_MVD_CTXES 8
+#define X264_CABAC_B_MODE_COUNT (B_BI_BI - B_L0_L0 + 1)
+#define X264_CABAC_B_PARTITION_COUNT (D_16x16 - D_16x8 + 1)
+#define X264_CABAC_CBF_BASE_CTX_COUNT (DCT_CHROMAV_8x8 + 1)
+#define X264_CABAC_COEFF_ABS_LEVEL_CTX_COUNT 8
+#define X264_CABAC_COEFF_ABS_LEVEL_TRANSITIONS 2
+
 static inline void cabac_mb_type_intra( x264_t *h, x264_cabac_t *cb, int i_mb_type,
                                         int ctx0, int ctx1, int ctx2, int ctx3, int ctx4, int ctx5 )
 {
@@ -305,7 +312,8 @@ static ALWAYS_INLINE int cabac_mvd_cpn( x264_t *h, x264_cabac_t *cb, int i_list,
         }
     }
 #else
-    static const uint8_t ctxes[8] = { 3,4,5,6,6,6,6,6 };
+    static const uint8_t ctxes[] = { 3,4,5,6,6,6,6,6 };
+    X264_STATIC_ASSERT( ARRAY_ELEMS(ctxes) == X264_CABAC_MVD_CTXES, "CABAC MVD context table size must match abs value bins" );
 
     if( i_abs < 9 )
     {
@@ -545,7 +553,7 @@ static ALWAYS_INLINE void cabac_mb_header_b( x264_t *h, x264_cabac_t *cb, int i_
     else if( i_mb_type >= B_L0_L0 && i_mb_type <= B_BI_BI )
     {
         /* All B modes */
-        static const uint8_t i_mb_bits[9*3] =
+        static const uint8_t i_mb_bits[] =
         {
             0x31, 0x29, 0x4, /* L0 L0 */
             0x35, 0x2d, 0,   /* L0 L1 */
@@ -557,6 +565,7 @@ static ALWAYS_INLINE void cabac_mb_header_b( x264_t *h, x264_cabac_t *cb, int i_
             0x5b, 0x7b, 0,   /* BI L1 */
             0x47, 0x67, 0x21 /* BI BI */
         };
+        X264_STATIC_ASSERT( ARRAY_ELEMS(i_mb_bits) == X264_CABAC_B_MODE_COUNT * X264_CABAC_B_PARTITION_COUNT, "CABAC B-mode bit table size must match B mode and partition domains" );
 
         const int idx = (i_mb_type - B_L0_L0) * 3 + (h->mb.i_partition - D_16x8);
         int bits = i_mb_bits[idx];
@@ -611,7 +620,8 @@ static ALWAYS_INLINE void cabac_mb_header_b( x264_t *h, x264_cabac_t *cb, int i_
 
 static ALWAYS_INLINE int cabac_cbf_ctxidxinc( x264_t *h, int i_cat, int i_idx, int b_intra, int b_dc )
 {
-    static const uint16_t base_ctx[14] = {85,89,93,97,101,1012,460,464,468,1016,472,476,480,1020};
+    static const uint16_t base_ctx[] = {85,89,93,97,101,1012,460,464,468,1016,472,476,480,1020};
+    X264_STATIC_ASSERT( ARRAY_ELEMS(base_ctx) == X264_CABAC_CBF_BASE_CTX_COUNT, "CABAC CBF base context table size must match block categories" );
 
     if( b_dc )
     {
@@ -647,19 +657,24 @@ static ALWAYS_INLINE int cabac_cbf_ctxidxinc( x264_t *h, int i_cat, int i_idx, i
 // node ctx: 0..3: abslevel1 (with abslevelgt1 == 0).
 //           4..7: abslevelgt1 + 3 (and abslevel1 doesn't matter).
 /* map node ctx => cabac ctx for level=1 */
-static const uint8_t coeff_abs_level1_ctx[8] = { 1, 2, 3, 4, 0, 0, 0, 0 };
+static const uint8_t coeff_abs_level1_ctx[] = { 1, 2, 3, 4, 0, 0, 0, 0 };
 /* map node ctx => cabac ctx for level>1 */
-static const uint8_t coeff_abs_levelgt1_ctx[8] = { 5, 5, 5, 5, 6, 7, 8, 9 };
+static const uint8_t coeff_abs_levelgt1_ctx[] = { 5, 5, 5, 5, 6, 7, 8, 9 };
 /* 4:2:2 chroma dc uses a slightly different state machine for some reason, also note that
  * 4:2:0 chroma dc doesn't use the last state so it has identical output with both arrays. */
-static const uint8_t coeff_abs_levelgt1_ctx_chroma_dc[8] = { 5, 5, 5, 5, 6, 7, 8, 8 };
+static const uint8_t coeff_abs_levelgt1_ctx_chroma_dc[] = { 5, 5, 5, 5, 6, 7, 8, 8 };
 
-static const uint8_t coeff_abs_level_transition[2][8] = {
+static const uint8_t coeff_abs_level_transition[][X264_CABAC_COEFF_ABS_LEVEL_CTX_COUNT] = {
 /* update node ctx after coding a level=1 */
     { 1, 2, 3, 3, 4, 5, 6, 7 },
 /* update node ctx after coding a level>1 */
     { 4, 4, 4, 4, 5, 6, 7, 7 }
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(coeff_abs_level1_ctx) == X264_CABAC_COEFF_ABS_LEVEL_CTX_COUNT, "CABAC coeff level1 context table size must match node context domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(coeff_abs_levelgt1_ctx) == X264_CABAC_COEFF_ABS_LEVEL_CTX_COUNT, "CABAC coeff levelgt1 context table size must match node context domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(coeff_abs_levelgt1_ctx_chroma_dc) == X264_CABAC_COEFF_ABS_LEVEL_CTX_COUNT, "CABAC chroma DC coeff levelgt1 context table size must match node context domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(coeff_abs_level_transition) == X264_CABAC_COEFF_ABS_LEVEL_TRANSITIONS, "CABAC coeff level transition table height must match transition types" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(coeff_abs_level_transition[0]) == X264_CABAC_COEFF_ABS_LEVEL_CTX_COUNT, "CABAC coeff level transition table width must match node context domain" );
 
 #if !RDO_SKIP_BS
 static ALWAYS_INLINE void cabac_block_residual_internal( x264_t *h, x264_cabac_t *cb, int ctx_block_cat, dctcoef *l, int chroma422dc )

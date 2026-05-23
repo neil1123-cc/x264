@@ -1,0 +1,98 @@
+name: Setup L-SMASH
+description: Checkout, patch, build, cache, and install L-SMASH for Windows CI
+
+inputs:
+  repository:
+    description: L-SMASH repository to checkout
+    required: false
+    default: vimeo/l-smash
+  ref:
+    description: L-SMASH ref to checkout
+    required: false
+    default: master
+  path:
+    description: Checkout path
+    required: false
+    default: l-smash
+  cache-key:
+    description: Cache key for L-SMASH install artifacts
+    required: false
+    default: lsmash-vimeo-clang64-patched-v3
+  patch-path:
+    description: Patch path relative to the checked-out L-SMASH directory
+    required: false
+    default: ../x264/.github/patches/l-smash-clang-coff-refptr.patch
+  patch-check-paths:
+    description: Paths passed to git diff --check --cached after applying the patch
+    required: false
+    default: codecs/av1_obu.c codecs/description.c codecs/hevc.c codecs/mp4a.c codecs/mp4sys.c codecs/nalu.c core/box.c core/box_default.c core/box_default.h core/isom.c core/print.c core/read.c core/write.c
+  extra-cflags:
+    description: Extra CFLAGS passed to L-SMASH configure
+    required: false
+    default: -I/usr/local/include -O3 -DNDEBUG -fno-lto -fno-pic -fno-pie
+  extra-ldflags:
+    description: Extra LDFLAGS passed to L-SMASH configure
+    required: false
+    default: -L/usr/local/lib -fno-lto -fno-pic
+  install-prefix:
+    description: Install prefix passed to L-SMASH configure
+    required: false
+    default: /usr/local
+  cc:
+    description: C compiler passed to L-SMASH configure
+    required: false
+    default: clang
+
+runs:
+  using: composite
+  steps:
+    - name: Cache L-SMASH
+      id: cache-lsmash
+      uses: actions/cache@v5
+      with:
+        path: lsmash-install
+        key: ${{ inputs.cache-key }}
+
+    - name: Checkout L-SMASH
+      if: steps.cache-lsmash.outputs.cache-hit != 'true'
+      uses: actions/checkout@v6
+      with:
+        path: ${{ inputs.path }}
+        repository: ${{ inputs.repository }}
+        ref: ${{ inputs.ref }}
+
+    - name: Build L-SMASH with Clang and Patch
+      if: steps.cache-lsmash.outputs.cache-hit != 'true'
+      working-directory: ${{ inputs.path }}
+      env:
+        MSYSTEM: CLANG64
+      shell: msys2 {0}
+      run: |
+        set -euo pipefail
+        export PATH="/clang64/bin:/usr/bin:/mingw64/bin"
+        hash -r
+        clang --version
+
+        git apply --ignore-whitespace ${{ inputs.patch-path }}
+        git diff --check --cached -- ${{ inputs.patch-check-paths }}
+
+        LSMASH_CFLAGS="${{ inputs.extra-cflags }}"
+        LSMASH_LDFLAGS="${{ inputs.extra-ldflags }}"
+        ./configure --prefix=${{ inputs.install-prefix }} --cc=${{ inputs.cc }} --extra-cflags="$LSMASH_CFLAGS" --extra-ldflags="$LSMASH_LDFLAGS"
+        make clean
+        make lib -j$(nproc)
+        make install-lib
+
+        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
+        cp importer/importer.h /usr/local/include/lsmash_importer.h
+        mkdir -p "$WORKSPACE/lsmash-install/include" "$WORKSPACE/lsmash-install/lib/pkgconfig"
+        cp /usr/local/include/lsmash*.h "$WORKSPACE/lsmash-install/include/"
+        cp /usr/local/lib/liblsmash.a "$WORKSPACE/lsmash-install/lib/"
+        cp /usr/local/lib/pkgconfig/liblsmash.pc "$WORKSPACE/lsmash-install/lib/pkgconfig/"
+
+    - name: Install Cached L-SMASH
+      if: steps.cache-lsmash.outputs.cache-hit == 'true'
+      shell: msys2 {0}
+      run: |
+        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
+        cp -r "$WORKSPACE/lsmash-install/"* /usr/local/

@@ -29,13 +29,22 @@
 #include "macroblock.h"
 #include "me.h"
 
+#define X264_UMH_PIXEL_SIZE_SHIFTS 7
+#define X264_UMH_RANGE_CONTEXTS 4
+#define X264_UMH_HEX4_POINTS 16
+#define X264_UMH_POINT_COMPONENTS 2
+#define X264_BIME_DIA4D_POINTS 33
+#define X264_BIME_DIA4D_COMPONENTS 4
+
 /* presets selected from good points on the speed-vs-quality curve of several test videos
  * subpel_iters[i_subpel_refine] = { refine_hpel, refine_qpel, me_hpel, me_qpel }
  * where me_* are the number of EPZS iterations run on all candidate block types,
  * and refine_* are run only on the winner.
  * the subme=8,9 values are much higher because any amount of satd search makes
  * up its time by reducing the number of qpel-rd iterations. */
-static const uint8_t subpel_iterations[][4] =
+#define X264_SUBPEL_REFINE_COUNT 12
+#define X264_SUBPEL_ITERATION_STAGES 4
+static const uint8_t subpel_iterations[][X264_SUBPEL_ITERATION_STAGES] =
    {{0,0,0,0},
     {1,1,0,0},
     {0,1,1,0},
@@ -48,12 +57,19 @@ static const uint8_t subpel_iterations[][4] =
     {0,0,4,10},
     {0,0,4,10},
     {0,0,4,10}};
+X264_STATIC_ASSERT( ARRAY_ELEMS(subpel_iterations) == X264_SUBPEL_REFINE_COUNT, "subpel iteration table size must match subme range" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(subpel_iterations[0]) == X264_SUBPEL_ITERATION_STAGES, "subpel iteration table width must match iteration stages" );
 
 /* (x-1)%6 */
-static const uint8_t mod6m1[8] = {5,0,1,2,3,4,5,0};
+static const uint8_t mod6m1[] = {5,0,1,2,3,4,5,0};
+X264_STATIC_ASSERT( ARRAY_ELEMS(mod6m1) == 8, "mod6m1 table size must cover repeated hexagon index domain" );
 /* radius 2 hexagon. repeated entries are to avoid having to compute mod6 every time. */
-static const int8_t hex2[8][2] = {{-1,-2}, {-2,0}, {-1,2}, {1,2}, {2,0}, {1,-2}, {-1,-2}, {-2,0}};
-static const int8_t square1[9][2] = {{0,0}, {0,-1}, {0,1}, {-1,0}, {1,0}, {-1,-1}, {-1,1}, {1,-1}, {1,1}};
+static const int8_t hex2[][2] = {{-1,-2}, {-2,0}, {-1,2}, {1,2}, {2,0}, {1,-2}, {-1,-2}, {-2,0}};
+X264_STATIC_ASSERT( ARRAY_ELEMS(hex2) == 8, "hexagon search table size must cover repeated direction domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(hex2[0]) == 2, "hexagon search table width must match motion vector components" );
+static const int8_t square1[][2] = {{0,0}, {0,-1}, {0,1}, {-1,0}, {1,0}, {-1,-1}, {-1,1}, {1,-1}, {1,1}};
+X264_STATIC_ASSERT( ARRAY_ELEMS(square1) == 9, "square search table size must cover center and 8 neighbors" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(square1[0]) == 2, "square search table width must match motion vector components" );
 
 static void refine_subpel( x264_t *h, x264_me_t *m, int hpel_iters, int qpel_iters, int *p_halfpel_thresh, int b_refine_qpel );
 
@@ -424,7 +440,8 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             /* Uneven-cross Multi-Hexagon-grid Search
              * as in JM, except with different early termination */
 
-            static const uint8_t pixel_size_shift[7] = { 0, 1, 1, 2, 3, 3, 4 };
+            static const uint8_t pixel_size_shift[] = { 0, 1, 1, 2, 3, 3, 4 };
+            X264_STATIC_ASSERT( ARRAY_ELEMS(pixel_size_shift) == X264_UMH_PIXEL_SIZE_SHIFTS, "UMH pixel size shift table size must match pixel size domain" );
 
             int ucost1, ucost2;
             int cross_start = 1;
@@ -471,13 +488,15 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
                 /* range multipliers based on casual inspection of some statistics of
                  * average distance between current predictor and final mv found by ESA.
                  * these have not been tuned much by actual encoding. */
-                static const uint8_t range_mul[4][4] =
+                static const uint8_t range_mul[][X264_UMH_RANGE_CONTEXTS] =
                 {
                     { 3, 3, 4, 4 },
                     { 3, 4, 4, 4 },
                     { 4, 4, 4, 5 },
                     { 4, 4, 5, 6 },
                 };
+                X264_STATIC_ASSERT( ARRAY_ELEMS(range_mul) == X264_UMH_RANGE_CONTEXTS, "UMH range multiplier table height must match motion vector contexts" );
+                X264_STATIC_ASSERT( ARRAY_ELEMS(range_mul[0]) == X264_UMH_RANGE_CONTEXTS, "UMH range multiplier table width must match SAD contexts" );
                 int mvd;
                 int sad_ctx, mvd_ctx;
                 int denom = 1;
@@ -531,12 +550,14 @@ void x264_me_search_ref( x264_t *h, x264_me_t *m, int16_t (*mvc)[2], int i_mvc, 
             int i = 1;
             do
             {
-                static const int8_t hex4[16][2] = {
+                static const int8_t hex4[][X264_UMH_POINT_COMPONENTS] = {
                     { 0,-4}, { 0, 4}, {-2,-3}, { 2,-3},
                     {-4,-2}, { 4,-2}, {-4,-1}, { 4,-1},
                     {-4, 0}, { 4, 0}, {-4, 1}, { 4, 1},
                     {-4, 2}, { 4, 2}, {-2, 3}, { 2, 3},
                 };
+                X264_STATIC_ASSERT( ARRAY_ELEMS(hex4) == X264_UMH_HEX4_POINTS, "UMH hex4 table size must match search points" );
+                X264_STATIC_ASSERT( ARRAY_ELEMS(hex4[0]) == X264_UMH_POINT_COMPONENTS, "UMH hex4 table width must match point components" );
 
                 if( 4*i > X264_MIN4( mv_x_max-omx, omx-mv_x_min,
                                      mv_y_max-omy, omy-mv_y_min ) )
@@ -1061,7 +1082,7 @@ static ALWAYS_INLINE void me_refine_bidir( x264_t *h, x264_me_t *m0, x264_me_t *
     /* each byte of visited represents 8 possible m1y positions, so a 4D array isn't needed */
     ALIGNED_ARRAY_64( uint8_t, visited,[8],[8][8] );
     /* all permutations of an offset in up to 2 of the dimensions */
-    ALIGNED_4( static const int8_t dia4d[33][4] ) =
+    ALIGNED_4( static const int8_t dia4d[][X264_BIME_DIA4D_COMPONENTS] ) =
     {
         {0,0,0,0},
         {0,0,0,1}, {0,0,0,-1}, {0,0,1,0}, {0,0,-1,0},
@@ -1073,6 +1094,8 @@ static ALWAYS_INLINE void me_refine_bidir( x264_t *h, x264_me_t *m0, x264_me_t *
         {-1,1,0,0},{1,-1,0,0}, {1,0,0,-1},{-1,0,0,1},
         {0,-1,0,1},{0,1,0,-1}, {-1,0,1,0},{1,0,-1,0},
     };
+    X264_STATIC_ASSERT( ARRAY_ELEMS(dia4d) == X264_BIME_DIA4D_POINTS, "BIME dia4d table size must match search points" );
+    X264_STATIC_ASSERT( ARRAY_ELEMS(dia4d[0]) == X264_BIME_DIA4D_COMPONENTS, "BIME dia4d table width must match motion vector components" );
 
     if( bm0y < h->mb.mv_min_spel[1] + 8 || bm1y < h->mb.mv_min_spel[1] + 8 ||
         bm0y > h->mb.mv_max_spel[1] - 8 || bm1y > h->mb.mv_max_spel[1] - 8 ||

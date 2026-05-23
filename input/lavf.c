@@ -264,14 +264,16 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     info->width      = h->lavc->width;
     info->height     = h->lavc->height;
     info->csp        = h->first_pic->img.csp;
-    info->num_frames = s->nb_frames;
-    /* 备用估算：当 nb_frames 为 0 时，通过时长和帧率估算 */
-    if( info->num_frames == 0 && s->duration > 0 )
+    FAIL_IF_ERROR( s->nb_frames > INT_MAX, "too many frames\n" );
+    info->num_frames = s->nb_frames > 0 ? (int)s->nb_frames : 0;
+    if( info->num_frames == 0 && s->duration > 0 && s->avg_frame_rate.den )
     {
         double fps = (double)s->avg_frame_rate.num / s->avg_frame_rate.den;
         double duration_est = s->duration * av_q2d(s->time_base);
-        if( fps > 0 && duration_est > 0 )
-            info->num_frames = (int)(duration_est * fps + 0.5);
+        double frame_est = duration_est * fps + 0.5;
+        FAIL_IF_ERROR( frame_est > INT_MAX, "too many estimated frames\n" );
+        if( fps > 0 && duration_est > 0 && frame_est > 0 )
+            info->num_frames = (int)frame_est;
     }
     info->sar_height = h->lavc->sample_aspect_ratio.den;
     info->sar_width  = h->lavc->sample_aspect_ratio.num;

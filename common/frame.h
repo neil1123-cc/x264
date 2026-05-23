@@ -33,6 +33,13 @@
 #define PADV 32
 #define PADH_ALIGN X264_MAX( PADH, NATIVE_ALIGN / SIZEOF_PIXEL )
 #define PADH2 (PADH_ALIGN + PADH)
+#define LOWRES_COST_MASK ((1<<14)-1)
+#define LOWRES_COST_SHIFT 14
+
+X264_STATIC_ASSERT( PADH_ALIGN >= PADH, "horizontal padding alignment must include base padding" );
+X264_STATIC_ASSERT( PADH2 >= PADH*2, "extended horizontal padding must cover both sides" );
+X264_STATIC_ASSERT( LOWRES_COST_SHIFT < 16, "lowres cost shift must fit uint16_t" );
+X264_STATIC_ASSERT( LOWRES_COST_MASK == (1 << LOWRES_COST_SHIFT) - 1, "lowres cost mask must match shift" );
 
 typedef struct x264_frame
 {
@@ -108,8 +115,6 @@ typedef struct x264_frame
      * Doesn't need special addressing for intra cost because
      * lists_used is guaranteed to be zero in that cast. */
     uint16_t (*lowres_costs[X264_BFRAME_MAX+2][X264_BFRAME_MAX+2]);
-    #define LOWRES_COST_MASK ((1<<14)-1)
-    #define LOWRES_COST_SHIFT 14
 
     int     *lowres_mv_costs[2][X264_BFRAME_MAX+1];
     int8_t  *ref[2];
@@ -183,6 +188,42 @@ typedef struct x264_frame
     x264_frame_opencl_t opencl;
 #endif
 } x264_frame_t;
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->plane) == 3, "frame plane pointer count must match color planes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->plane_fld) == 3, "frame field plane pointer count must match color planes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->i_delta_poc) == 2, "frame delta POC count must match POC deltas" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->i_stride) == 3, "frame stride count must match color planes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->filtered) == 3, "frame filtered plane count must match color planes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->filtered[0]) == 4, "frame filtered plane width must match filter variants" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->filtered_fld) == 3, "frame field filtered plane count must match color planes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->filtered_fld[0]) == 4, "frame field filtered plane width must match filter variants" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->lowres) == 4, "frame lowres plane count must match filter variants" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->buffer) == 4, "frame buffer count must match allocation domains" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->buffer_fld) == 4, "frame field buffer count must match allocation domains" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->weight) == X264_REF_MAX, "frame weight table height must match max refs" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->weight[0]) == 3, "frame weight table width must match color planes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->weighted) == X264_REF_MAX, "frame weighted pointer count must match max refs" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->lowres_mvs) == 2, "frame lowres MV list count must match reference lists" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->lowres_mvs[0]) == X264_BFRAME_MAX+1, "frame lowres MV width must match B-frame domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->lowres_costs) == X264_BFRAME_MAX+2, "lowres cost table height must match B-frame domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->lowres_costs[0]) == X264_BFRAME_MAX+2, "lowres cost table width must match B-frame domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->lowres_mv_costs) == 2, "frame lowres MV cost height must match reference lists" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->lowres_mv_costs[0]) == X264_BFRAME_MAX+1, "frame lowres MV cost width must match B-frame domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->ref_poc) == 2, "frame reference POC height must match reference lists" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->ref_poc[0]) == X264_REF_MAX, "frame reference POC width must match max refs" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->inv_ref_poc) == 2, "frame inverse reference POC size must match field parity domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->i_cost_est) == X264_BFRAME_MAX+2, "frame cost estimate height must match B-frame domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->i_cost_est[0]) == X264_BFRAME_MAX+2, "frame cost estimate width must match B-frame domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->i_cost_est_aq) == X264_BFRAME_MAX+2, "frame AQ cost estimate height must match B-frame domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->i_cost_est_aq[0]) == X264_BFRAME_MAX+2, "frame AQ cost estimate width must match B-frame domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->i_intra_mbs) == X264_BFRAME_MAX+2, "frame intra MB count size must match B-frame domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->i_row_satds) == X264_BFRAME_MAX+2, "frame row SATD height must match B-frame domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->i_row_satds[0]) == X264_BFRAME_MAX+2, "frame row SATD width must match B-frame domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->f_weighted_cost_delta) == X264_BFRAME_MAX+2, "frame weighted cost delta size must match B-frame domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->i_pixel_sum) == 3, "frame pixel sum count must match color planes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->i_pixel_ssd) == 3, "frame pixel SSD count must match color planes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->i_planned_type) == X264_LOOKAHEAD_MAX+1, "planned type queue size must match lookahead domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->i_planned_satd) == X264_LOOKAHEAD_MAX+1, "planned SATD queue size must match lookahead domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_frame_t*)0)->f_planned_cpb_duration) == X264_LOOKAHEAD_MAX+1, "planned CPB duration queue size must match lookahead domain" );
 
 /* synchronized frame list */
 typedef struct
@@ -219,6 +260,10 @@ typedef struct
                               int16_t mv[2][X264_SCAN8_LUMA_SIZE][2], uint8_t bs[2][8][4], int mvy_limit,
                               int bframe );
 } x264_deblock_function_t;
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_deblock_function_t*)0)->deblock_luma) == 2, "deblock luma table size must match edge directions" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_deblock_function_t*)0)->deblock_chroma) == 2, "deblock chroma table size must match edge directions" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_deblock_function_t*)0)->deblock_luma_intra) == 2, "intra deblock luma table size must match edge directions" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_deblock_function_t*)0)->deblock_chroma_intra) == 2, "intra deblock chroma table size must match edge directions" );
 
 #define x264_frame_delete x264_template(frame_delete)
 void          x264_frame_delete( x264_frame_t *frame );

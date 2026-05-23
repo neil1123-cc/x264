@@ -150,7 +150,7 @@ static inline int64_t x264_from_timebase( int64_t i, timebase_t from, int64_t sc
 #include "audio/audio.h"
 
 audio_info_t *x264_af_get_info( hnd_t handle );
-audio_filter_t *x264_af_get_filter( char *name );
+audio_filter_t *x264_af_get_filter( const char *name );
 audio_packet_t *x264_af_get_samples( hnd_t handle, int64_t first_sample, int64_t last_sample );
 void x264_af_free_packet( audio_packet_t *pkt );
 void x264_af_close( hnd_t chain );

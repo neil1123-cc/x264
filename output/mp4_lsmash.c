@@ -490,7 +490,8 @@ static int audio_init( hnd_t handle, cli_output_opt_t *opt, hnd_t filters, char 
         const audio_encoder_t *encoder = x264_select_audio_encoder( audio_enc, codec_list, &used_enc );
         MP4_FAIL_IF_ERR( !encoder, "unable to select audio encoder.\n" );
 
-        snprintf( audio_params, MAX_ARGS, "%s,codec=%s", audio_parameters, used_enc );
+        int audio_params_len = snprintf( audio_params, sizeof(audio_params), "%s,codec=%s", audio_parameters, used_enc );
+        MP4_FAIL_IF_ERR( audio_params_len < 0 || (size_t)audio_params_len >= sizeof(audio_params), "audio encoder parameters are too long\n" );
         henc = x264_audio_encoder_open( encoder, filters, audio_params );
     }
 
@@ -1312,9 +1313,15 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
 {
     mp4_hnd_t *p_mp4 = handle;
 
+    if( p_nal[0].i_payload < H264_NALU_LENGTH_SIZE || p_nal[1].i_payload < H264_NALU_LENGTH_SIZE )
+        return -1;
+
     uint32_t sps_size = p_nal[0].i_payload - H264_NALU_LENGTH_SIZE;
     uint32_t pps_size = p_nal[1].i_payload - H264_NALU_LENGTH_SIZE;
     uint32_t sei_size = p_nal[2].i_payload;
+
+    if( sps_size > UINT16_MAX || pps_size > UINT16_MAX )
+        return -1;
 
     uint8_t *sps = p_nal[0].p_payload + H264_NALU_LENGTH_SIZE;
     uint8_t *pps = p_nal[1].p_payload + H264_NALU_LENGTH_SIZE;

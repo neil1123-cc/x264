@@ -1,0 +1,295 @@
+name: Setup Windows dependencies
+description: Install shared Windows CI dependencies and build cached third-party libraries
+
+inputs:
+  ffmpeg-ref:
+    description: FFmpeg ref to checkout
+    required: false
+    default: n8.1
+  ffmpeg-cache-suffix:
+    description: Cache suffix appended after the FFmpeg ref
+    required: false
+    default: minimal-v2-clang
+  ffmpeg-configure:
+    description: Shell snippet that configures FFmpeg before building
+    required: true
+  mimalloc-ref:
+    description: mimalloc ref to checkout
+    required: false
+    default: v3.3.2
+  obuparse-ref:
+    description: obuparse ref to checkout
+    required: false
+    default: v2.0.2
+  obuparse-cache-key:
+    description: Cache key for obuparse install artifacts
+    required: false
+    default: obuparse-v2.0.2-clang-v1
+  ffms2-repository:
+    description: ffms2 repository to checkout
+    required: false
+    default: FFMS/ffms2
+  ffms2-ref:
+    description: ffms2 ref to checkout
+    required: false
+    default: master
+  ffms2-path:
+    description: ffms2 checkout path
+    required: false
+    default: ffms2
+  ffms2-cache-key:
+    description: Cache key for ffms2 install artifacts
+    required: false
+    default: ffms2-latest-clang-v1
+  lsmash-repository:
+    description: L-SMASH repository to checkout
+    required: false
+    default: vimeo/l-smash
+  lsmash-ref:
+    description: L-SMASH ref to checkout
+    required: false
+    default: 04e39f1fb232c332d4b04a1043c02c7c2d282d00
+  lsmash-path:
+    description: L-SMASH checkout path
+    required: false
+    default: l-smash
+  lsmash-cache-key:
+    description: Cache key for L-SMASH install artifacts
+    required: false
+    default: lsmash-vimeo-clang64-patched-v3
+  lsmash-patch-path:
+    description: Patch path relative to the checked-out L-SMASH directory
+    required: false
+    default: ../x264/.github/patches/l-smash-clang-coff-refptr.patch
+  lsmash-patch-check-paths:
+    description: Paths passed to git diff --check --cached after applying the patch
+    required: false
+    default: codecs/av1_obu.c codecs/description.c codecs/hevc.c codecs/mp4a.c codecs/mp4sys.c codecs/nalu.c core/box.c core/box_default.c core/box_default.h core/isom.c core/print.c core/read.c core/write.c
+  lsmash-extra-cflags:
+    description: Extra CFLAGS passed to L-SMASH configure
+    required: false
+    default: -I/usr/local/include -O3 -DNDEBUG -fno-lto -fno-pic -fno-pie
+  lsmash-extra-ldflags:
+    description: Extra LDFLAGS passed to L-SMASH configure
+    required: false
+    default: -L/usr/local/lib -fno-lto -fno-pic
+  lsmash-install-prefix:
+    description: Install prefix passed to L-SMASH configure
+    required: false
+    default: /usr/local
+  lsmash-cc:
+    description: C compiler passed to L-SMASH configure
+    required: false
+    default: clang
+  extra-msys2-packages:
+    description: Extra MSYS2 packages to install
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Cache FFmpeg
+      id: cache-ffmpeg
+      uses: actions/cache@v5
+      with:
+        path: ffmpeg
+        key: ffmpeg-${{ inputs.ffmpeg-ref }}-${{ inputs.ffmpeg-cache-suffix }}
+
+    - name: Cache obuparse
+      id: cache-obuparse
+      uses: actions/cache@v5
+      with:
+        path: obuparse-install
+        key: ${{ inputs.obuparse-cache-key }}
+
+    - name: Cache ffms2
+      id: cache-ffms2
+      uses: actions/cache@v5
+      with:
+        path: ffms2-install
+        key: ${{ inputs.ffms2-cache-key }}
+
+    - name: Cache L-SMASH
+      id: cache-lsmash
+      uses: actions/cache@v5
+      with:
+        path: lsmash-install
+        key: ${{ inputs.lsmash-cache-key }}-${{ inputs.lsmash-ref }}
+
+    - name: Checkout FFmpeg
+      if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
+      uses: actions/checkout@v6
+      with:
+        path: ffmpeg
+        repository: FFmpeg/FFmpeg
+        ref: ${{ inputs.ffmpeg-ref }}
+
+    - name: Checkout mimalloc
+      uses: actions/checkout@v6
+      with:
+        path: mimalloc
+        repository: microsoft/mimalloc
+        ref: ${{ inputs.mimalloc-ref }}
+
+    - name: Checkout obuparse
+      if: steps.cache-obuparse.outputs.cache-hit != 'true'
+      uses: actions/checkout@v6
+      with:
+        path: obuparse
+        repository: dwbuiten/obuparse
+        ref: ${{ inputs.obuparse-ref }}
+
+    - name: Checkout ffms2
+      if: steps.cache-ffms2.outputs.cache-hit != 'true'
+      uses: actions/checkout@v6
+      with:
+        path: ${{ inputs.ffms2-path }}
+        repository: ${{ inputs.ffms2-repository }}
+        ref: ${{ inputs.ffms2-ref }}
+
+    - name: Checkout L-SMASH
+      if: steps.cache-lsmash.outputs.cache-hit != 'true'
+      uses: actions/checkout@v6
+      with:
+        path: ${{ inputs.lsmash-path }}
+        repository: ${{ inputs.lsmash-repository }}
+        ref: ${{ inputs.lsmash-ref }}
+
+    - name: Setup MSYS2
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: CLANG64
+        update: true
+        install: >-
+          p7zip
+          base-devel
+          git
+          autoconf
+          automake
+          libtool
+          mingw-w64-clang-x86_64-nasm
+          mingw-w64-clang-x86_64-clang
+          mingw-w64-clang-x86_64-compiler-rt
+          mingw-w64-clang-x86_64-lld
+          mingw-w64-clang-x86_64-crt
+          mingw-w64-clang-x86_64-headers
+          mingw-w64-clang-x86_64-libc++
+          mingw-w64-clang-x86_64-libwinpthread
+          mingw-w64-clang-x86_64-make
+          mingw-w64-clang-x86_64-pkgconf
+          mingw-w64-clang-x86_64-cmake
+          mingw-w64-clang-x86_64-ninja
+          mingw-w64-clang-x86_64-llvm
+          mingw-w64-ucrt-x86_64-binutils
+          ${{ inputs.extra-msys2-packages }}
+
+    - name: Compile FFmpeg
+      if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
+      shell: msys2 {0}
+      working-directory: ffmpeg
+      run: |
+        ${{ inputs.ffmpeg-configure }}
+        make -j$(nproc)
+
+    - name: Get rid of .dll.a
+      shell: msys2 {0}
+      run: find /*64/ /usr/ -type f -name "*.dll.a" -print -delete
+
+    - name: Install FFmpeg
+      shell: msys2 {0}
+      working-directory: ffmpeg
+      run: make install
+
+    - name: Compile mimalloc
+      shell: msys2 {0}
+      working-directory: mimalloc
+      run: |
+        mkdir build
+        cd build
+        cmake -GNinja .. -DCMAKE_INSTALL_PREFIX=/usr/local \
+          -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+          -DMI_BUILD_SHARED=OFF -DMI_BUILD_STATIC=ON -DMI_BUILD_OBJECT=OFF \
+          -DMI_BUILD_TESTS=OFF -DMI_USE_CXX=ON
+        ninja
+        ninja install
+        shopt -s nullglob
+        for dir in /usr/local/lib/cmake/mimalloc-*; do
+          ln -s "$dir" /usr/local/lib/cmake/mimalloc
+          break
+        done
+
+    - name: Compile obuparse
+      if: steps.cache-obuparse.outputs.cache-hit != 'true'
+      shell: msys2 {0}
+      working-directory: obuparse
+      run: |
+        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
+        make CC=cc libobuparse.a
+        install -d "$WORKSPACE/obuparse-install/include" "$WORKSPACE/obuparse-install/lib"
+        install -v obuparse.h "$WORKSPACE/obuparse-install/include"
+        install -v libobuparse.a "$WORKSPACE/obuparse-install/lib"
+        cp -r "$WORKSPACE/obuparse-install/"* /usr/local/
+
+    - name: Install cached obuparse
+      if: steps.cache-obuparse.outputs.cache-hit == 'true'
+      shell: msys2 {0}
+      run: |
+        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
+        cp -r "$WORKSPACE/obuparse-install/"* /usr/local/
+
+    - name: Compile ffms2
+      if: steps.cache-ffms2.outputs.cache-hit != 'true'
+      shell: msys2 {0}
+      working-directory: ${{ inputs.ffms2-path }}
+      run: |
+        export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH
+        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
+        ./autogen.sh
+        ./configure --prefix="$WORKSPACE/ffms2-install" --enable-static --disable-shared
+        make -j$(nproc)
+        make install
+        cp -r "$WORKSPACE/ffms2-install/"* /usr/local/
+
+    - name: Install cached ffms2
+      if: steps.cache-ffms2.outputs.cache-hit == 'true'
+      shell: msys2 {0}
+      run: |
+        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
+        cp -r "$WORKSPACE/ffms2-install/"* /usr/local/
+
+    - name: Build L-SMASH with Clang and Patch
+      if: steps.cache-lsmash.outputs.cache-hit != 'true'
+      shell: msys2 {0}
+      working-directory: ${{ inputs.lsmash-path }}
+      env:
+        MSYSTEM: CLANG64
+      run: |
+        set -euo pipefail
+        export PATH="/clang64/bin:/usr/bin:/mingw64/bin"
+        hash -r
+        clang --version
+
+        git apply --ignore-whitespace ${{ inputs.lsmash-patch-path }}
+        git diff --check --cached -- ${{ inputs.lsmash-patch-check-paths }}
+
+        LSMASH_CFLAGS="${{ inputs.lsmash-extra-cflags }}"
+        LSMASH_LDFLAGS="${{ inputs.lsmash-extra-ldflags }}"
+        ./configure --prefix=${{ inputs.lsmash-install-prefix }} --cc=${{ inputs.lsmash-cc }} --extra-cflags="$LSMASH_CFLAGS" --extra-ldflags="$LSMASH_LDFLAGS"
+        make clean
+        make lib -j$(nproc)
+        make install-lib
+
+        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
+        cp importer/importer.h /usr/local/include/lsmash_importer.h
+        mkdir -p "$WORKSPACE/lsmash-install/include" "$WORKSPACE/lsmash-install/lib/pkgconfig"
+        cp /usr/local/include/lsmash*.h "$WORKSPACE/lsmash-install/include/"
+        cp /usr/local/lib/liblsmash.a "$WORKSPACE/lsmash-install/lib/"
+        cp /usr/local/lib/pkgconfig/liblsmash.pc "$WORKSPACE/lsmash-install/lib/pkgconfig/"
+
+    - name: Install cached L-SMASH
+      if: steps.cache-lsmash.outputs.cache-hit == 'true'
+      shell: msys2 {0}
+      run: |
+        WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE")
+        cp -r "$WORKSPACE/lsmash-install/"* /usr/local/

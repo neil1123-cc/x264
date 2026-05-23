@@ -55,15 +55,16 @@ const x264_level_t x264_levels[] =
  * MATH
  *****************************************************************************/
 
-const uint8_t x264_exp2_lut[64] =
+const uint8_t x264_exp2_lut[] =
 {
       0,   3,   6,   8,  11,  14,  17,  20,  23,  26,  29,  32,  36,  39,  42,  45,
      48,  52,  55,  58,  62,  65,  69,  72,  76,  80,  83,  87,  91,  94,  98, 102,
     106, 110, 114, 118, 122, 126, 130, 135, 139, 143, 147, 152, 156, 161, 165, 170,
     175, 179, 184, 189, 194, 198, 203, 208, 214, 219, 224, 229, 234, 240, 245, 250
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_exp2_lut) == X264_EXP2_LUT_SIZE, "exp2 LUT size must match fractional input domain" );
 
-const float x264_log2_lut[128] =
+const float x264_log2_lut[] =
 {
     0.00000, 0.01123, 0.02237, 0.03342, 0.04439, 0.05528, 0.06609, 0.07682,
     0.08746, 0.09803, 0.10852, 0.11894, 0.12928, 0.13955, 0.14975, 0.15987,
@@ -82,19 +83,21 @@ const float x264_log2_lut[128] =
     0.90689, 0.91289, 0.91886, 0.92481, 0.93074, 0.93664, 0.94251, 0.94837,
     0.95420, 0.96000, 0.96578, 0.97154, 0.97728, 0.98299, 0.98868, 0.99435,
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_log2_lut) == X264_LOG2_LUT_SIZE, "log2 LUT size must match fractional input domain" );
 
 /* Avoid an int/float conversion. */
-const float x264_log2_lz_lut[32] =
+const float x264_log2_lz_lut[] =
 {
     31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_log2_lz_lut) == X264_LOG2_LZ_LUT_SIZE, "log2 leading-zero LUT size must match 32-bit input width" );
 
 /*****************************************************************************
  * ANALYSE
  *****************************************************************************/
 
 /* lambda = pow(2,qp/6-2) */
-const uint16_t x264_lambda_tab[QP_MAX_MAX+1] =
+const uint16_t x264_lambda_tab[] =
 {
    1,   1,   1,   1,   1,   1,   1,   1, /*  0- 7 */
    1,   1,   1,   1,   1,   1,   1,   1, /*  8-15 */
@@ -108,10 +111,11 @@ const uint16_t x264_lambda_tab[QP_MAX_MAX+1] =
 1024,1149,1290,1448,1625,1825,2048,2299, /* 72-79 */
 2580,2896,                               /* 80-81 */
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_lambda_tab) == QP_MAX_MAX+1, "lambda table size must match QP range" );
 
 /* lambda2 = pow(lambda,2) * .9 * 256 */
 /* Capped to avoid overflow */
-const int x264_lambda2_tab[QP_MAX_MAX+1] =
+const int x264_lambda2_tab[] =
 {
        14,       18,       22,       28,       36,       45,      57,      72, /*  0- 7 */
        91,      115,      145,      182,      230,      290,     365,     460, /*  8-15 */
@@ -125,10 +129,11 @@ const int x264_lambda2_tab[QP_MAX_MAX+1] =
 134217727,134217727,134217727,134217727,134217727,134217727,                   /* 70-75 */
 134217727,134217727,134217727,134217727,134217727,134217727,                   /* 76-81 */
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_lambda2_tab) == QP_MAX_MAX+1, "lambda2 table size must match QP range" );
 
 // should the intra and inter lambdas be different?
 // I'm just matching the behaviour of deadzone quant.
-const int x264_trellis_lambda2_tab[2][QP_MAX_MAX+1] =
+const int x264_trellis_lambda2_tab[][QP_MAX_MAX+1] =
 {
     // inter lambda = .85 * .85 * 2**(qp/3. + 10 - LAMBDA_BITS)
     {
@@ -164,8 +169,10 @@ const int x264_trellis_lambda2_tab[2][QP_MAX_MAX+1] =
         134217727,134217727,134217727,134217727,134217727,134217727,
     }
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_trellis_lambda2_tab) == X264_TRELLIS_LAMBDA2_MODELS, "trellis lambda2 table size must match model count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_trellis_lambda2_tab[0]) == QP_MAX_MAX+1, "trellis lambda2 table width must match QP range" );
 
-const uint16_t x264_chroma_lambda2_offset_tab[MAX_CHROMA_LAMBDA_OFFSET+1] =
+const uint16_t x264_chroma_lambda2_offset_tab[] =
 {
        16,    20,    25,    32,    40,    50,
        64,    80,   101,   128,   161,   203,
@@ -175,34 +182,39 @@ const uint16_t x264_chroma_lambda2_offset_tab[MAX_CHROMA_LAMBDA_OFFSET+1] =
     16384, 20642, 26007, 32768, 41285, 52015,
     65535
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_chroma_lambda2_offset_tab) == MAX_CHROMA_LAMBDA_OFFSET+1, "chroma lambda2 offset table size must match offset range" );
 
 /*****************************************************************************
  * MC
  *****************************************************************************/
 
-const uint8_t x264_hpel_ref0[16] = {0,1,1,1,0,1,1,1,2,3,3,3,0,1,1,1};
-const uint8_t x264_hpel_ref1[16] = {0,0,1,0,2,2,3,2,2,2,3,2,2,2,3,2};
+const uint8_t x264_hpel_ref0[] = {0,1,1,1,0,1,1,1,2,3,3,3,0,1,1,1};
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_hpel_ref0) == X264_HPEL_REF_COUNT, "hpel ref0 table size must match reference pattern count" );
+const uint8_t x264_hpel_ref1[] = {0,0,1,0,2,2,3,2,2,2,3,2,2,2,3,2};
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_hpel_ref1) == X264_HPEL_REF_COUNT, "hpel ref1 table size must match reference pattern count" );
 
 /*****************************************************************************
  * CQM
  *****************************************************************************/
 
 /* default quant matrices */
-const uint8_t x264_cqm_jvt4i[16] =
+const uint8_t x264_cqm_jvt4i[] =
 {
       6,13,20,28,
      13,20,28,32,
      20,28,32,37,
      28,32,37,42
 };
-const uint8_t x264_cqm_jvt4p[16] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cqm_jvt4i) == X264_CQM_4_SIZE, "JVT 4x4 intra CQM size must match 4x4 matrix size" );
+const uint8_t x264_cqm_jvt4p[] =
 {
     10,14,20,24,
     14,20,24,27,
     20,24,27,30,
     24,27,30,34
 };
-const uint8_t x264_cqm_jvt8i[64] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cqm_jvt4p) == X264_CQM_4_SIZE, "JVT 4x4 inter CQM size must match 4x4 matrix size" );
+const uint8_t x264_cqm_jvt8i[] =
 {
      6,10,13,16,18,23,25,27,
     10,11,16,18,23,25,27,29,
@@ -213,7 +225,8 @@ const uint8_t x264_cqm_jvt8i[64] =
     25,27,29,31,33,36,38,40,
     27,29,31,33,36,38,40,42
 };
-const uint8_t x264_cqm_jvt8p[64] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cqm_jvt8i) == X264_CQM_8_SIZE, "JVT 8x8 intra CQM size must match 8x8 matrix size" );
+const uint8_t x264_cqm_jvt8p[] =
 {
      9,13,15,17,19,21,22,24,
     13,13,17,19,21,22,24,25,
@@ -224,7 +237,8 @@ const uint8_t x264_cqm_jvt8p[64] =
     22,24,25,27,28,30,32,33,
     24,25,27,28,30,32,33,35
 };
-const uint8_t x264_cqm_flat16[64] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cqm_jvt8p) == X264_CQM_8_SIZE, "JVT 8x8 inter CQM size must match 8x8 matrix size" );
+const uint8_t x264_cqm_flat16[] =
 {
     16,16,16,16,16,16,16,16,
     16,16,16,16,16,16,16,16,
@@ -235,25 +249,28 @@ const uint8_t x264_cqm_flat16[64] =
     16,16,16,16,16,16,16,16,
     16,16,16,16,16,16,16,16
 };
-const uint8_t * const x264_cqm_jvt[8] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cqm_flat16) == X264_CQM_8_SIZE, "flat CQM size must match 8x8 matrix size" );
+const uint8_t * const x264_cqm_jvt[] =
 {
     x264_cqm_jvt4i, x264_cqm_jvt4p,
     x264_cqm_jvt4i, x264_cqm_jvt4p,
     x264_cqm_jvt8i, x264_cqm_jvt8p,
     x264_cqm_jvt8i, x264_cqm_jvt8p
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cqm_jvt) == X264_CQM_JVT_COUNT, "JVT CQM pointer table size must match matrix count" );
 
 // 720p_avci50, 1080i_avci50, 1080p_avci50
-const uint8_t x264_cqm_avci50_4ic[16] =
+const uint8_t x264_cqm_avci50_4ic[] =
 {
     16,22,28,40,
     22,28,40,44,
     28,40,44,48,
     40,44,48,60
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cqm_avci50_4ic) == X264_CQM_4_SIZE, "AVCI50 4x4 chroma CQM size must match 4x4 matrix size" );
 
 // 720p_avci50, 1080p_avci50
-const uint8_t x264_cqm_avci50_p_8iy[64] =
+const uint8_t x264_cqm_avci50_p_8iy[] =
 {
     16,18,19,21,24,27,30,33,
     18,19,21,24,27,30,33,78,
@@ -264,9 +281,10 @@ const uint8_t x264_cqm_avci50_p_8iy[64] =
     30,33,78,81,84,87,90,93,
     33,78,81,84,87,90,93,96
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cqm_avci50_p_8iy) == X264_CQM_8_SIZE, "AVCI50 progressive 8x8 luma CQM size must match 8x8 matrix size" );
 
 // 1080i_avci50
-const uint8_t x264_cqm_avci50_1080i_8iy[64] =
+const uint8_t x264_cqm_avci50_1080i_8iy[] =
 {
     16,18,19,21,27,33,81,87,
     18,19,21,24,30,33,81,87,
@@ -277,18 +295,20 @@ const uint8_t x264_cqm_avci50_1080i_8iy[64] =
     27,30,33,78,78,81,87,93,
     30,33,33,78,81,84,87,96
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cqm_avci50_1080i_8iy) == X264_CQM_8_SIZE, "AVCI50 1080i 8x8 luma CQM size must match 8x8 matrix size" );
 
 // 720p_avci100
-const uint8_t x264_cqm_avci100_720p_4ic[16] =
+const uint8_t x264_cqm_avci100_720p_4ic[] =
 {
     16,21,27,34,
     21,27,34,41,
     27,34,41,46,
     34,41,46,54
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cqm_avci100_720p_4ic) == X264_CQM_4_SIZE, "AVCI100 720p 4x4 chroma CQM size must match 4x4 matrix size" );
 
 // 720p_avci100
-const uint8_t x264_cqm_avci100_720p_8iy[64] =
+const uint8_t x264_cqm_avci100_720p_8iy[] =
 {
     16,18,19,21,22,24,26,32,
     18,19,19,21,22,24,26,32,
@@ -299,18 +319,20 @@ const uint8_t x264_cqm_avci100_720p_8iy[64] =
     26,26,26,26,26,34,36,38,
     32,32,32,34,34,36,38,42
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cqm_avci100_720p_8iy) == X264_CQM_8_SIZE, "AVCI100 720p 8x8 luma CQM size must match 8x8 matrix size" );
 
 // 1080i_avci100, 1080p_avci100
-const uint8_t x264_cqm_avci100_1080_4ic[16] =
+const uint8_t x264_cqm_avci100_1080_4ic[] =
 {
     16,20,26,32,
     20,26,32,38,
     26,32,38,44,
     32,38,44,50
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cqm_avci100_1080_4ic) == X264_CQM_4_SIZE, "AVCI100 1080 4x4 chroma CQM size must match 4x4 matrix size" );
 
 // 1080i_avci100
-const uint8_t x264_cqm_avci100_1080i_8iy[64] =
+const uint8_t x264_cqm_avci100_1080i_8iy[] =
 {
     16,19,20,23,24,26,32,42,
     18,19,22,24,26,32,36,42,
@@ -321,9 +343,10 @@ const uint8_t x264_cqm_avci100_1080i_8iy[64] =
     22,23,24,26,32,42,59,68,
     22,23,24,26,36,42,59,72
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cqm_avci100_1080i_8iy) == X264_CQM_8_SIZE, "AVCI100 1080i 8x8 luma CQM size must match 8x8 matrix size" );
 
 // 1080p_avci100
-const uint8_t x264_cqm_avci100_1080p_8iy[64] =
+const uint8_t x264_cqm_avci100_1080p_8iy[] =
 {
     16,18,19,20,22,23,24,26,
     18,19,20,22,23,24,26,32,
@@ -334,27 +357,30 @@ const uint8_t x264_cqm_avci100_1080p_8iy[64] =
     24,26,32,36,42,59,63,68,
     26,32,36,42,59,63,68,72
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cqm_avci100_1080p_8iy) == X264_CQM_8_SIZE, "AVCI100 1080p 8x8 luma CQM size must match 8x8 matrix size" );
 
 // 2160p_avci300
-const uint8_t x264_cqm_avci300_2160p_4iy[16] =
+const uint8_t x264_cqm_avci300_2160p_4iy[] =
 {
     12,16,19,20,
     16,19,20,24,
     19,20,24,33,
     20,24,33,39
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cqm_avci300_2160p_4iy) == X264_CQM_4_SIZE, "AVCI300 2160p 4x4 luma CQM size must match 4x4 matrix size" );
 
 // 2160p_avci300
-const uint8_t x264_cqm_avci300_2160p_4ic[16] =
+const uint8_t x264_cqm_avci300_2160p_4ic[] =
 {
     28,39,56,67,
     39,56,67,77,
     56,67,77,104,
     67,77,104,133
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cqm_avci300_2160p_4ic) == X264_CQM_4_SIZE, "AVCI300 2160p 4x4 chroma CQM size must match 4x4 matrix size" );
 
 // 2160p_avci300
-const uint8_t x264_cqm_avci300_2160p_8iy[64] =
+const uint8_t x264_cqm_avci300_2160p_8iy[] =
 {
     12,14,16,17,19,20,20,24,
     14,16,17,19,20,20,24,30,
@@ -365,22 +391,25 @@ const uint8_t x264_cqm_avci300_2160p_8iy[64] =
     20,24,30,42,56,72,76,80,
     24,30,42,56,72,76,80,84
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cqm_avci300_2160p_8iy) == X264_CQM_8_SIZE, "AVCI300 2160p 8x8 luma CQM size must match 8x8 matrix size" );
 
 /*****************************************************************************
  * QUANT
  *****************************************************************************/
 
-const uint8_t x264_decimate_table4[16] =
+const uint8_t x264_decimate_table4[] =
 {
     3,2,2,1,1,1,0,0,0,0,0,0,0,0,0,0
 };
-const uint8_t x264_decimate_table8[64] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_decimate_table4) == X264_DECIMATE_4_SIZE, "4x4 decimate table size must match coefficient count" );
+const uint8_t x264_decimate_table8[] =
 {
     3,3,3,3,2,2,2,2,2,2,2,2,1,1,1,1,
     1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,
     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_decimate_table8) == X264_DECIMATE_8_SIZE, "8x8 decimate table size must match coefficient count" );
 
 /*****************************************************************************
  * DCT
@@ -394,7 +423,7 @@ const uint8_t x264_decimate_table8[64] =
               i==3 ? FIX8(0.9415) :\
               i==4 ? FIX8(1.2651) :\
               i==5 ? FIX8(1.1910) :0)
-const uint32_t x264_dct8_weight_tab[64] = {
+const uint32_t x264_dct8_weight_tab[] = {
     W(0), W(3), W(4), W(3),  W(0), W(3), W(4), W(3),
     W(3), W(1), W(5), W(1),  W(3), W(1), W(5), W(1),
     W(4), W(5), W(2), W(5),  W(4), W(5), W(2), W(5),
@@ -405,29 +434,32 @@ const uint32_t x264_dct8_weight_tab[64] = {
     W(4), W(5), W(2), W(5),  W(4), W(5), W(2), W(5),
     W(3), W(1), W(5), W(1),  W(3), W(1), W(5), W(1)
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_dct8_weight_tab) == X264_DCT8_WEIGHT_SIZE, "8x8 DCT weight table size must match coefficient count" );
 #undef W
 
 #define W(i) (i==0 ? FIX8(1.76777) :\
               i==1 ? FIX8(1.11803) :\
               i==2 ? FIX8(0.70711) :0)
-const uint32_t x264_dct4_weight_tab[16] = {
+const uint32_t x264_dct4_weight_tab[] = {
     W(0), W(1), W(0), W(1),
     W(1), W(2), W(1), W(2),
     W(0), W(1), W(0), W(1),
     W(1), W(2), W(1), W(2)
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_dct4_weight_tab) == X264_DCT4_WEIGHT_SIZE, "4x4 DCT weight table size must match coefficient count" );
 #undef W
 
 /* inverse squared */
 #define W(i) (i==0 ? FIX8(3.125) :\
               i==1 ? FIX8(1.25) :\
               i==2 ? FIX8(0.5) :0)
-const uint32_t x264_dct4_weight2_tab[16] = {
+const uint32_t x264_dct4_weight2_tab[] = {
     W(0), W(1), W(0), W(1),
     W(1), W(2), W(1), W(2),
     W(0), W(1), W(0), W(1),
     W(1), W(2), W(1), W(2)
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_dct4_weight2_tab) == X264_DCT4_WEIGHT_SIZE, "4x4 squared DCT weight table size must match coefficient count" );
 #undef W
 
 #define W(i) (i==0 ? FIX8(1.00000) :\
@@ -436,7 +468,7 @@ const uint32_t x264_dct4_weight2_tab[16] = {
               i==3 ? FIX8(0.88637) :\
               i==4 ? FIX8(1.60040) :\
               i==5 ? FIX8(1.41850) :0)
-const uint32_t x264_dct8_weight2_tab[64] = {
+const uint32_t x264_dct8_weight2_tab[] = {
     W(0), W(3), W(4), W(3),  W(0), W(3), W(4), W(3),
     W(3), W(1), W(5), W(1),  W(3), W(1), W(5), W(1),
     W(4), W(5), W(2), W(5),  W(4), W(5), W(2), W(5),
@@ -447,13 +479,14 @@ const uint32_t x264_dct8_weight2_tab[64] = {
     W(4), W(5), W(2), W(5),  W(4), W(5), W(2), W(5),
     W(3), W(1), W(5), W(1),  W(3), W(1), W(5), W(1)
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_dct8_weight2_tab) == X264_DCT8_WEIGHT_SIZE, "8x8 squared DCT weight table size must match coefficient count" );
 #undef W
 
 /*****************************************************************************
  * CABAC
  *****************************************************************************/
 
-const int8_t x264_cabac_context_init_I[1024][2] =
+const int8_t x264_cabac_context_init_I[][2] =
 {
     /* 0 - 10 */
     { 20, -15 }, {  2, 54 },  {  3,  74 }, { 20, -15 },
@@ -764,8 +797,9 @@ const int8_t x264_cabac_context_init_I[1024][2] =
     {  -3,  70 }, {  -8,  93 }, { -10,  90 }, { -30, 127 },
     {  -3,  70 }, {  -8,  93 }, { -10,  90 }, { -30, 127 }
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cabac_context_init_I) == X264_CABAC_CONTEXTS, "CABAC I context init table size must match context count" );
 
-const int8_t x264_cabac_context_init_PB[3][1024][2] =
+const int8_t x264_cabac_context_init_PB[][X264_CABAC_CONTEXTS][2] =
 {
     /* i_cabac_init_idc == 0 */
     {
@@ -1664,8 +1698,10 @@ const int8_t x264_cabac_context_init_PB[3][1024][2] =
         {  -5,  79 }, { -11, 104 }, { -11,  91 }, { -30, 127 }
     }
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cabac_context_init_PB) == X264_CABAC_INIT_PB_MODELS, "CABAC PB context init table size must match model count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cabac_context_init_PB[0]) == X264_CABAC_CONTEXTS, "CABAC PB context init table size must match context count" );
 
-const uint8_t x264_cabac_range_lps[64][4] =
+const uint8_t x264_cabac_range_lps[][X264_CABAC_LPS_RANGE_SIZE] =
 {
     {  2,   2,   2,   2}, {  6,   7,   8,   9}, {  6,   7,   9,  10}, {  6,   8,   9,  11},
     {  7,   8,  10,  11}, {  7,   9,  10,  12}, {  7,   9,  11,  12}, {  8,   9,  11,  13},
@@ -1684,8 +1720,10 @@ const uint8_t x264_cabac_range_lps[64][4] =
     {100, 122, 144, 166}, {105, 128, 152, 175}, {111, 135, 160, 185}, {116, 142, 169, 195},
     {123, 150, 178, 205}, {128, 158, 187, 216}, {128, 167, 197, 227}, {128, 176, 208, 240}
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cabac_range_lps) == X264_CABAC_LPS_RANGE_COUNT, "CABAC LPS range table size must match range count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cabac_range_lps[0]) == X264_CABAC_LPS_RANGE_SIZE, "CABAC LPS range table width must match range size" );
 
-const uint8_t x264_cabac_transition[128][2] =
+const uint8_t x264_cabac_transition[][2] =
 {
     {  0,   0}, {  1,   1}, {  2,  50}, { 51,   3}, {  2,  50}, { 51,   3}, {  4,  52}, { 53,   5},
     {  6,  52}, { 53,   7}, {  8,  52}, { 53,   9}, { 10,  54}, { 55,  11}, { 12,  54}, { 55,  13},
@@ -1704,17 +1742,20 @@ const uint8_t x264_cabac_transition[128][2] =
     {110, 116}, {117, 111}, {112, 118}, {119, 113}, {114, 118}, {119, 115}, {116, 122}, {123, 117},
     {118, 122}, {123, 119}, {120, 124}, {125, 121}, {122, 126}, {127, 123}, {124, 127}, {126, 125}
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cabac_transition) == X264_CABAC_STATE_COUNT, "CABAC transition table size must match state count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cabac_transition[0]) == 2, "CABAC transition table must have MPS and LPS entries" );
 
-const uint8_t x264_cabac_renorm_shift[64] =
+const uint8_t x264_cabac_renorm_shift[] =
 {
     6,5,4,4,3,3,3,3,2,2,2,2,2,2,2,2,
     1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cabac_renorm_shift) == X264_CABAC_LPS_RANGE_COUNT, "CABAC renorm shift table size must match LPS range count" );
 
 /* -ln2(probability) */
-const uint16_t x264_cabac_entropy[128] =
+const uint16_t x264_cabac_entropy[] =
 {
     FIX8(0.0273), FIX8(5.7370), FIX8(0.0288), FIX8(5.6618),
     FIX8(0.0303), FIX8(5.5866), FIX8(0.0320), FIX8(5.5114),
@@ -1749,13 +1790,14 @@ const uint16_t x264_cabac_entropy[128] =
     FIX8(0.8050), FIX8(1.2256), FIX8(0.8638), FIX8(1.1504),
     FIX8(0.9285), FIX8(1.0752), FIX8(1.0000), FIX8(1.0000)
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_cabac_entropy) == X264_CABAC_STATE_COUNT, "CABAC entropy table size must match state count" );
 
 /*****************************************************************************
  * RDO
  *****************************************************************************/
 
 /* Padded to [64] for easier addressing */
-const uint8_t x264_significant_coeff_flag_offset_8x8[2][64] =
+const uint8_t x264_significant_coeff_flag_offset_8x8[][X264_COEFF_FLAG_OFFSET_8X8_SIZE] =
 {{
     0, 1, 2, 3, 4, 5, 5, 4, 4, 3, 3, 4, 4, 4, 5, 5,
     4, 4, 4, 4, 3, 3, 6, 7, 7, 7, 8, 9,10, 9, 8, 7,
@@ -1767,36 +1809,46 @@ const uint8_t x264_significant_coeff_flag_offset_8x8[2][64] =
     9, 9,10,10, 8,11,12,11, 9, 9,10,10, 8,13,13, 9,
     9,10,10, 8,13,13, 9, 9,10,10,14,14,14,14,14
 }};
-const uint8_t x264_last_coeff_flag_offset_8x8[63] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_significant_coeff_flag_offset_8x8) == X264_COEFF_FLAG_OFFSET_INTERLACED_MODES, "8x8 significant coeff flag offset table size must match interlaced modes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_significant_coeff_flag_offset_8x8[0]) == X264_COEFF_FLAG_OFFSET_8X8_SIZE, "8x8 significant coeff flag offset table width must match padded coefficient count" );
+const uint8_t x264_last_coeff_flag_offset_8x8[] =
 {
     0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
     2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
     3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4,
     5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8
 };
-const uint8_t x264_coeff_flag_offset_chroma_422_dc[7] = { 0, 0, 1, 1, 2, 2, 2 }; /* MIN( i/2, 2 ) */
-const uint16_t x264_significant_coeff_flag_offset[2][16] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_last_coeff_flag_offset_8x8) == X264_LAST_COEFF_FLAG_OFFSET_8X8_COUNT, "8x8 last coeff flag offset table size must match coded positions without terminal" );
+const uint8_t x264_coeff_flag_offset_chroma_422_dc[] = { 0, 0, 1, 1, 2, 2, 2 }; /* MIN( i/2, 2 ) */
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_coeff_flag_offset_chroma_422_dc) == X264_COEFF_FLAG_OFFSET_CHROMA_422_DC_COUNT, "chroma 4:2:2 DC coeff flag offset table size must match coded positions without terminal" );
+const uint16_t x264_significant_coeff_flag_offset[][X264_COEFF_FLAG_OFFSET_CAT_COUNT] =
 {
     { 105+0, 105+15, 105+29, 105+44, 105+47, 402, 484+0, 484+15, 484+29, 660, 528+0, 528+15, 528+29, 718, 0, 0 },
     { 277+0, 277+15, 277+29, 277+44, 277+47, 436, 776+0, 776+15, 776+29, 675, 820+0, 820+15, 820+29, 733, 0, 0 }
 };
-const uint16_t x264_last_coeff_flag_offset[2][16] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_significant_coeff_flag_offset) == X264_COEFF_FLAG_OFFSET_INTERLACED_MODES, "significant coeff flag offset table size must match interlaced modes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_significant_coeff_flag_offset[0]) == X264_COEFF_FLAG_OFFSET_CAT_COUNT, "significant coeff flag offset table width must match residual category count" );
+const uint16_t x264_last_coeff_flag_offset[][X264_COEFF_FLAG_OFFSET_CAT_COUNT] =
 {
     { 166+0, 166+15, 166+29, 166+44, 166+47, 417, 572+0, 572+15, 572+29, 690, 616+0, 616+15, 616+29, 748, 0, 0 },
     { 338+0, 338+15, 338+29, 338+44, 338+47, 451, 864+0, 864+15, 864+29, 699, 908+0, 908+15, 908+29, 757, 0, 0 }
 };
-const uint16_t x264_coeff_abs_level_m1_offset[16] =
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_last_coeff_flag_offset) == X264_COEFF_FLAG_OFFSET_INTERLACED_MODES, "last coeff flag offset table size must match interlaced modes" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_last_coeff_flag_offset[0]) == X264_COEFF_FLAG_OFFSET_CAT_COUNT, "last coeff flag offset table width must match residual category count" );
+const uint16_t x264_coeff_abs_level_m1_offset[] =
 {
     227+0, 227+10, 227+20, 227+30, 227+39, 426, 952+0, 952+10, 952+20, 708, 982+0, 982+10, 982+20, 766
 };
-const uint8_t x264_count_cat_m1[14] = {15, 14, 15, 3, 14, 63, 15, 14, 15, 63, 15, 14, 15, 63};
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_coeff_abs_level_m1_offset) == X264_COEFF_FLAG_OFFSET_CAT_COUNT, "coeff abs level offset table size must match residual category count" );
+const uint8_t x264_count_cat_m1[] = {15, 14, 15, 3, 14, 63, 15, 14, 15, 63, 15, 14, 15, 63};
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_count_cat_m1) == X264_COUNT_CAT_M1_COUNT, "count category table size must match residual category count" );
 
 /*****************************************************************************
  * VLC
  *****************************************************************************/
 
 /* [nC] */
-const vlc_t x264_coeff0_token[6] =
+const vlc_t x264_coeff0_token[] =
 {
     { 0x1, 1 }, /* str=1 */
     { 0x3, 2 }, /* str=11 */
@@ -1805,9 +1857,10 @@ const vlc_t x264_coeff0_token[6] =
     { 0x1, 2 }, /* str=01 */
     { 0x1, 1 }, /* str=1 */
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_coeff0_token) == X264_COEFF0_TOKEN_COUNT, "coeff0 token table size must match nC class count" );
 
 /* [nC][i_total_coeff-1][i_trailing] */
-const vlc_t x264_coeff_token[6][16][4] =
+const vlc_t x264_coeff_token[][X264_COEFF_TOKEN_TOTALS][X264_COEFF_TOKEN_TRAILING_COUNT] =
 {
     { /* table 0 */
         { /* i_total 1 */
@@ -2260,9 +2313,12 @@ const vlc_t x264_coeff_token[6][16][4] =
         },
     },
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_coeff_token) == X264_COEFF_TOKEN_TABLES, "coeff token table size must match nC class count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_coeff_token[0]) == X264_COEFF_TOKEN_TOTALS, "coeff token table width must match total coefficient count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_coeff_token[0][0]) == X264_COEFF_TOKEN_TRAILING_COUNT, "coeff token table depth must match trailing ones count" );
 
 /* [i_total_coeff-1][i_total_zeros] */
-const vlc_t x264_total_zeros[15][16] =
+const vlc_t x264_total_zeros[][X264_TOTAL_ZEROS_SIZE] =
 {
     { /* i_total 1 */
         { 0x1, 1 }, /* str=1 */
@@ -2430,9 +2486,11 @@ const vlc_t x264_total_zeros[15][16] =
         { 0x1, 1 }, /* str=1 */
     },
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_total_zeros) == X264_TOTAL_ZEROS_COUNT, "total zeros table size must match luma total coefficient count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_total_zeros[0]) == X264_TOTAL_ZEROS_SIZE, "total zeros table width must match luma zero count domain" );
 
 /* [i_total_coeff-1][i_total_zeros] */
-const vlc_t x264_total_zeros_2x2_dc[3][4] =
+const vlc_t x264_total_zeros_2x2_dc[][X264_TOTAL_ZEROS_2X2_DC_SIZE] =
 {
     { /* i_total 1 */
         { 0x1, 1 }, /* str=1 */
@@ -2450,9 +2508,11 @@ const vlc_t x264_total_zeros_2x2_dc[3][4] =
         { 0x0, 1 }, /* str=0 */
     },
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_total_zeros_2x2_dc) == X264_TOTAL_ZEROS_2X2_DC_COUNT, "2x2 DC total zeros table size must match total coefficient count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_total_zeros_2x2_dc[0]) == X264_TOTAL_ZEROS_2X2_DC_SIZE, "2x2 DC total zeros table width must match zero count domain" );
 
 /* [i_total_coeff-1][i_total_zeros] */
-const vlc_t x264_total_zeros_2x4_dc[7][8] =
+const vlc_t x264_total_zeros_2x4_dc[][X264_TOTAL_ZEROS_2X4_DC_SIZE] =
 {
     { /* i_total 1 */
         { 0x1, 1 }, /* str=1 */
@@ -2504,9 +2564,11 @@ const vlc_t x264_total_zeros_2x4_dc[7][8] =
         { 0x1, 1 }, /* str=1 */
     }
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_total_zeros_2x4_dc) == X264_TOTAL_ZEROS_2X4_DC_COUNT, "2x4 DC total zeros table size must match total coefficient count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_total_zeros_2x4_dc[0]) == X264_TOTAL_ZEROS_2X4_DC_SIZE, "2x4 DC total zeros table width must match zero count domain" );
 
 /* [MIN( i_zero_left-1, 6 )][run_before] */
-const vlc_t x264_run_before_init[7][16] =
+const vlc_t x264_run_before_init[][X264_RUN_BEFORE_SIZE] =
 {
     { /* i_zero_left 1 */
         { 0x1, 1 }, /* str=1 */
@@ -2565,6 +2627,8 @@ const vlc_t x264_run_before_init[7][16] =
         { 0x1, 11 }, /* str=00000000001 */
     },
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_run_before_init) == X264_RUN_BEFORE_COUNT, "run-before table size must match zero-left class count" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_run_before_init[0]) == X264_RUN_BEFORE_SIZE, "run-before table width must match run-before domain" );
 
 /* psy_trellis_init() has the largest size requirement of 16*FDEC_STRIDE*SIZEOF_PIXEL */
 ALIGNED_64( uint8_t x264_zero[1024] ) = { 0 };

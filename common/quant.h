@@ -68,6 +68,8 @@ typedef struct
     int (*trellis_cabac_dc)( TRELLIS_PARAMS, int num_coefs );
     int (*trellis_cabac_chroma_422_dc)( TRELLIS_PARAMS );
 } x264_quant_function_t;
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_quant_function_t*)0)->coeff_last) == 14, "quant coeff-last table size must match DCT block domain" );
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_quant_function_t*)0)->coeff_level_run) == 13, "quant level-run table size must match DCT block domain" );
 
 #define x264_quant_init x264_template(quant_init)
 void x264_quant_init( x264_t *h, uint32_t cpu, x264_quant_function_t *pf );

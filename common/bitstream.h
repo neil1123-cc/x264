@@ -35,6 +35,7 @@ typedef struct
     /* Next level table to use */
     uint8_t  i_next;
 } vlc_large_t;
+X264_STATIC_ASSERT( sizeof(vlc_large_t) == sizeof(uint32_t), "large VLC entry must remain compact" );
 
 typedef struct bs_s
 {
@@ -53,6 +54,7 @@ typedef struct
     int32_t mask;
     ALIGNED_16( dctcoef level[18] );
 } x264_run_level_t;
+X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_run_level_t*)0)->level) == 18, "run-level cache size must match coefficient run domain" );
 
 typedef struct
 {
@@ -112,12 +114,14 @@ static inline void bs_flush( bs_t *s )
 /* The inverse of bs_flush: prepare the bitstream to be written to again. */
 static inline void bs_realign( bs_t *s )
 {
-    int offset = ((intptr_t)s->p & 3);
+    int offset = (s->p - s->p_start) & 3;
     if( offset )
     {
+        uint32_t cur_bits;
         s->p       = (uint8_t*)s->p - offset;
         s->i_left  = (WORD_SIZE - offset)*8;
-        s->cur_bits = endian_fix32( M32(s->p) );
+        memcpy( &cur_bits, s->p, sizeof(cur_bits) );
+        s->cur_bits = endian_fix32( cur_bits );
         s->cur_bits >>= (4-offset)*8;
     }
 }
@@ -198,7 +202,7 @@ static inline void bs_align_10( bs_t *s )
 
 /* golomb functions */
 
-static const uint8_t x264_ue_size_tab[256] =
+static const uint8_t x264_ue_size_tab[] =
 {
      1, 1, 3, 3, 5, 5, 5, 5, 7, 7, 7, 7, 7, 7, 7, 7,
      9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
@@ -217,6 +221,7 @@ static const uint8_t x264_ue_size_tab[256] =
     15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,
     15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,15,
 };
+X264_STATIC_ASSERT( ARRAY_ELEMS(x264_ue_size_tab) == 256, "ue size table must cover 8-bit input domain" );
 
 static inline void bs_write_ue_big( bs_t *s, unsigned int val )
 {
