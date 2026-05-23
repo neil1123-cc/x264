@@ -30,6 +30,10 @@
 #include <errno.h>
 #include <float.h>
 
+#if HAVE_MIMALLOC
+#include <mimalloc.h>
+#endif
+
 #if HAVE_MALLOC_H
 #include <malloc.h>
 #endif
@@ -149,7 +153,17 @@ void *x264_malloc( int64_t i_size )
         return NULL;
     }
     uint8_t *align_buf = NULL;
-#if HAVE_MALLOC_H
+#if HAVE_MIMALLOC
+    align_buf = mi_malloc_aligned( (size_t)i_size, NATIVE_ALIGN );
+#if HAVE_THP
+    if( align_buf && i_size >= HUGE_PAGE_THRESHOLD )
+    {
+        /* Preserve the existing huge-page hint when available. */
+        size_t madv_size = (i_size + HUGE_PAGE_SIZE - HUGE_PAGE_THRESHOLD) & ~(HUGE_PAGE_SIZE-1);
+        madvise( align_buf, madv_size, MADV_HUGEPAGE );
+    }
+#endif
+#elif HAVE_MALLOC_H
 #if HAVE_THP
     /* Attempt to allocate huge pages to reduce TLB misses. */
     if( i_size >= HUGE_PAGE_THRESHOLD )
@@ -189,7 +203,9 @@ void x264_free( void *p )
 {
     if( p )
     {
-#if HAVE_MALLOC_H
+#if HAVE_MIMALLOC
+        mi_free( p );
+#elif HAVE_MALLOC_H
         free( p );
 #else
         free( *( ( ( void **) p ) - 1 ) );
@@ -265,7 +281,11 @@ char *x264_param_strdup( x264_param_t *param, const char *src )
     if( !buf )
     {
         int64_t strdup_buffer_alloc_size = BUFFER_OFFSET + BUFFER_DEFAULT_SIZE * (int64_t)sizeof(void *);
+#if HAVE_MIMALLOC
+        buf = mi_malloc( (size_t)strdup_buffer_alloc_size );
+#else
         buf = malloc( strdup_buffer_alloc_size );
+#endif
         if( !buf )
             goto fail;
         buf->size = BUFFER_DEFAULT_SIZE;
@@ -278,13 +298,21 @@ char *x264_param_strdup( x264_param_t *param, const char *src )
             goto fail;
         int new_size = buf->size * 2;
         int64_t strdup_buffer_realloc_size = BUFFER_OFFSET + new_size * (int64_t)sizeof(void *);
+#if HAVE_MIMALLOC
+        buf = mi_realloc( buf, (size_t)strdup_buffer_realloc_size );
+#else
         buf = realloc( buf, strdup_buffer_realloc_size );
+#endif
         if( !buf )
             goto fail;
         buf->size = new_size;
         param->opaque = buf;
     }
+#if HAVE_MIMALLOC
+    char *res = mi_strdup( src );
+#else
     char *res = strdup( src );
+#endif
     if( !res )
         goto fail;
     buf->ptr[buf->count++] = res;
@@ -305,8 +333,16 @@ REALIGN_STACK void x264_param_cleanup( x264_param_t *param )
     if( buf )
     {
         for( int i = 0; i < buf->count; i++ )
+#if HAVE_MIMALLOC
+            mi_free( buf->ptr[i] );
+#else
             free( buf->ptr[i] );
+#endif
+#if HAVE_MIMALLOC
+        mi_free( buf );
+#else
         free( buf );
+#endif
         param->opaque = NULL;
     }
 }

@@ -351,7 +351,16 @@ lib-shared: $(SONAME)
 
 $(LIBX264): $(OBJS) $(OBJASM)
 	rm -f $(LIBX264)
-	$(AR)$@ $(OBJS) $(OBJASM)
+	@if [ -n "$(strip $(LIBX264_ADDLIBS))" ]; then \
+	    { \
+	        printf 'CREATE %s\n' '$@'; \
+	        for f in $(OBJS) $(OBJASM); do printf 'ADDMOD %s\n' "$$f"; done; \
+	        for f in $(LIBX264_ADDLIBS); do printf 'ADDLIB %s\n' "$$f"; done; \
+	        printf 'SAVE\nEND\n'; \
+	    } | $(AR_MRI); \
+	else \
+	    $(AR)$@ $(OBJS) $(OBJASM); \
+	fi
 	$(if $(RANLIB), $(RANLIB) $@)
 
 $(SONAME): $(OBJS) $(OBJASM) $(OBJSO)

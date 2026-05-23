@@ -4842,6 +4842,8 @@ run_source_release_failure_smoke()
     source_source=$smoke_dir/source-release-failure.c
     source_binary=$smoke_dir/source-release-failure$exe
     source_log=$smoke_dir/source-release-failure.log
+    source_ldflags=$(awk -F= '/^LDFLAGS=/ { print $2 }' "$smoke_dir/config.mak")
+    source_ldflagscli=$(awk -F= '/^LDFLAGSCLI=/ { print $2 }' "$smoke_dir/config.mak")
 
     cat > "$source_source" <<'SOURCE_RELEASE_FAILURE_C'
 #include <stdlib.h>
@@ -4950,7 +4952,8 @@ SOURCE_RELEASE_FAILURE_C
     if ! ${CC:-cc} -std=gnu17 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200112L \
         -Wall -Wextra -Werror -Wno-unused-parameter \
         -I"$smoke_dir" -I"$root" \
-        "$source_source" "$smoke_dir/libx264.a" -o "$source_binary" >"$source_log" 2>&1; then
+        "$source_source" "$smoke_dir/libx264.a" $source_ldflagscli $source_ldflags \
+        -o "$source_binary" >"$source_log" 2>&1; then
         printf '%s\n' "failed to build source release failure smoke: $source_log" >&2
         exit 1
     fi

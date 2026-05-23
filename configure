@@ -445,7 +445,7 @@ NL="
 "
 
 # list of all preprocessor HAVE values we can define
-CONFIG_HAVE="MALLOC_H ALTIVEC ALTIVEC_H MMX ARMV6 ARMV6T2 NEON AARCH64 BEOSTHREAD POSIXTHREAD WIN32THREAD THREAD LOG2F SWSCALE \
+CONFIG_HAVE="MALLOC_H MIMALLOC ALTIVEC ALTIVEC_H MMX ARMV6 ARMV6T2 NEON AARCH64 BEOSTHREAD POSIXTHREAD WIN32THREAD THREAD LOG2F SWSCALE \
              LAVF FFMS GPAC AVS GPL VECTOREXT INTERLACED CPU_COUNT OPENCL THP LSMASH X86_INLINE_ASM AS_FUNC INTEL_DISPATCHER \
              AVI_OUTPUT MSA LSX MMAP WINRT VSX ARM_INLINE_ASM STRTOK_R CLOCK_GETTIME BITDEPTH8 BITDEPTH10 ELF_AUX_INFO GETAUXVAL \
              SYSCONF SYNC_FETCH_AND_ADD \
@@ -647,6 +647,7 @@ if ${cross_prefix}gcc-ar --version >/dev/null 2>&1; then
 else
     AR="${AR-${cross_prefix}ar}"
 fi
+AR_MRI="$AR -M"
 if ${cross_prefix}gcc-ranlib --version >/dev/null 2>&1; then
     RANLIB="${RANLIB-${cross_prefix}gcc-ranlib}"
 else
@@ -737,6 +738,10 @@ if [ $compiler = GNU ]; then
 fi
 
 libm=""
+mimalloc_link_libs=""
+mimalloc_static_private_libs=""
+libx264_addlibs=""
+static_private_libs=""
 case $host_os in
     beos*)
         SYS="BEOS"
@@ -789,6 +794,26 @@ case $host_os in
             SYS="WINDOWS"
             DEVNULL="NUL"
             cc_check '' -lshell32 && LDFLAGSCLI="$LDFLAGSCLI -lshell32"
+            if cc_check 'mimalloc.h' '-lmimalloc' 'mi_version();' ; then
+                define HAVE_MIMALLOC
+                mimalloc_archive="$($CC -print-file-name=libmimalloc.a 2>$DEVNULL)"
+                if [ "$mimalloc_archive" != "libmimalloc.a" ] && [ -f "$mimalloc_archive" ] && [ $compiler_style != MS ]; then
+                    libx264_addlibs="$mimalloc_archive"
+                    if $PKGCONFIG --exists mimalloc 2>$DEVNULL; then
+                        mimalloc_static_private_libs="$($PKGCONFIG --libs --static mimalloc 2>$DEVNULL | awk '{ for( i = 1; i <= NF; i++ ) { if( $i !~ /^-L/ && $i != "-lmimalloc" ) printf "%s%s", sep, $i; sep = " " } }')"
+                    else
+                        mimalloc_static_private_libs="-lpsapi -lshell32 -luser32 -ladvapi32 -lbcrypt"
+                    fi
+                    mimalloc_link_libs="$mimalloc_archive $mimalloc_static_private_libs"
+                else
+                    mimalloc_link_libs="-lmimalloc"
+                    if $PKGCONFIG --exists mimalloc 2>$DEVNULL; then
+                        mimalloc_static_private_libs="$($PKGCONFIG --libs --static mimalloc 2>$DEVNULL | awk '{ for( i = 1; i <= NF; i++ ) { if( $i !~ /^-L/ ) printf "%s%s", sep, $i; sep = " " } }')"
+                    else
+                        mimalloc_static_private_libs="-lmimalloc"
+                    fi
+                fi
+            fi
             [ $compiler = GNU ] && RC="${RC-${cross_prefix}windres}" || RC="${RC-rc.exe}"
         fi
         ;;
@@ -1743,6 +1768,14 @@ if [ "$shared" = "yes" ]; then
     CFLAGSSO="$CFLAGSSO -DX264_API_EXPORTS"
 fi
 
+if [ -n "$mimalloc_link_libs" ]; then
+    LDFLAGS="$LDFLAGS $mimalloc_link_libs"
+    LDFLAGSCLI="$LDFLAGSCLI $mimalloc_link_libs"
+fi
+if [ -n "$mimalloc_static_private_libs" ]; then
+    static_private_libs="$static_private_libs $mimalloc_static_private_libs"
+fi
+
 if [ "$cli_libx264" = "system" ] ; then
     if [ "$shared" = "yes" ]; then
         if [ "$SYS" = "WINDOWS" -o "$SYS" = "CYGWIN" ]; then
@@ -1849,6 +1882,8 @@ LDFLAGSCLI=$LDFLAGSCLI
 LIBX264=$LIBX264
 CLI_LIBX264=$CLI_LIBX264
 AR=$AR
+AR_MRI=$AR_MRI
+LIBX264_ADDLIBS=$libx264_addlibs
 RANLIB=$RANLIB
 STRIP=$STRIP
 INSTALL=$INSTALL
@@ -1942,8 +1977,8 @@ includedir=$includedir
 Name: x264
 Description: H.264 (MPEG4 AVC) encoder library
 Version: $(grep POINTVER < x264_config.h | sed -e 's/.* "//; s/".*//; s/ .*//')
-Libs: -L$libdir -lx264 $([ "$shared" = "yes" ] || echo $libpthread $libm $libdl)
-Libs.private: $([ "$shared" = "yes" ] && echo $libpthread $libm $libdl)
+Libs: -L$libdir -lx264 $([ "$shared" = "yes" ] || echo $libpthread $libm $libdl $static_private_libs)
+Libs.private: $([ "$shared" = "yes" ] && echo $libpthread $libm $libdl $static_private_libs)
 Cflags: -I$includedir $([ "$shared" = "yes" ] && echo "-DX264_API_IMPORTS")
 EOF
 
