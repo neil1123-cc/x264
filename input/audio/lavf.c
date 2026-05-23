@@ -45,6 +45,20 @@ static audio_packet_t *convert_to_audio_packet( hnd_t handle, AVPacket *pkt );
 
 const audio_filter_t audio_filter_lavf;
 
+static int lavf_parse_audio_track( const char *trackstr, int *track )
+{
+    if( !trackstr || !strcmp( trackstr, "any" ) )
+    {
+        *track = TRACK_ANY;
+        return 0;
+    }
+
+    if( x264_otoi_checked( trackstr, track ) || *track < 0 )
+        return -1;
+
+    return 0;
+}
+
 static int init( hnd_t *handle, const char *opt_str )
 {
     assert( opt_str );
@@ -56,7 +70,6 @@ static int init( hnd_t *handle, const char *opt_str )
         return -1;
 
     char *filename = x264_get_option( "filename", opts );
-    char *trackstr = x264_otos( x264_get_option( "track", opts ), "any" );
 
     if( !filename )
     {
@@ -65,12 +78,7 @@ static int init( hnd_t *handle, const char *opt_str )
     }
 
     int track;
-    if( !strcmp( trackstr, "any" ) )
-        track = TRACK_ANY;
-    else
-        track = x264_otoi( trackstr, TRACK_NONE );
-
-    if( track == TRACK_NONE )
+    if( lavf_parse_audio_track( x264_get_option( "track", opts ), &track ) )
     {
         x264_cli_log( "lavf", X264_LOG_ERROR, "no valid track requested ('any', 0 or a positive integer)\n" );
         goto fail2;

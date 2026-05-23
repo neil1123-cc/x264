@@ -33,7 +33,9 @@
 char **x264_split_options( const char *opt_str, const char * const *options );
 char  *x264_get_option( const char *name, char **split_options );
 int    x264_otob( const char *str, int def );    // option to bool
+int    x264_otob_checked( const char *str, int *dst );
 double x264_otof( const char *str, double def ); // option to float/double
+int    x264_otof_checked( const char *str, double *dst );
 int    x264_otoi( const char *str, int def );    // option to int
 int    x264_otoi_checked( const char *str, int *dst );
 char  *x264_otos( char *str, char *def );        // option to string

@@ -3,6 +3,7 @@
 
 #include <faac.h>
 #include <assert.h>
+#include <float.h>
 
 typedef struct enc_faac_t
 {
@@ -55,6 +56,39 @@ static void add_skip_samples( int64_t *last_sample, uint64_t samplecount )
         *last_sample = INT64_MAX;
 }
 
+static int parse_bool_option( const char *opt, int def, int *dst )
+{
+    if( !opt )
+    {
+        *dst = def;
+        return 0;
+    }
+    return x264_otob_checked( opt, dst );
+}
+
+static int parse_float_option( const char *opt, double def, float *dst )
+{
+    double value;
+    if( !opt )
+        value = def;
+    else if( x264_otof_checked( opt, &value ) )
+        return -1;
+    if( !(value >= -FLT_MAX && value <= FLT_MAX) )
+        return -1;
+    *dst = (float)value;
+    return 0;
+}
+
+static int parse_int_option( const char *opt, int def, int *dst )
+{
+    if( !opt )
+    {
+        *dst = def;
+        return 0;
+    }
+    return x264_otoi_checked( opt, dst );
+}
+
 static const int faac_channel_map[][8] = {
  { 0, },
  { 0, 1, },
@@ -102,19 +136,49 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     h->info.samplerate = chain->info.samplerate;
     h->info.channels   = chain->info.channels;
 
-    int is_vbr  = x264_otob( x264_get_option( "is_vbr", opts ), 1 );
+    int is_vbr;
+    if( parse_bool_option( x264_get_option( "is_vbr", opts ), 1, &is_vbr ) )
+    {
+        x264_cli_log( "faac", X264_LOG_ERROR, "invalid is_vbr option\n" );
+        goto error;
+    }
     float brval;
-    if( is_vbr )
-        brval = x264_otof( x264_get_option( "bitrate", opts ), 100 );
-    else
-        brval = x264_otof( x264_get_option( "bitrate", opts ), 128 ); // dummy default value, must never be used
+    if( parse_float_option( x264_get_option( "bitrate", opts ), is_vbr ? 100.0 : 128.0, &brval ) )
+    {
+        x264_cli_log( "faac", X264_LOG_ERROR, "invalid bitrate option\n" );
+        goto error;
+    }
 
-    int cutoff   = x264_clip3( x264_otoi( x264_get_option( "cutoff", opts ), -1 ), 0, h->info.samplerate >> 1 );
-    int midside  = x264_otob( x264_get_option( "midside", opts ), 1 );
-    int tns      = x264_otob( x264_get_option( "tns", opts ), 0 );
-    int shortctl = x264_clip3( x264_otoi( x264_get_option( "shortctl", opts ), SHORTCTL_NORMAL ), SHORTCTL_NORMAL, SHORTCTL_NOLONG );
+    int cutoff_value;
+    if( parse_int_option( x264_get_option( "cutoff", opts ), -1, &cutoff_value ) )
+    {
+        x264_cli_log( "faac", X264_LOG_ERROR, "invalid cutoff option\n" );
+        goto error;
+    }
+    int cutoff = x264_clip3( cutoff_value, 0, h->info.samplerate >> 1 );
+
+    int midside;
+    if( parse_bool_option( x264_get_option( "midside", opts ), 1, &midside ) )
+    {
+        x264_cli_log( "faac", X264_LOG_ERROR, "invalid midside option\n" );
+        goto error;
+    }
+    int tns;
+    if( parse_bool_option( x264_get_option( "tns", opts ), 0, &tns ) )
+    {
+        x264_cli_log( "faac", X264_LOG_ERROR, "invalid tns option\n" );
+        goto error;
+    }
+    int shortctl_value;
+    if( parse_int_option( x264_get_option( "shortctl", opts ), SHORTCTL_NORMAL, &shortctl_value ) )
+    {
+        x264_cli_log( "faac", X264_LOG_ERROR, "invalid shortctl option\n" );
+        goto error;
+    }
+    int shortctl = x264_clip3( shortctl_value, SHORTCTL_NORMAL, SHORTCTL_NOLONG );
 
     free( opts );
+    opts = NULL;
 
     unsigned long int samplesInput, maxBytesOutput;
     if( !( h->faac = faacEncOpen( h->info.samplerate, h->info.channels,
@@ -193,6 +257,7 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     return h;
 
 error:
+    free( opts );
     if( h->faac )
         faacEncClose( h->faac );
     if( h->info.extradata )

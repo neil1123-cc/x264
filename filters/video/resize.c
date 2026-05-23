@@ -220,29 +220,34 @@ static int pick_closest_supported_csp( int csp )
     return ret;
 }
 
-static int parse_resize_ratio( const char *arg, uint32_t *w, uint32_t *h )
+static int parse_resize_ratio_component( const char **arg, uint32_t *dst )
 {
     char *end;
     unsigned long value;
 
-    if( !arg || *arg < '0' || *arg > '9' )
+    if( !arg || !*arg || !dst || **arg < '0' || **arg > '9' )
         return -1;
 
     errno = 0;
-    value = strtoul( arg, &end, 10 );
-    if( end == arg || errno == ERANGE || value > UINT32_MAX || !value || (*end != ':' && *end != '/') )
-        return -1;
-    *w = (uint32_t)value;
-
-    arg = end + 1;
-    if( *arg < '0' || *arg > '9' )
+    value = strtoul( *arg, &end, 10 );
+    if( end == *arg || errno == ERANGE || value > UINT32_MAX || !value )
         return -1;
 
-    errno = 0;
-    value = strtoul( arg, &end, 10 );
-    if( end == arg || errno == ERANGE || value > UINT32_MAX || !value || *end )
+    *dst = (uint32_t)value;
+    *arg = end;
+    return 0;
+}
+
+static int parse_resize_ratio( const char *arg, uint32_t *w, uint32_t *h )
+{
+    const char *p = arg;
+
+    if( parse_resize_ratio_component( &p, w ) || (*p != ':' && *p != '/') )
         return -1;
-    *h = (uint32_t)value;
+    p++;
+    if( parse_resize_ratio_component( &p, h ) || *p )
+        return -1;
+
     return 0;
 }
 
@@ -255,8 +260,13 @@ static int handle_opts( const char * const *optlist, char **opts, video_info_t *
     char *str_sar    = x264_get_option( optlist[2], opts );
     char *fittobox   = x264_get_option( optlist[3], opts );
     char *str_csp    = x264_get_option( optlist[4], opts );
-    int width        = x264_otoi( str_width, -1 );
-    int height       = x264_otoi( str_height, -1 );
+    int width        = -1;
+    int height       = -1;
+
+    FAIL_IF_ERROR( str_width && x264_otoi_checked( str_width, &width ),
+                   "invalid width `%s'\n", str_width );
+    FAIL_IF_ERROR( str_height && x264_otoi_checked( str_height, &height ),
+                   "invalid height `%s'\n", str_height );
 
     int csp_only = 0;
     uint32_t in_sar_w = info->sar_width;
@@ -271,7 +281,8 @@ static int handle_opts( const char * const *optlist, char **opts, video_info_t *
         {
             /* csp bit depth was specified */
             *str_depth++ = '\0';
-            depth = x264_otoi( str_depth, -1 );
+            FAIL_IF_ERROR( x264_otoi_checked( str_depth, &depth ),
+                           "invalid bit depth `%s'\n", str_depth );
             FAIL_IF_ERROR( depth != 8 && depth != 16, "unsupported bit depth %d\n", depth );
         }
         /* now lookup against the list of valid csps */

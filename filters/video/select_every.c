@@ -76,30 +76,45 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
     if( !h )
         return -1;
     int offsets[MAX_PATTERN_SIZE];
-    for( char *tok, *p = opt_string, UNUSED *saveptr = NULL; (tok = strtok_r( p, ",", &saveptr )); p = NULL )
+    char *tok = opt_string;
+    for( int i = 0; ; i++ )
     {
-        int val = x264_otoi( tok, -1 );
-        if( p )
+        char *end = strchr( tok, ',' );
+        int val;
+        if( end )
+            *end = '\0';
+        if( !*tok )
         {
-            if( val <= 0 )
+            x264_cli_log( NAME, X264_LOG_ERROR, "empty %s\n", i ? "offset" : "step" );
+            goto fail;
+        }
+        int invalid = x264_otoi_checked( tok, &val );
+        if( !i )
+        {
+            if( invalid || val <= 0 )
             {
                 x264_cli_log( NAME, X264_LOG_ERROR, "invalid step `%s'\n", tok );
                 goto fail;
             }
             h->step_size = val;
-            continue;
         }
-        if( val < 0 || val >= h->step_size )
+        else
         {
-            x264_cli_log( NAME, X264_LOG_ERROR, "invalid offset `%s'\n", tok );
-            goto fail;
+            if( invalid || val < 0 || val >= h->step_size )
+            {
+                x264_cli_log( NAME, X264_LOG_ERROR, "invalid offset `%s'\n", tok );
+                goto fail;
+            }
+            if( h->pattern_len >= MAX_PATTERN_SIZE )
+            {
+                x264_cli_log( NAME, X264_LOG_ERROR, "max pattern size %d reached\n", MAX_PATTERN_SIZE );
+                goto fail;
+            }
+            offsets[h->pattern_len++] = val;
         }
-        if( h->pattern_len >= MAX_PATTERN_SIZE )
-        {
-            x264_cli_log( NAME, X264_LOG_ERROR, "max pattern size %d reached\n", MAX_PATTERN_SIZE );
-            goto fail;
-        }
-        offsets[h->pattern_len++] = val;
+        if( !end )
+            break;
+        tok = end + 1;
     }
     if( !h->step_size )
     {

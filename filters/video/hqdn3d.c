@@ -24,6 +24,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include "internal.h"
 #include "video.h"
 
 #define NAME "hqdn3d"
@@ -38,6 +39,7 @@ cli_vid_filter_t hqdn3d_filter;
 typedef struct {
     hnd_t prev_hnd;
     cli_vid_filter_t prev_filter;
+    cli_pic_t buffer;
     int coefs[4][512*16];
     unsigned int *line;
     unsigned short *frame[3];
@@ -76,12 +78,12 @@ static void precalc_coefs(int *ct, double dist25)
 
 static int parse_strength( const char *arg, char **end, double *strength )
 {
-    if( !arg || !*arg )
+    if( !arg || !( (*arg >= '0' && *arg <= '9') || *arg == '.' ) )
         return -1;
 
     errno = 0;
     *strength = strtod( arg, end );
-    if( *end == arg || errno == ERANGE || !isfinite( *strength ) )
+    if( *end == arg || errno == ERANGE || !isfinite( *strength ) || *strength < 0.0 )
         return -1;
     return 0;
 }
@@ -198,6 +200,8 @@ static int init(hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info,
     h->line = calloc(1, (size_t)info->width * sizeof(*h->line));
     if(!h->line)
         goto fail;
+    if( x264_cli_pic_alloc( &h->buffer, info->csp, info->width, info->height ) )
+        goto fail;
     for(int i = 0; i < csp->planes; i++)
     {
         int64_t plane_size = x264_cli_pic_plane_size( info->csp, info->width, info->height, i );
@@ -227,6 +231,7 @@ static int init(hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info,
 
 fail:
     free(h->line);
+    x264_cli_pic_clean( &h->buffer );
     for(int i = 0; i < 3; i++)
         free(h->frame[i]);
     free(h);
@@ -352,9 +357,18 @@ static void init_data(uint8_t *source, unsigned short *dest,
 static int get_frame(hnd_t handle, cli_pic_t *out, int frame)
 {
     hqdn3d_hnd_t *h = handle;
+    cli_pic_t in;
+    int ret;
 
-    if( !h || !out || frame < 0 || h->prev_filter.get_frame(h->prev_hnd, out, frame) )
+    if( !h || !out || frame < 0 || h->prev_filter.get_frame(h->prev_hnd, &in, frame) )
         return -1;
+
+    ret = x264_cli_pic_copy( &h->buffer, &in );
+    ret |= h->prev_filter.release_frame(h->prev_hnd, &in, frame);
+    if( ret )
+        return -1;
+
+    *out = h->buffer;
 
     for(int i = 0; i < out->img.planes; i++) {
         int width = out->img.width * h->csp->width[i];
@@ -372,14 +386,14 @@ static int get_frame(hnd_t handle, cli_pic_t *out, int frame)
 
 static int release_frame(hnd_t handle, cli_pic_t *pic, int frame)
 {
-    hqdn3d_hnd_t *h = handle;
-    return h->prev_filter.release_frame(h->prev_hnd, pic, frame);
+    return 0;
 }
 
 static void free_filter(hnd_t handle)
 {
     hqdn3d_hnd_t *h = handle;
     h->prev_filter.free(h->prev_hnd);
+    x264_cli_pic_clean( &h->buffer );
     free(h->line);
     for(int i = 0; i < 3; i++)
         free(h->frame[i]);

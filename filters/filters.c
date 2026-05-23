@@ -155,39 +155,67 @@ int x264_otob( const char *str, int def )
    return def;
 }
 
+int x264_otob_checked( const char *str, int *dst )
+{
+    if( !str )
+        return -1;
+    if( !strcmp( str, "1" ) || !strcasecmp( str, "true" ) || !strcasecmp( str, "yes" ) )
+    {
+        *dst = 1;
+        return 0;
+    }
+    if( !strcmp( str, "0" ) || !strcasecmp( str, "false" ) || !strcasecmp( str, "no" ) )
+    {
+        *dst = 0;
+        return 0;
+    }
+    return -1;
+}
+
+static int x264_parse_filter_float( const char *str, double *dst )
+{
+    double ret;
+    char *end;
+    const char *p;
+
+    if( !str || !dst )
+        return -1;
+
+    p = str;
+    if( *p == '-' )
+        p++;
+    if( !( (*p >= '0' && *p <= '9') || *p == '.' ) )
+        return -1;
+
+    errno = 0;
+    ret = strtod( str, &end );
+    if( end == str || *end != '\0' || errno == ERANGE )
+        return -1;
+
+    *dst = ret;
+    return 0;
+}
+
 double x264_otof( const char *str, double def )
 {
-   double ret = def;
-   if( str )
-   {
-       char *end;
-       ret = strtod( str, &end );
-       if( end == str || *end != '\0' )
-           ret = def;
-   }
-   return ret;
+   double ret;
+   return x264_parse_filter_float( str, &ret ) ? def : ret;
 }
 
-int x264_otoi( const char *str, int def )
+int x264_otof_checked( const char *str, double *dst )
 {
-    long ret = def;
-    if( str )
-    {
-        char *end;
-        errno = 0;
-        ret = strtol( str, &end, 0 );
-        if( end == str || *end != '\0' || errno == ERANGE || ret < INT_MIN || ret > INT_MAX )
-            ret = def;
-    }
-    return ret;
+    return x264_parse_filter_float( str, dst );
 }
 
-int x264_otoi_checked( const char *str, int *dst )
+static int x264_parse_filter_int( const char *str, int *dst )
 {
     long ret;
     char *end;
 
-    if( !str )
+    if( !str || !dst )
+        return -1;
+
+    if( !( (*str >= '0' && *str <= '9') || *str == '-' ) )
         return -1;
 
     errno = 0;
@@ -197,6 +225,17 @@ int x264_otoi_checked( const char *str, int *dst )
 
     *dst = (int)ret;
     return 0;
+}
+
+int x264_otoi( const char *str, int def )
+{
+    int ret;
+    return x264_parse_filter_int( str, &ret ) ? def : ret;
+}
+
+int x264_otoi_checked( const char *str, int *dst )
+{
+    return x264_parse_filter_int( str, dst );
 }
 
 char *x264_otos( char *str, char *def )

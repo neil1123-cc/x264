@@ -405,6 +405,9 @@ static int cqm_parse_int( const char *p, char **end, int *dst )
 {
     long value;
 
+    if( !(*p >= '0' && *p <= '9') && *p != '-' )
+        return -1;
+
     errno = 0;
     value = strtol( p, end, 10 );
     if( *end == p || errno == ERANGE || value < INT_MIN || value > INT_MAX )

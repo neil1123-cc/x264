@@ -228,7 +228,7 @@ static int stats_parse_int_token( const char *p, int *dst )
     char *end;
     long value;
 
-    if( *p == '-' || *p == '+' )
+    if( *p == '-' )
     {
         if( p[1] < '0' || p[1] > '9' )
             return -1;
@@ -248,7 +248,7 @@ static int stats_parse_int_token( const char *p, int *dst )
 
 static int stats_parse_number_start( const char *p )
 {
-    if( *p == '-' || *p == '+' )
+    if( *p == '-' )
         p++;
     return *p >= '0' && *p <= '9';
 }
@@ -466,6 +466,9 @@ static int stats_parse_positive_int( const char **p, int *dst )
 {
     char *end;
     long value;
+
+    if( **p < '0' || **p > '9' )
+        return -1;
 
     errno = 0;
     value = strtol( *p, &end, 10 );
@@ -1697,8 +1700,12 @@ int x264_ratecontrol_new( x264_t *h )
             char direct_mode;
 
             next= strchr(p, ';');
-            if( next )
-                *next++ = 0; //sscanf is unbelievably slow on long strings
+            if( !next )
+            {
+                e = -1;
+                goto parse_error;
+            }
+            *next++ = 0; //sscanf is unbelievably slow on long strings
             e = stats_parse_pass2_main( p, &stats_fields_end, &frame_number, &frame_out_number, &pict_type,
                                         &duration, &cpb_duration, &qp_rc, &qp_aq,
                                         &tex_bits, &mv_bits, &misc_bits,
@@ -1794,6 +1801,14 @@ parse_error:
             total_qp_aq += qp_aq;
             p = next;
         }
+        while( isspace( (unsigned char)*p ) )
+            p++;
+        if( *p )
+        {
+            x264_log( h, X264_LOG_ERROR, "statistics are damaged at line %d, parser out=%d\n",
+                      rc->num_entries, -1 );
+            return -1;
+        }
         if( !h->param.b_stitchable )
             h->pps->i_pic_init_qp = SPEC_QP( (int)(total_qp_aq / rc->num_entries + 0.5) );
 
@@ -1876,6 +1891,9 @@ static int parse_zone_int( char **p, int *dst )
     char *end;
     long value;
 
+    if( !isdigit( (unsigned char)**p ) && **p != '-' )
+        return -1;
+
     errno = 0;
     value = strtol( *p, &end, 10 );
     if( end == *p || errno == ERANGE || value < INT_MIN || value > INT_MAX )
@@ -1888,7 +1906,13 @@ static int parse_zone_int( char **p, int *dst )
 static int parse_zone_float( char **p, float *dst )
 {
     char *end;
+    char *start = *p;
     float value;
+
+    if( *start == '-' )
+        start++;
+    if( !isdigit( (unsigned char)*start ) && *start != '.' )
+        return -1;
 
     errno = 0;
     value = strtof( *p, &end );
@@ -1901,7 +1925,7 @@ static int parse_zone_float( char **p, float *dst )
 
 static int parse_zone( x264_t *h, x264_zone_t *z, char *p )
 {
-    char *tok, UNUSED *saveptr=NULL;
+    char *tok;
     z->param = NULL;
     z->f_bitrate_factor = 1;
     if( parse_zone_int( &p, &z->i_start ) || *p++ != ',' || parse_zone_int( &p, &z->i_end ) )
@@ -1943,8 +1967,26 @@ static int parse_zone( x264_t *h, x264_zone_t *z, char *p )
     memcpy( z->param, &h->param, sizeof(x264_param_t) );
     z->param->opaque = NULL;
     z->param->param_free = x264_free;
-    while( (tok = strtok_r( p, ",", &saveptr )) )
+    p++;
+    do
     {
+        size_t tok_len = strcspn( p, "," );
+        if( !tok_len )
+        {
+            x264_log( h, X264_LOG_ERROR, "empty zone param\n" );
+            return -1;
+        }
+        tok = p;
+        p += tok_len;
+        if( *p )
+        {
+            *p++ = '\0';
+            if( !*p )
+            {
+                x264_log( h, X264_LOG_ERROR, "empty zone param\n" );
+                return -1;
+            }
+        }
         char *val = strchr( tok, '=' );
         if( val )
         {
@@ -1953,11 +1995,11 @@ static int parse_zone( x264_t *h, x264_zone_t *z, char *p )
         }
         if( x264_param_parse( z->param, tok, val ) )
         {
-            x264_log( h, X264_LOG_ERROR, "invalid zone param: %s = %s\n", tok, val );
+            x264_log( h, X264_LOG_ERROR, "invalid zone param: %s = %s\n", tok, val ? val : "(null)" );
             return -1;
         }
-        p = NULL;
     }
+    while( *p );
     return 0;
 fail:
     return -1;

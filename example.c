@@ -28,8 +28,12 @@
 #include <fcntl.h>    /* _O_BINARY */
 #endif
 
+#include <ctype.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <x264.h>
 
 #define FAIL_IF_ERROR( cond, ... )\
@@ -41,6 +45,44 @@ do\
         goto fail;\
     }\
 } while( 0 )
+
+#define EXAMPLE_MAX_RESOLUTION 16384
+
+static const char *example_skip_space( const char *arg )
+{
+    while( isspace( (unsigned char)*arg ) )
+        arg++;
+    return arg;
+}
+
+static int parse_example_dimension( const char **arg, int *dst )
+{
+    char *end;
+    long value;
+    const char *p = *arg;
+
+    if( !isdigit( (unsigned char)*p ) )
+        return -1;
+
+    errno = 0;
+    value = strtol( *arg, &end, 10 );
+    if( end == *arg || errno == ERANGE || value <= 0 || value > EXAMPLE_MAX_RESOLUTION )
+        return -1;
+
+    *dst = (int)value;
+    *arg = end;
+    return 0;
+}
+
+static int parse_example_resolution( const char *arg, int *width, int *height )
+{
+    if( parse_example_dimension( &arg, width ) || *arg++ != 'x' ||
+        parse_example_dimension( &arg, height ) || *example_skip_space( arg ) ||
+        *width > INT_MAX / *height )
+        return -1;
+
+    return 0;
+}
 
 int main( int argc, char **argv )
 {
@@ -61,7 +103,7 @@ int main( int argc, char **argv )
 #endif
 
     FAIL_IF_ERROR( !(argc > 1), "Example usage: example 352x288 <input.yuv >output.h264\n" );
-    FAIL_IF_ERROR( 2 != sscanf( argv[1], "%dx%d", &width, &height ), "resolution not specified or incorrect\n" );
+    FAIL_IF_ERROR( parse_example_resolution( argv[1], &width, &height ), "resolution not specified or incorrect\n" );
 
     /* Get default params for preset/tuning */
     if( x264_param_default_preset( &param, "medium", NULL ) < 0 )
@@ -77,7 +119,7 @@ int main( int argc, char **argv )
     param.b_annexb = 1;
 
     /* Apply profile restrictions. */
-    if( x264_param_apply_profile( &param, "high" ) < 0 )
+    if( x264_param_apply_profile( &param, "high", NULL ) < 0 )
         goto fail;
 
     if( x264_picture_alloc( &pic, param.i_csp, param.i_width, param.i_height ) < 0 )
@@ -91,8 +133,8 @@ int main( int argc, char **argv )
 #undef fail
 #define fail fail3
 
-    int luma_size = width * height;
-    int chroma_size = luma_size / 4;
+    size_t luma_size = (size_t)width * (size_t)height;
+    size_t chroma_size = luma_size / 4;
     /* Encode frames */
     for( ;; i_frame++ )
     {

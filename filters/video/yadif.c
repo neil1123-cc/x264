@@ -125,6 +125,7 @@ static int yadif_init( hnd_t *handle, cli_vid_filter_t *filter,
     if( opt_string )
     {
         char *opt;
+        int opt_error = 0;
         static const char * const optlist[] = { "mode", "order", NULL };
         char **opts = x264_split_options( opt_string, optlist );
         if( !opts )
@@ -133,12 +134,11 @@ static int yadif_init( hnd_t *handle, cli_vid_filter_t *filter,
         opt = x264_get_option( "mode", opts );
         if( opt )
         {
-            h->mode = x264_otoi( opt, -1 );
-            if( h->mode < 0 || h->mode > 3 )
+            if( x264_otoi_checked( opt, &h->mode ) || h->mode < 0 || h->mode > 3 )
             {
-                x264_cli_log( NAME, X264_LOG_WARNING,
-                              "Invalid mode (%s), ignoring\n", opt );
-                h->mode = 0;
+                x264_cli_log( NAME, X264_LOG_ERROR,
+                              "invalid mode (%s)\n", opt );
+                opt_error = 1;
             }
         }
 
@@ -150,10 +150,15 @@ static int yadif_init( hnd_t *handle, cli_vid_filter_t *filter,
             else if( !strcmp( opt, "bottom" ) || !strcmp( opt, "bff" ) )
                 h->tff = 0;
             else
-                x264_cli_log( NAME, X264_LOG_WARNING,
-                              "Unknown order (%s), ignoring\n", opt );
+            {
+                x264_cli_log( NAME, X264_LOG_ERROR,
+                              "unknown order (%s)\n", opt );
+                opt_error = 1;
+            }
         }
         free( opts );
+        if( opt_error )
+            goto fail;
     }
 
     if( h->mode&1 )

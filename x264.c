@@ -130,23 +130,42 @@ static int parse_cli_int_end( const char *arg, char **end, int *dst )
 static int parse_cli_int( const char *arg, int *dst )
 {
     char *end;
+    const char *p;
 
+    if( !arg )
+        return -1;
+    p = arg;
+    if( *p == '-' )
+        p++;
+    if( *p < '0' || *p > '9' )
+        return -1;
     if( parse_cli_int_end( arg, &end, dst ) || !cli_at_end( end ) )
         return -1;
 
     return 0;
 }
 
-static int parse_cli_uint64_end( const char *arg, char **end, uint64_t *dst )
+static int parse_qpfile_int_end( const char *arg, char **end, int *dst )
 {
     const char *p;
-    unsigned long long value;
 
     if( !arg || !end || !dst )
         return -1;
 
     p = cli_skip_space( arg );
-    if( *p == '-' )
+    if( *p == '+' )
+        return -1;
+
+    return parse_cli_int_end( p, end, dst );
+}
+
+static int parse_cli_uint64_end( const char *arg, char **end, uint64_t *dst )
+{
+    unsigned long long value;
+
+    if( !arg || !end || !dst )
+        return -1;
+    if( *arg < '0' || *arg > '9' )
         return -1;
 
     errno = 0;
@@ -187,8 +206,8 @@ static int parse_cli_double_end( const char *arg, char **end, double *dst )
     if( !arg || !end || !dst )
         return -1;
 
-    p = cli_skip_space( arg );
-    if( *p == '+' || *p == '-' )
+    p = arg;
+    if( *p == '-' )
         p++;
     if( !( (*p >= '0' && *p <= '9') || *p == '.' ) )
         return -1;
@@ -223,11 +242,19 @@ static int parse_cli_float( const char *arg, float *dst )
     return 0;
 }
 
+static int cli_double_starts_unsigned( const char *arg )
+{
+    return arg && ( (*arg >= '0' && *arg <= '9') || *arg == '.' );
+}
+
 static int parse_cli_display_size( const char *arg, double *width, double *height )
 {
     char *end;
 
+    if( !cli_double_starts_unsigned( arg ) )
+        return -1;
     if( parse_cli_double_end( arg, &end, width ) || *end != 'x' ||
+        !cli_double_starts_unsigned( end + 1 ) ||
         parse_cli_double( end + 1, height ) )
         return -1;
 
@@ -2765,7 +2792,7 @@ static void parse_qpfile( cli_opt_t *opt, x264_picture_t *pic, int i_frame )
         {
             char *end;
             const char *p = buf;
-            if( parse_cli_int_end( p, &end, &num ) )
+            if( parse_qpfile_int_end( p, &end, &num ) )
                 ret = 0;
             else
             {
@@ -2780,7 +2807,7 @@ static void parse_qpfile( cli_opt_t *opt, x264_picture_t *pic, int i_frame )
                         ret = 2;
                     else if( !strncasecmp( p, "none", 4 ) && cli_at_line_end( p + 4 ) )
                         ret = 2;
-                    else if( parse_cli_int_end( p, &end, &qp ) || !cli_at_line_end( end ) )
+                    else if( parse_qpfile_int_end( p, &end, &qp ) || !cli_at_line_end( end ) )
                         ret = 0;
                     else
                         ret = 3;

@@ -26,6 +26,8 @@
  *****************************************************************************/
 
 #include <ctype.h>
+#include <errno.h>
+#include <limits.h>
 #include "common/common.h"
 #include "encoder/macroblock.h"
 
@@ -57,6 +59,23 @@ static pixel *pbuf3, *pbuf4;
 #define X264_ISDIGIT(x) isdigit((unsigned char)(x))
 
 static int quiet = 0;
+
+static int parse_seed( const char *arg, unsigned *seed )
+{
+    char *end;
+    unsigned long value;
+
+    if( !arg || !X264_ISDIGIT( arg[0] ) )
+        return -1;
+
+    errno = 0;
+    value = strtoul( arg, &end, 0 );
+    if( end == arg || *end || errno == ERANGE || value > UINT_MAX )
+        return -1;
+
+    *seed = value;
+    return 0;
+}
 
 #define report( name ) { \
     if( used_asm && !quiet ) \
@@ -3124,7 +3143,17 @@ REALIGN_STACK int main( int argc, char **argv )
         argv++;
     }
 
-    unsigned seed = ( argc > 1 ) ? strtoul(argv[1], NULL, 0) : (unsigned)x264_mdate();
+    unsigned seed;
+    if( argc > 1 )
+    {
+        if( parse_seed( argv[1], &seed ) )
+        {
+            fprintf( stderr, "x264: invalid random seed `%s'\n", argv[1] );
+            return 1;
+        }
+    }
+    else
+        seed = (unsigned)x264_mdate();
     fprintf( stderr, "x264: using random seed %u\n", seed );
     srand( seed );
 

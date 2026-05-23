@@ -74,9 +74,16 @@ static int timecode_at_line_end( const char *arg )
 
 static int timecode_parse_int_end( const char *arg, char **end, int *dst )
 {
+    const char *p;
     long value;
 
     if( !arg || !end || !dst )
+        return -1;
+
+    p = arg;
+    if( *p == '-' )
+        p++;
+    if( *p < '0' || *p > '9' )
         return -1;
 
     errno = 0;
@@ -140,8 +147,10 @@ static int timecode_parse_tdecimate_last_frame( const char *arg, int *last_frame
     p = timecode_skip_space( p );
     if( timecode_match_word( &p, "Last" ) )
         return 1;
-    if( timecode_match_word( &p, "Frame" ) || *p++ != '=' ||
-        timecode_parse_int_end( p, &end, last_frame ) || !timecode_at_line_end( end ) )
+    if( timecode_match_word( &p, "Frame" ) || *p++ != '=' )
+        return -1;
+    p = timecode_skip_space( p );
+    if( timecode_parse_int_end( p, &end, last_frame ) || !timecode_at_line_end( end ) )
         return -1;
 
     return 0;
@@ -149,14 +158,12 @@ static int timecode_parse_tdecimate_last_frame( const char *arg, int *last_frame
 
 static int timecode_parse_u64_end( const char *arg, char **end, uint64_t *dst )
 {
-    const char *p;
     unsigned long long value;
 
     if( !arg || !end || !dst )
         return -1;
 
-    p = timecode_skip_space( arg );
-    if( *p == '-' )
+    if( *arg < '0' || *arg > '9' )
         return -1;
 
     errno = 0;
@@ -176,8 +183,8 @@ static int timecode_parse_double_end( const char *arg, char **end, double *dst )
     if( !arg || !end || !dst )
         return -1;
 
-    p = timecode_skip_space( arg );
-    if( *p == '+' || *p == '-' )
+    p = arg;
+    if( *p == '-' )
         p++;
     if( !( (*p >= '0' && *p <= '9') || *p == '.' ) )
         return -1;
@@ -211,11 +218,13 @@ static int timecode_parse_v1_range( const char *arg, int *start, int *end_frame,
     p = timecode_skip_space( end );
     if( *p++ != ',' )
         return -1;
+    p = timecode_skip_space( p );
     if( timecode_parse_int_end( p, &end, end_frame ) )
         return -1;
     p = timecode_skip_space( end );
     if( *p++ != ',' )
         return -1;
+    p = timecode_skip_space( p );
     return timecode_parse_double_end( p, &end, fps ) || !timecode_at_line_end( end ) ? -1 : 0;
 }
 
@@ -396,7 +405,10 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
             while( *p && isspace( (unsigned char)*p ) )
                 p++;
             if( !strncasecmp( p, "assume", 6 ) )
+            {
                 p += 6;
+                p = (char *)timecode_skip_space( p );
+            }
             else
                 p = buff;
             FAIL_IF_ERROR( timecode_parse_double_line( p, &h->assume_fps ),

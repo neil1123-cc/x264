@@ -5,6 +5,7 @@
 #include "libavutil/channel_layout.h"
 
 #include <assert.h>
+#include <float.h>
 
 #include "audio/encoders.h"
 #include "filters/audio/internal.h"
@@ -86,6 +87,29 @@ static int is_encoder_available( const char *name, void **priv )
     }
 
     return -1;
+}
+
+static int parse_bool_option( const char *opt, int def, int *dst )
+{
+    if( !opt )
+    {
+        *dst = def;
+        return 0;
+    }
+    return x264_otob_checked( opt, dst );
+}
+
+static int parse_float_option( const char *opt, double def, float *dst )
+{
+    double value;
+    if( !opt )
+        value = def;
+    else if( x264_otof_checked( opt, &value ) )
+        return -1;
+    if( !(value >= -FLT_MAX && value <= FLT_MAX) )
+        return -1;
+    *dst = (float)value;
+    return 0;
 }
 
 #define MODE_VBR     0x01
@@ -330,7 +354,12 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     else if( ISCODEC( aac ) )
         av_dict_set( &avopts, "profile", "aac_low", 0 ); // TODO: decide by bitrate / quality
 
-    int is_vbr = x264_otob( x264_get_option( "is_vbr", opts ), ffcodecs[i].mode & MODE_VBR ? 1 : 0 );
+    int is_vbr;
+    if( parse_bool_option( x264_get_option( "is_vbr", opts ), ffcodecs[i].mode & MODE_VBR ? 1 : 0, &is_vbr ) )
+    {
+        x264_cli_log( "lavc", X264_LOG_ERROR, "invalid is_vbr option\n" );
+        goto error;
+    }
 
     if( ( ( !(ffcodecs[i].mode & MODE_BITRATE) && !is_vbr ) || ( !(ffcodecs[i].mode & MODE_VBR) && is_vbr ) ) && ( strcmp(codecname, "libfdk_aac") ) )
     {
@@ -339,9 +368,20 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     }
 
     float default_brval = is_vbr ? ffcodecs[i].default_brval : ffcodecs[i].default_brval * h->ctx->ch_layout.nb_channels;
-    float brval = x264_otof( x264_get_option( "bitrate", opts ), default_brval );
+    float brval;
+    if( parse_float_option( x264_get_option( "bitrate", opts ), default_brval, &brval ) )
+    {
+        x264_cli_log( "lavc", X264_LOG_ERROR, "invalid bitrate option\n" );
+        goto error;
+    }
 
-    h->ctx->compression_level = x264_otof( x264_get_option( "quality", opts ), FF_COMPRESSION_DEFAULT );
+    float compression_level;
+    if( parse_float_option( x264_get_option( "quality", opts ), FF_COMPRESSION_DEFAULT, &compression_level ) )
+    {
+        x264_cli_log( "lavc", X264_LOG_ERROR, "invalid quality option\n" );
+        goto error;
+    }
+    h->ctx->compression_level = compression_level;
 
     free( opts );
     opts = NULL;

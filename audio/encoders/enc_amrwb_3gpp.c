@@ -5,6 +5,7 @@
 #include "enc_if.h"
 #include <math.h>
 #include <assert.h>
+#include <float.h>
 
 typedef struct enc_amrwb_3gpp_t
 {
@@ -58,6 +59,29 @@ static void add_skip_samples( int64_t *last_sample, uint64_t samplecount )
         *last_sample = INT64_MAX;
 }
 
+static int parse_bool_option( const char *opt, int def, int *dst )
+{
+    if( !opt )
+    {
+        *dst = def;
+        return 0;
+    }
+    return x264_otob_checked( opt, dst );
+}
+
+static int parse_float_option( const char *opt, double def, float *dst )
+{
+    double value;
+    if( !opt )
+        value = def;
+    else if( x264_otof_checked( opt, &value ) )
+        return -1;
+    if( !(value >= -FLT_MAX && value <= FLT_MAX) )
+        return -1;
+    *dst = (float)value;
+    return 0;
+}
+
 static hnd_t init( hnd_t filter_chain, const char *opt_str )
 {
     assert( filter_chain );
@@ -104,8 +128,19 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     h->info.extradata       = NULL; /* These are created in muxer modules. AMR-WB does not have general structure. */
     h->info.extradata_size  = 0;
 
-    h->dtx = (Word16)x264_otob( x264_get_option( "dtx", opts ), 1 );
-    float bitrate = x264_otof( x264_get_option( "bitrate", opts ), 23.85 );
+    int dtx;
+    float bitrate;
+    if( parse_bool_option( x264_get_option( "dtx", opts ), 1, &dtx ) )
+    {
+        x264_cli_log( "amrwb_3gpp", X264_LOG_ERROR, "invalid dtx option\n" );
+        goto error;
+    }
+    h->dtx = (Word16)dtx;
+    if( parse_float_option( x264_get_option( "bitrate", opts ), 23.85, &bitrate ) )
+    {
+        x264_cli_log( "amrwb_3gpp", X264_LOG_ERROR, "invalid bitrate option\n" );
+        goto error;
+    }
     switch( lrintf( bitrate ) )
     {
     case 7: /* 6.60 */

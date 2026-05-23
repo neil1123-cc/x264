@@ -222,9 +222,9 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info,
         if( opts )
         {
             char *str_bit_depth = x264_get_option( "bit_depth", opts );
-            bit_depth = x264_otoi( str_bit_depth, -1 );
+            ret = !str_bit_depth || x264_otoi_checked( str_bit_depth, &bit_depth );
 
-            ret = bit_depth < 8 || bit_depth > 16;
+            ret |= bit_depth < 8 || bit_depth > 16;
             csp = bit_depth > 8 ? csp | X264_CSP_HIGH_DEPTH : csp & ~X264_CSP_HIGH_DEPTH;
             change_fmt = (info->csp ^ csp) & X264_CSP_HIGH_DEPTH;
             free( opts );

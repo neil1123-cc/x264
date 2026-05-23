@@ -91,6 +91,38 @@ static void add_skip_samples( int64_t *last_sample, uint64_t samplecount )
         *last_sample = INT64_MAX;
 }
 
+static int parse_bool_option( const char *opt, int def, int *dst )
+{
+    if( !opt )
+    {
+        *dst = def;
+        return 0;
+    }
+    return x264_otob_checked( opt, dst );
+}
+
+static int parse_double_option( const char *opt, double def, double *dst )
+{
+    if( !opt )
+    {
+        *dst = def;
+        return 0;
+    }
+    if( x264_otof_checked( opt, dst ) )
+        return -1;
+    return 0;
+}
+
+static int parse_int_option( const char *opt, int def, int *dst )
+{
+    if( !opt )
+    {
+        *dst = def;
+        return 0;
+    }
+    return x264_otoi_checked( opt, dst );
+}
+
 enum
 {
     BitRateControlMode_LC_ABR            = 0,
@@ -198,7 +230,7 @@ static int get_samplerate_index( int samplerate, int he_flag )
                     : get_samplerate_index_he( samplerate );
 }
 
-static int get_mode_index( char *mode, int he_flag )
+static int get_mode_index( const char *mode, int he_flag )
 {
     if( !strcmp( mode, "cbr" ) )
         return !he_flag ? BitRateControlMode_LC_CBR : BitRateControlMode_HE_CBR;
@@ -207,7 +239,7 @@ static int get_mode_index( char *mode, int he_flag )
     else if( !strcmp( mode, "cvbr" ) )
         return !he_flag ? BitRateControlMode_LC_ConstrainedVBR : BitRateControlMode_HE_ConstrainedVBR;
     else
-        return !he_flag ? BitRateControlMode_LC_ABR : BitRateControlMode_HE_ABR;
+        return -1;
 }
 
 static int find_nearest_index( int value, int *val_list, int num )
@@ -582,7 +614,11 @@ static hnd_t qtaac_init( hnd_t filter_chain, const char *opt_str )
     h->info.opaque = NULL;
     h->info.codec_name = "aac";
 
-    h->config.he_flag = x264_otob( x264_get_option( "sbr", opts ), 0 );
+    if( parse_bool_option( x264_get_option( "sbr", opts ), 0, &h->config.he_flag ) )
+    {
+        x264_cli_log( "qtaac", X264_LOG_ERROR, "invalid sbr option\n" );
+        goto error;
+    }
 
     if( get_channel_configuration_index( chain->info.channels, h->config.he_flag ) < 0 ||
         get_samplerate_index( chain->info.samplerate, h->config.he_flag ) < 0 )
@@ -591,23 +627,68 @@ static hnd_t qtaac_init( hnd_t filter_chain, const char *opt_str )
         goto error;
     }
 
-    h->config.is_vbr  = x264_otob( x264_get_option( "is_vbr", opts ), h->config.he_flag ? 0 : 1 );
+    if( parse_bool_option( x264_get_option( "is_vbr", opts ), h->config.he_flag ? 0 : 1, &h->config.is_vbr ) )
+    {
+        x264_cli_log( "qtaac", X264_LOG_ERROR, "invalid is_vbr option\n" );
+        goto error;
+    }
 
     if( h->config.is_vbr )
         h->config.encoder_mode = BitRateControlMode_LC_TrueVBR;
     else
     {
-        char *mode = x264_otos( x264_get_option( "mode", opts ), "abr" );
-        h->config.encoder_mode = get_mode_index( mode, h->config.he_flag );
+        const char *mode = x264_otos( x264_get_option( "mode", opts ), "abr" );
+        if( ( h->config.encoder_mode = get_mode_index( mode, h->config.he_flag ) ) < 0 )
+        {
+            x264_cli_log( "qtaac", X264_LOG_ERROR, "invalid mode option\n" );
+            goto error;
+        }
     }
 
+    double desired_brval;
     if( h->config.is_vbr )
-        h->desired_brval = x264_otof( x264_get_option( "bitrate", opts ), 63 );
+    {
+        if( parse_double_option( x264_get_option( "bitrate", opts ), 63.0, &desired_brval ) )
+        {
+            x264_cli_log( "qtaac", X264_LOG_ERROR, "invalid bitrate option\n" );
+            goto error;
+        }
+    }
     else
-        h->desired_brval = x264_otof( x264_get_option( "bitrate", opts ), h->config.he_flag ? 64 : 128 );
+    {
+        if( parse_double_option( x264_get_option( "bitrate", opts ), h->config.he_flag ? 64.0 : 128.0, &desired_brval ) )
+        {
+            x264_cli_log( "qtaac", X264_LOG_ERROR, "invalid bitrate option\n" );
+            goto error;
+        }
+    }
+    if( !( desired_brval >= INT_MIN && desired_brval <= INT_MAX ) )
+    {
+        x264_cli_log( "qtaac", X264_LOG_ERROR, "invalid bitrate option\n" );
+        goto error;
+    }
+    h->desired_brval = desired_brval;
 
-    h->config.encoder_quality = x264_otof( x264_get_option( "quality", opts ), EncoderQuality_Medium );
-    h->info.samplerate = x264_otof( x264_get_option( "samplerate", opts ), chain->info.samplerate );
+    double encoder_quality;
+    if( parse_double_option( x264_get_option( "quality", opts ), EncoderQuality_Medium, &encoder_quality ) )
+    {
+        x264_cli_log( "qtaac", X264_LOG_ERROR, "invalid quality option\n" );
+        goto error;
+    }
+    int encoder_quality_index = (int)encoder_quality;
+    if( encoder_quality_index != encoder_quality ||
+        encoder_quality_index < EncoderQuality_Medium || encoder_quality_index > EncoderQuality_Highest )
+    {
+        x264_cli_log( "qtaac", X264_LOG_ERROR, "invalid quality option\n" );
+        goto error;
+    }
+    h->config.encoder_quality = encoder_quality_index;
+
+    if( parse_int_option( x264_get_option( "samplerate", opts ), chain->info.samplerate, &h->info.samplerate ) )
+    {
+        x264_cli_log( "qtaac", X264_LOG_ERROR, "invalid samplerate option\n" );
+        goto error;
+    }
 
     free( opts );
     opts = NULL;

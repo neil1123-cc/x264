@@ -45,6 +45,9 @@ static int raw_parse_dimension( const char *p, char **end, int *dst )
 {
     long value;
 
+    if( !p || *p < '0' || *p > '9' )
+        return -1;
+
     errno = 0;
     value = strtol( p, end, 10 );
     if( *end == p || errno == ERANGE || value <= 0 || value > MAX_RESOLUTION )

@@ -285,6 +285,20 @@ if( cond ) \
     goto label; \
 }
 
+static int avs_parse_audio_track( const char *trackstr, int *track )
+{
+    if( !trackstr || !strcmp( trackstr, "any" ) )
+    {
+        *track = TRACK_ANY;
+        return 0;
+    }
+
+    if( x264_otoi_checked( trackstr, track ) || *track < 0 )
+        return -1;
+
+    return 0;
+}
+
 static int init( hnd_t *handle, const char *opt_str )
 {
     assert( opt_str );
@@ -299,9 +313,10 @@ static int init( hnd_t *handle, const char *opt_str )
 #if !USE_AVXSYNTH
     const char *filename_ext = NULL;
 #endif
-    int track = x264_otoi( x264_get_option( "track", opts ), TRACK_ANY );
+    int track;
 
-    GOTO_IF( track == TRACK_NONE, fail2, "no valid track requested ('any', 0 or a positive integer)\n" )
+    GOTO_IF( avs_parse_audio_track( x264_get_option( "track", opts ), &track ),
+             fail2, "no valid track requested ('any', 0 or a positive integer)\n" )
 #if USE_AVXSYNTH
     GOTO_IF( track > 0, fail2, "only script imports are supported by this filter\n" )
 #endif

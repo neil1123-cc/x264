@@ -3,6 +3,7 @@
 
 #include "lame/lame.h"
 #include <assert.h>
+#include <float.h>
 
 typedef struct enc_lame_t
 {
@@ -44,6 +45,39 @@ static void add_skip_samples( int64_t *last_sample, uint64_t samplecount )
         *last_sample = INT64_MAX;
 }
 
+static int parse_bool_option( const char *opt, int def, int *dst )
+{
+    if( !opt )
+    {
+        *dst = def;
+        return 0;
+    }
+    return x264_otob_checked( opt, dst );
+}
+
+static int parse_float_option( const char *opt, double def, float *dst )
+{
+    double value;
+    if( !opt )
+        value = def;
+    else if( x264_otof_checked( opt, &value ) )
+        return -1;
+    if( !(value >= -FLT_MAX && value <= FLT_MAX) )
+        return -1;
+    *dst = (float)value;
+    return 0;
+}
+
+static int parse_int_option( const char *opt, int def, int *dst )
+{
+    if( !opt )
+    {
+        *dst = def;
+        return 0;
+    }
+    return x264_otoi_checked( opt, dst );
+}
+
 static hnd_t init( hnd_t filter_chain, const char *opt_str )
 {
     assert( filter_chain );
@@ -77,18 +111,36 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     h->info         = chain->info;
     h->info.codec_name = "mp3";
 
-    int is_vbr  = x264_otob( x264_get_option( "is_vbr", opts ), 1 );
+    int is_vbr;
+    if( parse_bool_option( x264_get_option( "is_vbr", opts ), 1, &is_vbr ) )
+    {
+        x264_cli_log( "lame", X264_LOG_ERROR, "invalid is_vbr option\n" );
+        goto error;
+    }
     float brval;
-    if( is_vbr )
-        brval = x264_otof( x264_get_option( "bitrate", opts ), 6.0 );
-    else
-        brval = x264_otof( x264_get_option( "bitrate", opts ), 128 ); // dummy default value, must never be used
+    if( parse_float_option( x264_get_option( "bitrate", opts ), is_vbr ? 6.0 : 128.0, &brval ) )
+    {
+        x264_cli_log( "lame", X264_LOG_ERROR, "invalid bitrate option\n" );
+        goto error;
+    }
 
-    int quality = x264_otof( x264_get_option( "quality", opts ), 0 );
+    float quality_value;
+    if( parse_float_option( x264_get_option( "quality", opts ), 0.0, &quality_value ) )
+    {
+        x264_cli_log( "lame", X264_LOG_ERROR, "invalid quality option\n" );
+        goto error;
+    }
+    int quality = (int)quality_value;
 
-    h->info.samplerate = x264_otof( x264_get_option( "samplerate", opts ), chain->info.samplerate );
+    if( parse_int_option( x264_get_option( "samplerate", opts ), chain->info.samplerate, &h->info.samplerate ) ||
+        h->info.samplerate <= 0 )
+    {
+        x264_cli_log( "lame", X264_LOG_ERROR, "invalid samplerate option\n" );
+        goto error;
+    }
 
     free( opts );
+    opts = NULL;
 
     h->info.extradata      = NULL;
     h->info.extradata_size = 0;
@@ -145,6 +197,7 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     return h;
 
 error:
+    free( opts );
     if( h->lame )
         lame_close( h->lame );
     free( h->buffer );
