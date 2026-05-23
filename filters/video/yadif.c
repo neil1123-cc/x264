@@ -20,6 +20,8 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02111, USA.
  *****************************************************************************/
 
+#include <limits.h>
+#include <stdint.h>
 #include <string.h>
 #include "filters/video/video.h"
 #include "filters/video/yadif_filter_line.h"
@@ -85,11 +87,25 @@ static int unsupported_colorspace( int csp )
     }
 }
 
+static int invalid_plane_height( int width, int height, const x264_cli_csp_t *csp )
+{
+    if( width <= 0 || height <= 0 || width > MAX_RESOLUTION || height > MAX_RESOLUTION || !csp )
+        return 1;
+
+    for( int i = 0; i < csp->planes; i++ )
+        if( (int)(height * csp->height[i]) < 4 )
+            return 1;
+    return 0;
+}
+
 static int yadif_init( hnd_t *handle, cli_vid_filter_t *filter,
                        video_info_t *info, x264_param_t *param, char *opt_string )
 {
     yadif_handle_t *h;
+    const x264_cli_csp_t *csp = info ? x264_cli_get_csp( info->csp ) : NULL;
 
+    FAIL_IF_ERROR( invalid_plane_height( info ? info->width : 0, info ? info->height : 0, csp ),
+                   "invalid input resolution %dx%d\n", info ? info->width : 0, info ? info->height : 0 );
     FAIL_IF_ERROR( unsupported_colorspace( info->csp ),
                    "Only planar YCbCr images supported\n" );
 
@@ -98,7 +114,10 @@ static int yadif_init( hnd_t *handle, cli_vid_filter_t *filter,
         return -1;
 
     if( x264_cli_pic_alloc( &h->buffer, info->csp, info->width, info->height ) )
+    {
+        free( h );
         return -1;
+    }
 
     h->mode = 0;
     h->tff = info->tff;
@@ -108,6 +127,8 @@ static int yadif_init( hnd_t *handle, cli_vid_filter_t *filter,
         char *opt;
         static const char * const optlist[] = { "mode", "order", NULL };
         char **opts = x264_split_options( opt_string, optlist );
+        if( !opts )
+            goto fail;
 
         opt = x264_get_option( "mode", opts );
         if( opt )
@@ -135,18 +156,23 @@ static int yadif_init( hnd_t *handle, cli_vid_filter_t *filter,
         free( opts );
     }
 
-    if( x264_init_vid_filter( "cache", handle, filter, info, param, (void*)3 ) )
-        return -1;
-
     if( h->mode&1 )
     {
+        if( info->num_frames > INT_MAX / 2 ||
+            info->fps_num > UINT32_MAX / 2 ||
+            info->timebase_den > UINT32_MAX / 2 )
+            goto fail;
         info->num_frames *= 2;
         info->fps_num *= 2;
         info->timebase_den *= 2;
     }
 
     info->interlaced = 0;
-    h->csp = x264_cli_get_csp( info->csp );
+    h->csp = csp;
+
+    if( x264_init_vid_filter( "cache", handle, filter, info, param, (void*)3 ) )
+        goto fail;
+
     h->prev_filter = *filter;
     h->prev_handle = *handle;
     *handle = h;
@@ -161,6 +187,11 @@ static int yadif_init( hnd_t *handle, cli_vid_filter_t *filter,
                   (h->tff)    ? "top"     : "bottom" );
 
     return 0;
+
+fail:
+    x264_cli_pic_clean( &h->buffer );
+    free( h );
+    return -1;
 }
 
 /***********************
@@ -189,6 +220,9 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame_out )
     struct yadif_context yctx;
     cli_pic_t prev, cur, next;
 
+    if( !h || !output || frame_out < 0 )
+        return -1;
+
     int df       = x264_cli_csp_depth_factor( h->buffer.img.csp );
     int ret      = 0;
     int tff      = h->tff;
@@ -214,6 +248,8 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame_out )
     *output = h->buffer;
     output->pts = h->pts;
     output->duration = cur.duration;
+    if( cur.duration < 0 || h->pts > INT64_MAX - cur.duration )
+        return -1;
     h->pts += cur.duration;
 
     yctx.mode = h->mode;

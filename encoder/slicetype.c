@@ -33,6 +33,7 @@
 #define X264_DELTA_TFI_DIVISOR_COUNT 10
 #define X264_WEIGHT_CHECK_DISTANCE_COUNT 12
 #define X264_WEIGHT_CHECK_DISTANCE_COMPONENTS 2
+X264_STATIC_ASSERT( X264_LOOKAHEAD_MAX >= X264_BFRAME_MAX + 2, "lookahead path buffers must fit max B-frame suffixes" );
 static const uint8_t delta_tfi_divisor[] = { 0, 2, 1, 1, 2, 2, 3, 3, 4, 6 };
 X264_STATIC_ASSERT( ARRAY_ELEMS(delta_tfi_divisor) == X264_DELTA_TFI_DIVISOR_COUNT, "delta TFI divisor table size must match pic_struct domain" );
 
@@ -1291,7 +1292,7 @@ static void vbv_lookahead( x264_t *h, x264_mb_analysis_t *a, x264_frame_t **fram
     frames[next_nonb]->i_planned_type[idx] = X264_TYPE_AUTO;
 }
 
-static uint64_t slicetype_path_cost( x264_t *h, x264_mb_analysis_t *a, x264_frame_t **frames, char *path, uint64_t threshold )
+static uint64_t slicetype_path_cost( x264_t *h, x264_mb_analysis_t *a, x264_frame_t **frames, const char *path, uint64_t threshold )
 {
     uint64_t cost = 0;
     int loc = 1;
@@ -1344,14 +1345,18 @@ static void slicetype_path( x264_t *h, x264_mb_analysis_t *a, x264_frame_t **fra
     int best_possible = 0;
     int idx = 0;
 
+    assert( length > 0 && length <= X264_LOOKAHEAD_MAX );
+
     /* Iterate over all currently possible paths */
     for( int path = 0; path < num_paths; path++ )
     {
         /* Add suffixes to the current path */
         int len = length - (path + 1);
+        assert( len >= 0 && len + path + 1 <= X264_LOOKAHEAD_MAX );
         memcpy( paths[idx], best_paths[len % (X264_BFRAME_MAX+1)], len );
         memset( paths[idx]+len, 'B', path );
-        strcpy( paths[idx]+len+path, "P" );
+        paths[idx][len+path] = 'P';
+        paths[idx][len+path+1] = '\0';
 
         int possible = 1;
         for( int i = 1; i <= length; i++ )
@@ -1385,6 +1390,7 @@ static void slicetype_path( x264_t *h, x264_mb_analysis_t *a, x264_frame_t **fra
 
     /* Store the best path. */
     memcpy( best_paths[length % (X264_BFRAME_MAX+1)], paths[idx^1], length );
+    best_paths[length % (X264_BFRAME_MAX+1)][length] = '\0';
 }
 
 static int scenecut_internal( x264_t *h, x264_mb_analysis_t *a, x264_frame_t **frames, int p0, int p1, int real_scenecut )
@@ -1614,10 +1620,15 @@ void x264_slicetype_analyse( x264_t *h, int intra_minigop )
                 }
 
                 int bframes = j - last_nonb - 1;
+                assert( bframes >= 0 && bframes + 2 <= X264_LOOKAHEAD_MAX );
                 memset( path, 'B', bframes );
-                strcpy( path+bframes, "PP" );
+                path[bframes] = 'P';
+                path[bframes+1] = 'P';
+                path[bframes+2] = '\0';
                 uint64_t cost_p = slicetype_path_cost( h, &a, frames+last_nonb, path, COST_MAX64 );
-                strcpy( path+bframes, "BP" );
+                path[bframes] = 'B';
+                path[bframes+1] = 'P';
+                path[bframes+2] = '\0';
                 uint64_t cost_b = slicetype_path_cost( h, &a, frames+last_nonb, path, cost_p );
 
                 if( cost_b < cost_p )

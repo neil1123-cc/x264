@@ -104,6 +104,33 @@ void x264_sei_write( bs_t *s, uint8_t *payload, int payload_size, int payload_ty
     bs_flush( s );
 }
 
+static int sei_version_add_len( int *length, size_t add )
+{
+    if( add > (size_t)(INT_MAX - *length) )
+        return -1;
+    *length += (int)add;
+    return 0;
+}
+
+static int sei_version_append( char *payload, int length, int *offset, const char *fmt, ... )
+{
+    int written;
+    va_list args;
+
+    if( *offset < 0 || *offset >= length )
+        return -1;
+
+    va_start( args, fmt );
+    written = vsnprintf( payload + *offset, length - *offset, fmt, args );
+    va_end( args );
+
+    if( written < 0 || written >= length - *offset )
+        return -1;
+
+    *offset += written;
+    return 0;
+}
+
 void x264_sps_init( x264_sps_t *sps, int i_id, x264_param_t *param )
 {
     int csp = param->i_csp & X264_CSP_MASK;
@@ -609,8 +636,8 @@ int x264_sei_version_write( x264_t *h, bs_t *s )
     X264_STATIC_ASSERT( ARRAY_ELEMS(uuid) == X264_UUID_SIZE, "SEI user data UUID size must match UUID byte count" );
     char *opts = x264_param2string( &h->param, 0 );
     char *payload;
-    int offset = 16;
-    int length = 200;
+    int offset = X264_UUID_SIZE;
+    int length = X264_UUID_SIZE + 1;
 
 #define X264_FREE_OPTS                          \
 {                                               \
@@ -629,40 +656,65 @@ int x264_sei_version_write( x264_t *h, bs_t *s )
         X264_FREE_OPTS
         return -1;
     }
-    if( h->param.i_opts_write & X264_OPTS_SETTING )
-        length += strlen( opts );
-    for( int i = 0; i < X264_OPTS_MAX; i++ )
+    if( h->param.i_opts_write )
     {
-        if( h->param.psz_opts[i] )
-            length += strlen( h->param.psz_opts[i] );
+        if( (h->param.i_opts_write & X264_OPTS_PREINFO) &&
+            (!h->param.psz_opts[0] || sei_version_add_len( &length, strlen( h->param.psz_opts[0] ) +
+                                                           !!(h->param.i_opts_write & X264_OPTS_INFO) )) )
+            goto fail;
+        if( (h->param.i_opts_write & X264_OPTS_INFO) &&
+            sei_version_add_len( &length, strlen( "x264 "X264_COREVER" - H.264/MPEG-4 AVC codec" ) ) )
+            goto fail;
+        if( (h->param.i_opts_write & X264_OPTS_POSTINFO) &&
+            (!h->param.psz_opts[1] || sei_version_add_len( &length, strlen( h->param.psz_opts[1] ) + 1 )) )
+            goto fail;
+        if( (h->param.i_opts_write & ( X264_OPTS_PREOPT | X264_OPTS_SETTING | X264_OPTS_POSTOPT )) &&
+            sei_version_add_len( &length, strlen( " - options:" ) ) )
+            goto fail;
+        if( (h->param.i_opts_write & X264_OPTS_PREOPT) &&
+            (!h->param.psz_opts[2] || sei_version_add_len( &length, strlen( h->param.psz_opts[2] ) + 1 )) )
+            goto fail;
+        if( (h->param.i_opts_write & X264_OPTS_SETTING) &&
+            sei_version_add_len( &length, strlen( opts ) + 1 ) )
+            goto fail;
+        if( (h->param.i_opts_write & X264_OPTS_POSTOPT) &&
+            (!h->param.psz_opts[3] || sei_version_add_len( &length, strlen( h->param.psz_opts[3] ) + 1 )) )
+            goto fail;
     }
     CHECKED_MALLOC( payload, length );
 
-    memcpy( payload, uuid, 16 );
+    memcpy( payload, uuid, X264_UUID_SIZE );
     if( !h->param.i_opts_write )
         *(payload + offset) = '\0';
     else
     {
         if( h->param.i_opts_write & X264_OPTS_PREINFO )
-            offset += sprintf( payload + offset,
-                               ( h->param.i_opts_write & X264_OPTS_INFO ) ? "%s " : "%s",
-                               h->param.psz_opts[0] );
+            if( sei_version_append( payload, length, &offset,
+                                    ( h->param.i_opts_write & X264_OPTS_INFO ) ? "%s " : "%s",
+                                    h->param.psz_opts[0] ) )
+                goto fail_payload;
         if( h->param.i_opts_write & X264_OPTS_INFO )
-            offset += sprintf( payload + offset, "x264 "X264_COREVER" - H.264/MPEG-4 AVC codec" );
+            if( sei_version_append( payload, length, &offset, "x264 "X264_COREVER" - H.264/MPEG-4 AVC codec" ) )
+                goto fail_payload;
         if( h->param.i_opts_write & X264_OPTS_POSTINFO )
-            offset += sprintf( payload + offset, " %s", h->param.psz_opts[1] );
+            if( sei_version_append( payload, length, &offset, " %s", h->param.psz_opts[1] ) )
+                goto fail_payload;
         if( h->param.i_opts_write & ( X264_OPTS_PREOPT | X264_OPTS_SETTING | X264_OPTS_POSTOPT ) )
         {
-            offset += sprintf( payload + offset, " - options:" );
+            if( sei_version_append( payload, length, &offset, " - options:" ) )
+                goto fail_payload;
             if( h->param.i_opts_write & X264_OPTS_PREOPT )
-                offset += sprintf( payload + offset, " %s", h->param.psz_opts[2] );
+                if( sei_version_append( payload, length, &offset, " %s", h->param.psz_opts[2] ) )
+                    goto fail_payload;
             if( h->param.i_opts_write & X264_OPTS_SETTING )
-                offset += sprintf( payload + offset, " %s", opts );
+                if( sei_version_append( payload, length, &offset, " %s", opts ) )
+                    goto fail_payload;
             if( h->param.i_opts_write & X264_OPTS_POSTOPT )
-                offset += sprintf( payload + offset, " %s", h->param.psz_opts[3] );
+                if( sei_version_append( payload, length, &offset, " %s", h->param.psz_opts[3] ) )
+                    goto fail_payload;
         }
     }
-	length = strlen(payload)+1;
+    length = offset + 1;
 
     x264_sei_write( s, (uint8_t *)payload, length, SEI_USER_DATA_UNREGISTERED );
 
@@ -670,6 +722,8 @@ int x264_sei_version_write( x264_t *h, bs_t *s )
     x264_free( opts );
     x264_free( payload );
     return 0;
+fail_payload:
+    x264_free( payload );
 fail:
 	X264_FREE_OPTS
     x264_free( opts );

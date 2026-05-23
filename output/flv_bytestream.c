@@ -25,6 +25,7 @@
 
 #include "output.h"
 #include "flv_bytestream.h"
+#include <limits.h>
 
 uint64_t flv_dbl2int( double value )
 {
@@ -40,42 +41,62 @@ void flv_put_byte( flv_buffer *c, uint8_t b )
 
 void flv_put_be32( flv_buffer *c, uint32_t val )
 {
-    flv_put_byte( c, val >> 24 );
-    flv_put_byte( c, val >> 16 );
-    flv_put_byte( c, val >> 8 );
-    flv_put_byte( c, val );
+    flv_put_byte( c, (uint8_t)(val >> 24) );
+    flv_put_byte( c, (uint8_t)(val >> 16) );
+    flv_put_byte( c, (uint8_t)(val >> 8) );
+    flv_put_byte( c, (uint8_t)val );
 }
 
 static void flv_put_be64( flv_buffer *c, uint64_t val )
 {
-    flv_put_be32( c, val >> 32 );
-    flv_put_be32( c, val );
+    flv_put_be32( c, (uint32_t)(val >> 32) );
+    flv_put_be32( c, (uint32_t)val );
 }
 
 void flv_put_be16( flv_buffer *c, uint16_t val )
 {
-    flv_put_byte( c, val >> 8 );
-    flv_put_byte( c, val );
+    flv_put_byte( c, (uint8_t)(val >> 8) );
+    flv_put_byte( c, (uint8_t)val );
 }
 
 void flv_put_be24( flv_buffer *c, uint32_t val )
 {
-    flv_put_be16( c, val >> 8 );
-    flv_put_byte( c, val );
+    flv_put_be16( c, (uint16_t)(val >> 8) );
+    flv_put_byte( c, (uint8_t)val );
 }
 
 void flv_put_tag( flv_buffer *c, const char *tag )
 {
+    if( !c || !tag )
+    {
+        if( c )
+            c->error = 1;
+        return;
+    }
+
     while( *tag )
-        flv_put_byte( c, *tag++ );
+        flv_put_byte( c, (uint8_t)*tag++ );
 }
 
 void flv_put_amf_string( flv_buffer *c, const char *str )
 {
+    if( !c || !str )
+    {
+        if( c )
+            c->error = 1;
+        return;
+    }
+
     size_t len = strlen( str );
+    if( len > UINT16_MAX )
+    {
+        c->error = 1;
+        return;
+    }
+
     uint16_t amf_len = (uint16_t)len;
     flv_put_be16( c, amf_len );
-    flv_append_data( c, (uint8_t*)str, amf_len );
+    flv_append_data( c, (const uint8_t*)str, amf_len );
 }
 
 void flv_put_amf_double( flv_buffer *c, double d )
@@ -94,6 +115,9 @@ void flv_put_amf_bool( flv_buffer *c, int i )
 
 flv_buffer *flv_create_writer( const char *filename )
 {
+    if( !filename )
+        return NULL;
+
     flv_buffer *c = calloc( 1, sizeof(flv_buffer) );
     if( !c )
         return NULL;
@@ -111,32 +135,57 @@ flv_buffer *flv_create_writer( const char *filename )
     return c;
 }
 
-int flv_append_data( flv_buffer *c, uint8_t *data, unsigned size )
+static int flv_reserve_data( flv_buffer *c, unsigned size )
 {
-    if( size > UINT_MAX - c->d_cur )
-        return -1;
-    unsigned ns = c->d_cur + size;
+    if( size <= c->d_max )
+        return 0;
 
-    if( ns > c->d_max )
+    unsigned dn = c->d_max ? c->d_max : 16;
+    while( size > dn )
     {
-        void *dp;
-        unsigned dn = 16;
-        while( ns > dn )
+        if( dn > UINT_MAX / 2 )
         {
-            if( dn > UINT_MAX / 2 )
-                return -1;
-            dn <<= 1;
+            dn = size;
+            break;
         }
-
-        dp = realloc( c->data, dn );
-        if( !dp )
-            return -1;
-
-        c->data = dp;
-        c->d_max = dn;
+        dn <<= 1;
     }
 
-    memcpy( c->data + c->d_cur, data, size );
+    void *dp = realloc( c->data, dn );
+    if( !dp )
+        return -1;
+
+    c->data = dp;
+    c->d_max = dn;
+    return 0;
+}
+
+int flv_append_data( flv_buffer *c, const uint8_t *data, unsigned size )
+{
+    if( !c )
+        return -1;
+    if( c->error )
+        return -1;
+    if( size && !data )
+    {
+        c->error = 1;
+        return -1;
+    }
+    if( size > UINT_MAX - c->d_cur )
+    {
+        c->error = 1;
+        return -1;
+    }
+    unsigned ns = c->d_cur + size;
+
+    if( flv_reserve_data( c, ns ) )
+    {
+        c->error = 1;
+        return -1;
+    }
+
+    if( size )
+        memcpy( c->data + c->d_cur, data, size );
 
     c->d_cur = ns;
 
@@ -145,18 +194,36 @@ int flv_append_data( flv_buffer *c, uint8_t *data, unsigned size )
 
 void flv_rewrite_amf_be24( flv_buffer *c, unsigned length, unsigned start )
 {
-     *(c->data + start + 0) = length >> 16;
-     *(c->data + start + 1) = length >> 8;
-     *(c->data + start + 2) = length >> 0;
+    if( !c || c->error )
+        return;
+    if( length > 0xFFFFFF || start > c->d_cur || c->d_cur - start < 3 )
+    {
+        c->error = 1;
+        return;
+    }
+
+    *(c->data + start + 0) = (uint8_t)(length >> 16);
+    *(c->data + start + 1) = (uint8_t)(length >> 8);
+    *(c->data + start + 2) = (uint8_t)length;
 }
 
 int flv_flush_data( flv_buffer *c )
 {
+    if( !c || c->error || !c->fp )
+        return -1;
     if( !c->d_cur )
         return 0;
+    if( c->d_total > UINT64_MAX - c->d_cur )
+    {
+        c->error = 1;
+        return -1;
+    }
 
     if( fwrite( c->data, c->d_cur, 1, c->fp ) != 1 )
+    {
+        c->error = 1;
         return -1;
+    }
 
     c->d_total += c->d_cur;
 

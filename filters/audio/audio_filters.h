@@ -3,8 +3,10 @@
 
 #include <stdint.h>
 #include <inttypes.h>
-#include <lsmash.h>
 #include "x264cli.h"
+#if HAVE_LSMASH
+#include <lsmash.h>
+#endif
 #include "filters/filters.h"
 
 // Channel layout constants
@@ -98,10 +100,12 @@ typedef struct audio_aac_info_t
     int has_sbr;
 } audio_aac_info_t;
 
+#if HAVE_LSMASH
 typedef struct audio_dts_info_t
 {
     lsmash_codec_type_t coding_name;
 } audio_dts_info_t;
+#endif
 
 typedef struct audio_packet_t {
     int64_t         dts;
@@ -129,21 +133,34 @@ typedef struct audio_filter_t
 
 static inline int64_t x264_convert_timebase( int64_t i, timebase_t from, timebase_t to )
 {
-    if( !from.den || !to.num )
-        return 0;
-    double j = i;
+    if( i == INVALID_DTS )
+        return INVALID_DTS;
+    if( from.num <= 0 || from.den <= 0 || to.num <= 0 || to.den <= 0 )
+        return INT64_MAX;
+    long double j = (long double)i;
+    long double value;
     if( from.den > to.num )
-        return (int64_t)( j * from.num * to.den / to.num / from.den );
-    return (int64_t)( j * from.num * to.den / from.den / to.num );
+        value = j * (long double)from.num * (long double)to.den / (long double)to.num / (long double)from.den;
+    else
+        value = j * (long double)from.num * (long double)to.den / (long double)from.den / (long double)to.num;
+    if( value > (long double)INT64_MAX )
+        return INT64_MAX;
+    if( value < (long double)INT64_MIN )
+        return INT64_MIN;
+    return (int64_t)value;
 }
 
 static inline int64_t x264_to_timebase( int64_t i, int64_t scale, timebase_t to )
 {
+    if( scale <= 0 )
+        return INT64_MAX;
     return x264_convert_timebase( i, (timebase_t){ 1, scale }, to );
 }
 
 static inline int64_t x264_from_timebase( int64_t i, timebase_t from, int64_t scale )
 {
+    if( scale <= 0 )
+        return INT64_MAX;
     return x264_convert_timebase( i, from, (timebase_t){ 1, scale } );
 }
 

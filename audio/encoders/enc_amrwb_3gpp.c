@@ -22,6 +22,42 @@ typedef struct enc_amrwb_3gpp_t
     size_t bufsize;
 } enc_amrwb_3gpp_t;
 
+static int set_framesize( audio_info_t *info, const char *name )
+{
+    if( info->framelen <= 0 || info->samplesize <= 0 ||
+        (uint64_t)info->framelen > SIZE_MAX / (uint64_t)info->samplesize )
+    {
+        x264_cli_log( name, X264_LOG_ERROR, "invalid audio frame size\n" );
+        return -1;
+    }
+    info->framesize = (size_t)info->framelen * (size_t)info->samplesize;
+    return 0;
+}
+
+static int get_sample_end( int64_t first_sample, int framelen, int64_t *last_sample )
+{
+    if( first_sample < 0 || framelen <= 0 || first_sample > INT64_MAX - framelen )
+        return -1;
+    *last_sample = first_sample + framelen;
+    return 0;
+}
+
+static int add_frame_dts( int64_t *dts, int framelen )
+{
+    if( framelen <= 0 || ( *dts != INVALID_DTS && *dts > INT64_MAX - framelen ) )
+        return -1;
+    *dts += framelen;
+    return 0;
+}
+
+static void add_skip_samples( int64_t *last_sample, uint64_t samplecount )
+{
+    if( *last_sample >= 0 && samplecount <= (uint64_t)INT64_MAX - (uint64_t)*last_sample )
+        *last_sample += samplecount;
+    else
+        *last_sample = INT64_MAX;
+}
+
 static hnd_t init( hnd_t filter_chain, const char *opt_str )
 {
     assert( filter_chain );
@@ -47,13 +83,19 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     }
 
     enc_amrwb_3gpp_t *h     = calloc( 1, sizeof( enc_amrwb_3gpp_t ) );
+    if( !h )
+    {
+        free( opts );
+        return NULL;
+    }
     h->filter_chain         = chain;
     h->info                 = chain->info;
     h->info.codec_name      = "amrwb";
     h->info.chansize        = 2;
     h->info.samplesize      = 2 * h->info.channels;
     h->info.framelen        = L_FRAME16k;
-    h->info.framesize       = h->info.framelen * h->info.samplesize;
+    if( set_framesize( &h->info, "amrwb_3gpp" ) )
+        goto error;
     h->info.depth           = 16;
     h->info.timebase        = (timebase_t) { 1, h->info.samplerate };
     h->info.last_delta      = h->info.framelen;
@@ -91,6 +133,7 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     }
 
     free( opts );
+    opts = NULL;
 
     h->amrwb_3gpp = E_IF_init();
     if( !h->amrwb_3gpp )
@@ -108,7 +151,8 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     return h;
 
 error:
-    if( h->amrwb_3gpp )
+    free( opts );
+    if( h && h->amrwb_3gpp )
         E_IF_exit( h->amrwb_3gpp );
     if( h )
         free( h );
@@ -137,13 +181,21 @@ static audio_packet_t *get_next_packet( hnd_t handle )
         return NULL;
 
     audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
+    if( !out )
+        return NULL;
     out->info = h->info;
     out->data = malloc( h->bufsize );
+    if( !out->data )
+        goto error;
 
     if( h->finishing )
         goto error; // Not an error here but it'd do the same handling
 
-    if( !( in = x264_af_get_samples( h->filter_chain, h->last_sample, h->last_sample + h->info.framelen ) ) )
+    int64_t last_sample;
+    if( get_sample_end( h->last_sample, h->info.framelen, &last_sample ) )
+        goto error;
+
+    if( !( in = x264_af_get_samples( h->filter_chain, h->last_sample, last_sample ) ) )
         goto error;
     /* ensure buffer length */
     if( in->samplecount < h->info.framelen )
@@ -167,6 +219,8 @@ static audio_packet_t *get_next_packet( hnd_t handle )
 
     /* convert to integer */
     void *samplebuffer = x264_af_interleave2( SMPFMT_S16, in->samples, h->info.channels, in->samplecount );
+    if( in->samplecount && !samplebuffer )
+        goto error;
     x264_af_free_packet( in );
     in = NULL;
 
@@ -179,7 +233,8 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     }
 
     out->dts = h->last_dts;
-    h->last_dts += h->info.framelen;
+    if( add_frame_dts( &h->last_dts, h->info.framelen ) )
+        goto error;
     return out;
 
 error:
@@ -191,7 +246,8 @@ error:
 
 static void skip_samples( hnd_t handle, uint64_t samplecount )
 {
-    ((enc_amrwb_3gpp_t*)handle)->last_sample += samplecount;
+    enc_amrwb_3gpp_t *h = handle;
+    add_skip_samples( &h->last_sample, samplecount );
 }
 
 static audio_packet_t *finish( hnd_t encoder )

@@ -129,7 +129,10 @@ static inline wchar_t *x264_utf8_to_utf16( const char *utf8 )
     int len = MultiByteToWideChar( CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, NULL, 0 );
     if( len )
     {
-        wchar_t *utf16 = malloc( len * sizeof( wchar_t ) );
+        size_t len_utf16 = (size_t)len;
+        if( len_utf16 > SIZE_MAX / sizeof( wchar_t ) )
+            return NULL;
+        wchar_t *utf16 = malloc( len_utf16 * sizeof( wchar_t ) );
         if( utf16 )
         {
             if( MultiByteToWideChar( CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, utf16, len ) )
@@ -234,12 +237,14 @@ static inline int x264_vfprintf( FILE *stream, const char *format, va_list arg )
         int length = vsnprintf( buf, sizeof(buf), format, arg2 );
         va_end( arg2 );
 
-        if( length > 0 && (unsigned)length < sizeof(buf) )
+        if( length > 0 && (size_t)length < sizeof(buf) )
         {
             /* WriteConsoleW is the most reliable way to output Unicode to a console. */
-            int length_utf16 = MultiByteToWideChar( CP_UTF8, 0, buf, length, buf_utf16, sizeof(buf_utf16)/sizeof(wchar_t) );
+            int buf_utf16_len = (int)(sizeof(buf_utf16) / sizeof(buf_utf16[0]));
+            int length_utf16 = MultiByteToWideChar( CP_UTF8, 0, buf, length, buf_utf16, buf_utf16_len );
             DWORD written;
-            WriteConsoleW( console, buf_utf16, length_utf16, &written, NULL );
+            if( length_utf16 > 0 )
+                WriteConsoleW( console, buf_utf16, (DWORD)length_utf16, &written, NULL );
             return length;
         }
     }

@@ -23,6 +23,7 @@
  * For more information, contact us at licensing@x264.com.
  *****************************************************************************/
 
+#include <errno.h>
 #include "video.h"
 
 #define NAME "resize"
@@ -219,6 +220,32 @@ static int pick_closest_supported_csp( int csp )
     return ret;
 }
 
+static int parse_resize_ratio( const char *arg, uint32_t *w, uint32_t *h )
+{
+    char *end;
+    unsigned long value;
+
+    if( !arg || *arg < '0' || *arg > '9' )
+        return -1;
+
+    errno = 0;
+    value = strtoul( arg, &end, 10 );
+    if( end == arg || errno == ERANGE || value > UINT32_MAX || !value || (*end != ':' && *end != '/') )
+        return -1;
+    *w = (uint32_t)value;
+
+    arg = end + 1;
+    if( *arg < '0' || *arg > '9' )
+        return -1;
+
+    errno = 0;
+    value = strtoul( arg, &end, 10 );
+    if( end == arg || errno == ERANGE || value > UINT32_MAX || !value || *end )
+        return -1;
+    *h = (uint32_t)value;
+    return 0;
+}
+
 static int handle_opts( const char * const *optlist, char **opts, video_info_t *info, resizer_hnd_t *h )
 {
     uint32_t out_sar_w, out_sar_h;
@@ -268,9 +295,7 @@ static int handle_opts( const char * const *optlist, char **opts, video_info_t *
         in_sar_w = in_sar_h = 1;
     if( str_sar )
     {
-        FAIL_IF_ERROR( 2 != sscanf( str_sar, "%u:%u", &out_sar_w, &out_sar_h ) &&
-                       2 != sscanf( str_sar, "%u/%u", &out_sar_w, &out_sar_h ),
-                       "invalid sar `%s'\n", str_sar );
+        FAIL_IF_ERROR( parse_resize_ratio( str_sar, &out_sar_w, &out_sar_h ), "invalid sar `%s'\n", str_sar );
     }
     else
         out_sar_w = out_sar_h = 1;
@@ -395,6 +420,9 @@ static int init_sws_context( resizer_hnd_t *h )
 
 static int check_resizer( resizer_hnd_t *h, cli_pic_t *in )
 {
+    if( !h || !in || in->img.width <= 0 || in->img.height <= 0 ||
+        in->img.width > MAX_RESOLUTION || in->img.height > MAX_RESOLUTION )
+        return -1;
     frame_prop_t input_prop = { in->img.width, in->img.height, convert_csp_to_pix_fmt( in->img.csp ), h->input_range };
     if( !memcmp( &input_prop, &h->scale, sizeof(frame_prop_t) ) )
         return 0;
@@ -431,7 +459,10 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
 
     resizer_hnd_t *h = calloc( 1, sizeof(resizer_hnd_t) );
     if( !h )
+    {
+        free( opts );
         return -1;
+    }
 
     h->ctx_flags = convert_method_to_flag( x264_otos( x264_get_option( optlist[5], opts ), "" ) );
 
@@ -455,7 +486,10 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
             int err = handle_opts( optlist, opts, info, h );
             free( opts );
             if( err )
+            {
+                free( h );
                 return -1;
+            }
         }
     }
     else
@@ -500,6 +534,11 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
                    "swscale is not compatible with interlaced vertical resizing\n" );
     /* confirm that the desired resolution meets the colorspace requirements */
     const x264_cli_csp_t *csp = x264_cli_get_csp( h->dst_csp );
+    if( !csp )
+    {
+        free( h );
+        return -1;
+    }
     FAIL_IF_ERROR( h->dst.width % csp->mod_width || h->dst.height % csp->mod_height,
                    "resolution %dx%d is not compliant with colorspace %s\n", h->dst.width, h->dst.height, csp->name );
 
@@ -523,7 +562,14 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
     {
         cli_pic_t input_pic = {{info->csp, info->width, info->height, 0}, 0};
         if( check_resizer( h, &input_pic ) )
+        {
+            if( h->ctx )
+                sws_freeContext( h->ctx );
+            if( h->buffer_allocated )
+                x264_cli_pic_clean( &h->buffer );
+            free( h );
             return -1;
+        }
     }
 
     /* finished initing, overwrite values */
@@ -543,7 +589,7 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
 static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 {
     resizer_hnd_t *h = handle;
-    if( h->prev_filter.get_frame( h->prev_hnd, output, frame ) )
+    if( !h || !output || frame < 0 || h->prev_filter.get_frame( h->prev_hnd, output, frame ) )
         return -1;
     if( h->variable_input && check_resizer( h, output ) )
         return -1;

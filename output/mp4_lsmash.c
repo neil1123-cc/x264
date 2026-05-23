@@ -49,6 +49,7 @@
 #define MP4_LOG_WARNING( ... )              x264_cli_log( "mp4", X264_LOG_WARNING, __VA_ARGS__ )
 #define MP4_LOG_INFO( ... )                 x264_cli_log( "mp4", X264_LOG_INFO, __VA_ARGS__ )
 #define MP4_FAIL_IF_ERR( cond, ... )        FAIL_IF_ERR( cond, "mp4", __VA_ARGS__ )
+#define MP4_FIXED_POINT_SCALE               (1 << 16)
 
 /* For close_file() */
 #define MP4_LOG_IF_ERR( cond, ... )\
@@ -73,6 +74,46 @@ do\
 } while( 0 )
 
 /*******************/
+
+static int mp4_display_size_to_fixed( uint32_t *dst, double size )
+{
+    double fixed_size = size * MP4_FIXED_POINT_SCALE;
+    if( fixed_size != fixed_size || fixed_size < 0.0 || fixed_size > UINT32_MAX )
+        return -1;
+    *dst = (uint32_t)fixed_size;
+    return 0;
+}
+
+static int mp4_double_to_duration( uint64_t *dst, double duration )
+{
+    long double value = (long double)duration;
+    if( duration != duration || value < 0.0L || value > (long double)UINT64_MAX )
+        return -1;
+    *dst = (uint64_t)value;
+    return 0;
+}
+
+static int mp4_u64_mul_overflow( uint64_t a, uint64_t b, uint64_t *dst )
+{
+    if( b && a > UINT64_MAX / b )
+        return -1;
+    *dst = a * b;
+    return 0;
+}
+
+static int mp4_append_sample_owned( lsmash_root_t *root, uint32_t track, lsmash_sample_t **sample )
+{
+    if( !sample || !*sample )
+        return -1;
+    if( lsmash_append_sample( root, track, *sample ) )
+    {
+        lsmash_delete_sample( *sample );
+        *sample = NULL;
+        return -1;
+    }
+    *sample = NULL;
+    return 0;
+}
 
 #if HAVE_ANY_AUDIO
 
@@ -177,8 +218,42 @@ static void set_recovery_param( mp4_hnd_t *p_mp4, x264_param_t *p_param )
 }
 
 #if HAVE_AUDIO
+static int mp4_validate_audio_info( audio_info_t *info )
+{
+    if( !info || !info->codec_name )
+    {
+        MP4_LOG_ERROR( "invalid audio codec information.\n" );
+        return -1;
+    }
+    if( info->samplerate <= 0 || info->channels <= 0 ||
+        info->depth < 0 || info->framelen < 0 ||
+        info->chansize < 0 || info->samplesize < 0 ||
+        info->extradata_size < 0 ||
+        info->timebase.num <= 0 || info->timebase.den <= 0 )
+    {
+        MP4_LOG_ERROR( "invalid audio summary parameter.\n" );
+        return -1;
+    }
+    if( info->extradata_size > 0 && !info->extradata )
+    {
+        MP4_LOG_ERROR( "invalid audio codec specific data.\n" );
+        return -1;
+    }
+    if( info->extradata_type == EXTRADATA_TYPE_LSMASH &&
+        ( !info->extradata || info->extradata_size <= 0 ||
+          (size_t)info->extradata_size % sizeof(lsmash_codec_specific_t *) ) )
+    {
+        MP4_LOG_ERROR( "invalid L-SMASH audio codec specific data.\n" );
+        return -1;
+    }
+    return 0;
+}
+
 static int set_channel_layout( mp4_audio_hnd_t *p_audio )
 {
+    if( !p_audio || !p_audio->info || p_audio->info->channels <= 0 )
+        return -1;
+
 #define AV_CH_LAYOUT_MONO              (AV_CH_FRONT_CENTER)
 #define AV_CH_LAYOUT_STEREO            (AV_CH_FRONT_LEFT|AV_CH_FRONT_RIGHT)
 #define AV_CH_LAYOUT_2_1               (AV_CH_LAYOUT_STEREO|AV_CH_BACK_CENTER)
@@ -467,11 +542,13 @@ static int alac_init( mp4_audio_hnd_t *p_audio )
 #if HAVE_AUDIO
 static int audio_init( hnd_t handle, cli_output_opt_t *opt, hnd_t filters, char *audio_enc, char *audio_parameters )
 {
+    if( !audio_enc )
+        return -1;
     if( !strcmp( audio_enc, "none" ) || !filters )
         return 0;
 
     // TODO: support other audio format
-    hnd_t henc;
+    hnd_t henc = NULL;
     int copy = 0;
 
     if( !strcmp( audio_enc, "copy" ) )
@@ -490,18 +567,28 @@ static int audio_init( hnd_t handle, cli_output_opt_t *opt, hnd_t filters, char 
         const audio_encoder_t *encoder = x264_select_audio_encoder( audio_enc, codec_list, &used_enc );
         MP4_FAIL_IF_ERR( !encoder, "unable to select audio encoder.\n" );
 
-        int audio_params_len = snprintf( audio_params, sizeof(audio_params), "%s,codec=%s", audio_parameters, used_enc );
+        int audio_params_len = snprintf( audio_params, sizeof(audio_params), "%s,codec=%s",
+                                         audio_parameters ? audio_parameters : "", used_enc );
         MP4_FAIL_IF_ERR( audio_params_len < 0 || (size_t)audio_params_len >= sizeof(audio_params), "audio encoder parameters are too long\n" );
         henc = x264_audio_encoder_open( encoder, filters, audio_params );
     }
 
     MP4_FAIL_IF_ERR( !henc, "error opening audio encoder.\n" );
     mp4_hnd_t *p_mp4 = handle;
+    if( !p_mp4 )
+        goto error;
     mp4_audio_hnd_t *p_audio = p_mp4->audio_hnd = calloc( 1, sizeof( mp4_audio_hnd_t ) );
+    if( !p_audio )
+    {
+        MP4_LOG_ERROR( "failed to allocate memory for audio muxing information.\n" );
+        goto error;
+    }
     audio_info_t *info = p_audio->info = x264_audio_encoder_info( henc );
+    if( mp4_validate_audio_info( info ) )
+        goto error;
     p_audio->b_copy = copy;
     if( p_audio->b_copy )
-        info->priming = opt->priming;
+        info->priming = opt ? opt->priming : 0;
 
     p_audio->summary = (lsmash_audio_summary_t *)lsmash_create_summary( LSMASH_SUMMARY_TYPE_AUDIO );
     if( !p_audio->summary )
@@ -560,6 +647,7 @@ static int audio_init( hnd_t handle, cli_output_opt_t *opt, hnd_t filters, char 
                     lsmash_ac3_specific_parameters_t *param = (lsmash_ac3_specific_parameters_t *)specific->data.structured;
                     if( lsmash_setup_ac3_specific_parameters_from_syncframe( param, info->extradata, info->extradata_size ) )
                     {
+                        lsmash_destroy_codec_specific_data( specific );
                         MP4_LOG_ERROR( "failed to set up AC-3 specific info.\n" );
                         goto error;
                     }
@@ -634,6 +722,7 @@ static int audio_init( hnd_t handle, cli_output_opt_t *opt, hnd_t filters, char 
                     lsmash_dts_specific_parameters_t *param = (lsmash_dts_specific_parameters_t *)specific->data.structured;
                     if( lsmash_setup_dts_specific_parameters_from_frame( param, info->extradata, info->extradata_size ) )
                     {
+                        lsmash_destroy_codec_specific_data( specific );
                         MP4_LOG_ERROR( "failed to parse DTS audio frame.\n" );
                         goto error;
                     }
@@ -732,10 +821,15 @@ static int audio_init( hnd_t handle, cli_output_opt_t *opt, hnd_t filters, char 
 
     if( info->extradata_type == EXTRADATA_TYPE_LSMASH )
     {
+        lsmash_codec_specific_t **extradata = (lsmash_codec_specific_t **)info->extradata;
         uint32_t num_extensions = info->extradata_size / sizeof(lsmash_codec_specific_t *);
         for( uint32_t i = 0; i < num_extensions; i++ )
         {
-            lsmash_codec_specific_t **extradata = (lsmash_codec_specific_t **)info->extradata;
+            if( !extradata[i] )
+            {
+                MP4_LOG_ERROR( "invalid CODEC specific info extension.\n" );
+                goto error;
+            }
             if( lsmash_add_codec_specific_data( (lsmash_summary_t *)p_audio->summary, extradata[i] ) )
             {
                 MP4_LOG_ERROR( "failed to add CODEC specific info extension.\n" );
@@ -750,8 +844,16 @@ static int audio_init( hnd_t handle, cli_output_opt_t *opt, hnd_t filters, char 
 
 error:
     x264_audio_encoder_close( henc );
-    free( p_mp4->audio_hnd );
-    p_mp4->audio_hnd = NULL;
+    if( p_mp4 && p_mp4->audio_hnd )
+    {
+        if( p_mp4->audio_hnd->summary )
+        {
+            lsmash_cleanup_summary( (lsmash_summary_t *)p_mp4->audio_hnd->summary );
+            p_mp4->audio_hnd->summary = NULL;
+        }
+        free( p_mp4->audio_hnd );
+        p_mp4->audio_hnd = NULL;
+    }
 
     return -1;
 }
@@ -760,6 +862,8 @@ error:
 #if HAVE_ANY_AUDIO
 static int set_param_audio( mp4_hnd_t* p_mp4, uint64_t i_media_timescale, lsmash_track_mode track_mode )
 {
+    MP4_FAIL_IF_ERR( !p_mp4 || !p_mp4->p_root || !p_mp4->audio_hnd,
+                     "invalid audio muxing state.\n" );
     mp4_audio_hnd_t *p_audio = p_mp4->audio_hnd;
 
     /* Create a audio track. */
@@ -770,12 +874,16 @@ static int set_param_audio( mp4_hnd_t* p_mp4, uint64_t i_media_timescale, lsmash
     if( p_mp4->major_brand == ISOM_BRAND_TYPE_QT
      || lsmash_check_codec_type_identical( p_audio->codec_type, ISOM_CODEC_TYPE_ALAC_AUDIO ) )
         MP4_FAIL_IF_ERR( set_channel_layout( p_audio ), "failed to set up channel layout.\n" );
+    MP4_FAIL_IF_ERR( !p_audio->info || p_audio->info->samplerate <= 0 ||
+                     p_audio->info->channels <= 0 || p_audio->info->depth < 0 ||
+                     p_audio->info->framelen < 0,
+                     "invalid audio summary parameter.\n" );
     p_audio->summary->sample_type      = p_audio->codec_type;
     p_audio->summary->max_au_length    = ( 1 << 13 ) - 1;
-    p_audio->summary->frequency        = p_audio->info->samplerate;
-    p_audio->summary->channels         = p_audio->info->channels;
-    p_audio->summary->sample_size      = p_audio->info->depth;
-    p_audio->summary->samples_in_frame = p_audio->info->framelen;
+    p_audio->summary->frequency        = (uint32_t)p_audio->info->samplerate;
+    p_audio->summary->channels         = (uint32_t)p_audio->info->channels;
+    p_audio->summary->sample_size      = (uint32_t)p_audio->info->depth;
+    p_audio->summary->samples_in_frame = (uint32_t)p_audio->info->framelen;
     if( lsmash_check_codec_type_identical( p_audio->codec_type, ISOM_CODEC_TYPE_MP4A_AUDIO ) )
     {
         if( !strcmp( p_audio->info->codec_name, "als" ) )
@@ -820,6 +928,7 @@ static int set_param_audio( mp4_hnd_t* p_mp4, uint64_t i_media_timescale, lsmash
     /* Set sound media parameters. */
     lsmash_media_parameters_t media_param;
     lsmash_initialize_media_parameters( &media_param );
+    MP4_FAIL_IF_ERR( !p_audio->summary->frequency, "audio media timescale is broken.\n" );
     media_param.timescale = p_audio->summary->frequency;
     media_param.ISO_language = lsmash_pack_iso_language( p_mp4->psz_language );
     media_param.media_handler_name = "L-SMASH Sound Media Handler";
@@ -829,17 +938,22 @@ static int set_param_audio( mp4_hnd_t* p_mp4, uint64_t i_media_timescale, lsmash
     MP4_FAIL_IF_ERR( lsmash_set_media_parameters( p_mp4->p_root, p_audio->i_track, &media_param ),
                      "failed to set media parameters for audio.\n" );
 
-    p_audio->i_sample_entry = lsmash_add_sample_entry( p_mp4->p_root, p_audio->i_track, p_audio->summary );
-    MP4_FAIL_IF_ERR( !p_audio->i_sample_entry,
+    int audio_sample_entry = lsmash_add_sample_entry( p_mp4->p_root, p_audio->i_track, p_audio->summary );
+    MP4_FAIL_IF_ERR( audio_sample_entry <= 0,
                      "failed to add sample_entry for audio.\n" );
+    p_audio->i_sample_entry = (uint32_t)audio_sample_entry;
 
     return 0;
 }
 
 static int write_audio_frames( mp4_hnd_t *p_mp4, double video_dts, int finish )
 {
+    if( !p_mp4 || !p_mp4->audio_hnd || video_dts != video_dts )
+        return -1;
     mp4_audio_hnd_t *p_audio = p_mp4->audio_hnd;
     assert( p_audio );
+    if( !p_audio->summary || !p_audio->summary->frequency )
+        return -1;
 
 #if HAVE_AUDIO
     audio_packet_t *frame;
@@ -848,7 +962,10 @@ static int write_audio_frames( mp4_hnd_t *p_mp4, double video_dts, int finish )
     /* FIXME: This is just a sample implementation. */
     for(;;)
     {
-        uint64_t audio_timestamp = (uint64_t)p_audio->i_numframe * p_audio->summary->samples_in_frame;
+        uint64_t audio_timestamp;
+        if( p_audio->i_numframe < 0 || p_audio->i_numframe == INT_MAX ||
+            mp4_u64_mul_overflow( (uint64_t)p_audio->i_numframe, p_audio->summary->samples_in_frame, &audio_timestamp ) )
+            return -1;
         /*
          * means while( audio_dts <= video_dts )
          * FIXME: I wonder if there's any way more effective.
@@ -880,10 +997,21 @@ static int write_audio_frames( mp4_hnd_t *p_mp4, double video_dts, int finish )
         if( !frame )
             break;
 
-        lsmash_sample_t *p_sample = lsmash_create_sample( frame->size );
-        MP4_FAIL_IF_ERR( !p_sample,
-                         "failed to create a audio sample data.\n" );
-        memcpy( p_sample->data, frame->data, frame->size );
+        if( frame->size < 0 || (frame->size && !frame->data) )
+        {
+            x264_audio_free_frame( p_audio->encoder, frame );
+            return -1;
+        }
+        lsmash_sample_t *p_sample = lsmash_create_sample( (uint32_t)frame->size );
+        if( !p_sample || (frame->size && !p_sample->data) )
+        {
+            x264_audio_free_frame( p_audio->encoder, frame );
+            lsmash_delete_sample( p_sample );
+            MP4_LOG_ERROR( "failed to create a audio sample data.\n" );
+            return -1;
+        }
+        if( frame->size )
+            memcpy( p_sample->data, frame->data, (size_t)frame->size );
         x264_audio_free_frame( p_audio->encoder, frame );
         p_sample->prop.pre_roll.distance = p_audio->b_mdct;
 #else
@@ -892,8 +1020,12 @@ static int write_audio_frames( mp4_hnd_t *p_mp4, double video_dts, int finish )
         lsmash_sample_t *p_sample = lsmash_create_sample( p_audio->summary->max_au_length );
         MP4_FAIL_IF_ERR( !p_sample,
                          "failed to create a audio sample data.\n" );
-        MP4_FAIL_IF_ERR( mp4sys_importer_get_access_unit( p_audio->p_importer, 1, p_sample ),
-                         "failed to retrieve frame data from importer.\n" );
+        if( mp4sys_importer_get_access_unit( p_audio->p_importer, 1, p_sample ) )
+        {
+            lsmash_delete_sample( p_sample );
+            MP4_LOG_ERROR( "failed to retrieve frame data from importer.\n" );
+            return -1;
+        }
         if( p_sample->length == 0 )
         {
             p_audio->last_delta = mp4sys_importer_get_last_delta( p_audio->p_importer, 1 );
@@ -906,8 +1038,11 @@ static int write_audio_frames( mp4_hnd_t *p_mp4, double video_dts, int finish )
         p_sample->dts = p_sample->cts = audio_timestamp;
         p_sample->prop.ra_flags = ISOM_SAMPLE_RANDOM_ACCESS_FLAG_SYNC;
         p_sample->index = p_audio->i_sample_entry;
-        MP4_FAIL_IF_ERR( lsmash_append_sample( p_mp4->p_root, p_audio->i_track, p_sample ),
-                         "failed to append a audio sample.\n" );
+        if( mp4_append_sample_owned( p_mp4->p_root, p_audio->i_track, &p_sample ) )
+        {
+            MP4_LOG_ERROR( "failed to append a audio sample.\n" );
+            return -1;
+        }
 
         p_audio->i_numframe++;
     }
@@ -916,7 +1051,11 @@ static int write_audio_frames( mp4_hnd_t *p_mp4, double video_dts, int finish )
 
 static int close_file_audio( mp4_hnd_t* p_mp4, double actual_duration )
 {
+    if( !p_mp4 || !p_mp4->audio_hnd || !p_mp4->i_movie_timescale || actual_duration != actual_duration )
+        return -1;
     mp4_audio_hnd_t *p_audio = p_mp4->audio_hnd;
+    if( !p_audio->summary || !p_audio->summary->frequency || !p_audio->info )
+        return -1;
     double media_duration = actual_duration / p_mp4->i_movie_timescale + (double)p_audio->info->priming / p_audio->summary->frequency;
     MP4_LOG_IF_ERR( ( write_audio_frames( p_mp4, media_duration, 0 ) || // FIXME: I wonder why is this needed?
                       write_audio_frames( p_mp4, 0, 1 ) ),
@@ -936,13 +1075,23 @@ static int close_file_audio( mp4_hnd_t* p_mp4, double actual_duration )
 #else
         last_delta = p_audio->last_delta;
 #endif
-    MP4_LOG_IF_ERR( lsmash_flush_pooled_samples( p_mp4->p_root, p_audio->i_track, last_delta ),
-                    "failed to flush the rest of audio samples.\n" );
-    actual_duration = ((p_audio->i_numframe - 1) * p_audio->summary->samples_in_frame) + last_delta - p_audio->info->priming;
-    if( actual_duration )
-        actual_duration *= (double)p_mp4->i_movie_timescale / p_audio->summary->frequency;
+    if( p_audio->i_numframe > 0 && !last_delta )
+        return -1;
+    if( p_audio->i_numframe > 0 )
+    {
+        MP4_LOG_IF_ERR( lsmash_flush_pooled_samples( p_mp4->p_root, p_audio->i_track, last_delta ),
+                        "failed to flush the rest of audio samples.\n" );
+        long double audio_samples = (long double)(p_audio->i_numframe - 1) * p_audio->summary->samples_in_frame + last_delta;
+        actual_duration = audio_samples > p_audio->info->priming ? (double)(audio_samples - p_audio->info->priming) : 0;
+        if( actual_duration )
+            actual_duration *= (double)p_mp4->i_movie_timescale / p_audio->summary->frequency;
+    }
+    else
+        actual_duration = 0;
     lsmash_edit_t edit;
-    edit.duration   = actual_duration;
+    edit.duration   = 0;
+    MP4_LOG_IF_ERR( mp4_double_to_duration( &edit.duration, actual_duration ),
+                    "audio edit duration is out of range.\n" );
     edit.start_time = p_audio->info->priming;
     edit.rate       = ISOM_EDIT_MODE_NORMAL;
     if( !p_mp4->b_fragments )
@@ -968,18 +1117,22 @@ int remux_callback( void* param, uint64_t done, uint64_t total )
     if( cb_param->no_progress && done != total )
         return 0;
     int64_t elapsed = x264_mdate() - cb_param->start;
-    double byterate = done / ( elapsed / 1000000. );
-    fprintf( stderr, "remux [%5.2lf%%], %"PRIu64"/%"PRIu64" KiB, %u KiB/s, ",
-        done*100./total, done/1024, total/1024, (unsigned)byterate/1024 );
+    double elapsed_sec = elapsed > 0 ? (double)elapsed / 1000000.0 : 0.0;
+    double byterate = elapsed_sec > 0.0 ? (double)done / elapsed_sec : 0.0;
+    double percent = total ? (double)done * 100.0 / (double)total : 100.0;
+    uint64_t byterate_kib = byterate > (double)(UINT64_MAX / 1024) ? UINT64_MAX / 1024 : (uint64_t)(byterate / 1024.0);
+    fprintf( stderr, "remux [%5.2lf%%], %"PRIu64"/%"PRIu64" KiB, %"PRIu64" KiB/s, ",
+        percent, done/1024, total/1024, byterate_kib );
     if( done == total )
     {
-        unsigned sec = (unsigned)( elapsed / 1000000 );
-        fprintf( stderr, "total elapsed %u:%02u:%02u\n\n", sec/3600, (sec/60)%60, sec%60 );
+        uint64_t sec = elapsed > 0 ? (uint64_t)( elapsed / 1000000 ) : 0;
+        fprintf( stderr, "total elapsed %"PRIu64":%02"PRIu64":%02"PRIu64"\n\n", sec/3600, (sec/60)%60, sec%60 );
     }
     else
     {
-        unsigned eta = (unsigned)( (total - done) / byterate );
-        fprintf( stderr, "eta %u:%02u:%02u\r", eta/3600, (eta/60)%60, eta%60 );
+        double eta_sec = byterate > 0.0 && total > done ? (double)(total - done) / byterate : 0.0;
+        uint64_t eta = eta_sec > (double)UINT64_MAX ? UINT64_MAX : (uint64_t)eta_sec;
+        fprintf( stderr, "eta %"PRIu64":%02"PRIu64":%02"PRIu64"\r", eta/3600, (eta/60)%60, eta%60 );
     }
     fflush( stderr ); // needed in windows
     return 0;
@@ -1000,12 +1153,19 @@ static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest
         if( p_mp4->i_track )
         {
             /* Flush the rest of samples and add the last sample_delta. */
-            uint32_t last_delta = largest_pts - second_largest_pts;
-            MP4_LOG_IF_ERR( lsmash_flush_pooled_samples( p_mp4->p_root, p_mp4->i_track, (last_delta ? last_delta : 1) * p_mp4->i_time_inc ),
+            int64_t last_delta64 = largest_pts - second_largest_pts;
+            uint32_t last_delta = last_delta64 > 0 && last_delta64 <= UINT32_MAX ? (uint32_t)last_delta64 : 0;
+            uint64_t flush_sample_delta = last_delta ? last_delta : 1;
+            int flush_delta_overflow = !p_mp4->i_time_inc ||
+                                       p_mp4->i_time_inc > UINT32_MAX ||
+                                       flush_sample_delta > UINT32_MAX / p_mp4->i_time_inc;
+            uint32_t flush_delta = flush_delta_overflow ? 0 : (uint32_t)(flush_sample_delta * p_mp4->i_time_inc);
+            MP4_LOG_IF_ERR( flush_delta_overflow ||
+                             lsmash_flush_pooled_samples( p_mp4->p_root, p_mp4->i_track, flush_delta ),
                             "failed to flush the rest of samples.\n" );
 
             if( p_mp4->i_movie_timescale != 0 && p_mp4->i_video_timescale != 0 )    /* avoid zero division */
-                actual_duration = ((double)((largest_pts + last_delta) * p_mp4->i_time_inc) / p_mp4->i_video_timescale) * p_mp4->i_movie_timescale;
+                actual_duration = (((double)largest_pts + last_delta) * (double)p_mp4->i_time_inc / p_mp4->i_video_timescale) * p_mp4->i_movie_timescale;
             else
                 MP4_LOG_ERROR( "timescale is broken.\n" );
 
@@ -1022,8 +1182,11 @@ static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest
              * Note: Any demuxers should follow the Edit List Box if it exists.
              */
             lsmash_edit_t edit;
-            edit.duration   = actual_duration;
-            edit.start_time = p_mp4->i_first_cts;
+            edit.duration   = 0;
+            MP4_LOG_IF_ERR( mp4_double_to_duration( &edit.duration, actual_duration ),
+                            "video edit duration is out of range.\n" );
+            MP4_LOG_IF_ERR( p_mp4->i_first_cts > INT64_MAX, "video edit start time is out of range.\n" );
+            edit.start_time = (int64_t)p_mp4->i_first_cts;
             edit.rate       = ISOM_EDIT_MODE_NORMAL;
             if( !p_mp4->b_fragments )
             {
@@ -1111,9 +1274,10 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
     p_mp4->psz_language         = opt->language;
     p_mp4->b_no_pasp            = opt->no_sar;
     p_mp4->b_no_remux           = opt->no_remux;
-    p_mp4->i_display_width      = opt->display_width * (1<<16);
-    p_mp4->i_display_height     = opt->display_height * (1<<16);
-    p_mp4->b_force_display_size = p_mp4->i_display_height || p_mp4->i_display_height;
+    MP4_FAIL_IF_ERR_EX( mp4_display_size_to_fixed( &p_mp4->i_display_width, opt->display_width ) ||
+                        mp4_display_size_to_fixed( &p_mp4->i_display_height, opt->display_height ),
+                        "display size is out of range.\n" );
+    p_mp4->b_force_display_size = p_mp4->i_display_width || p_mp4->i_display_height;
     p_mp4->scale_method         = p_mp4->b_force_display_size ? ISOM_SCALE_METHOD_FILL : ISOM_SCALE_METHOD_MEET;
     p_mp4->b_use_recovery = 0; // we don't really support recovery
 	p_mp4->b_fragments    = !b_regular || opt->fragments;
@@ -1165,8 +1329,11 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
     p_mp4->i_delay_frames = p_param->i_bframe ? (p_param->i_bframe_pyramid ? 2 : 1) : 0;
     p_mp4->i_dts_compress_multiplier = p_mp4->b_dts_compress * p_mp4->i_delay_frames + 1;
 
-    i_media_timescale = (uint64_t)p_param->i_timebase_den * p_mp4->i_dts_compress_multiplier;
-    p_mp4->i_time_inc = (uint64_t)p_param->i_timebase_num * p_mp4->i_dts_compress_multiplier;
+    MP4_FAIL_IF_ERR( p_param->i_timebase_den <= 0 || p_param->i_timebase_num <= 0 ||
+                     p_mp4->i_dts_compress_multiplier <= 0,
+                     "invalid video timebase.\n" );
+    i_media_timescale = (uint64_t)p_param->i_timebase_den * (uint64_t)p_mp4->i_dts_compress_multiplier;
+    p_mp4->i_time_inc = (uint64_t)p_param->i_timebase_num * (uint64_t)p_mp4->i_dts_compress_multiplier;
     MP4_FAIL_IF_ERR( i_media_timescale > UINT32_MAX, "MP4 media timescale %"PRIu64" exceeds maximum\n", i_media_timescale );
 
     /* Select brands. */
@@ -1242,33 +1409,53 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
     p_mp4->i_track = lsmash_create_track( p_mp4->p_root, ISOM_MEDIA_HANDLER_TYPE_VIDEO_TRACK );
     MP4_FAIL_IF_ERR( !p_mp4->i_track, "failed to create a video track.\n" );
 
-    p_mp4->summary->width = p_param->i_width;
-    p_mp4->summary->height = p_param->i_height;
+    MP4_FAIL_IF_ERR( p_param->i_width < 0 || p_param->i_height < 0,
+                     "invalid video dimensions.\n" );
+    p_mp4->summary->width = (uint32_t)p_param->i_width;
+    p_mp4->summary->height = (uint32_t)p_param->i_height;
     if( !p_mp4->b_force_display_size )
     {
-        p_mp4->i_display_width = p_param->i_width << 16;
-        p_mp4->i_display_height = p_param->i_height << 16;
+        MP4_FAIL_IF_ERR( mp4_display_size_to_fixed( &p_mp4->i_display_width, p_param->i_width ) ||
+                         mp4_display_size_to_fixed( &p_mp4->i_display_height, p_param->i_height ),
+                         "display size is out of range.\n" );
     }
+    MP4_FAIL_IF_ERR( p_param->vui.i_sar_width < 0 || p_param->vui.i_sar_height < 0,
+                     "invalid sample aspect ratio.\n" );
     if( p_param->vui.i_sar_width && p_param->vui.i_sar_height )
     {
         if( !p_mp4->b_force_display_size )
         {
             double sar = (double)p_param->vui.i_sar_width / p_param->vui.i_sar_height;
             if( sar > 1.0 )
-                p_mp4->i_display_width *= sar;
+            {
+                double display_width = (double)p_mp4->i_display_width * sar;
+                MP4_FAIL_IF_ERR( display_width > UINT32_MAX, "display width is out of range.\n" );
+                p_mp4->i_display_width = (uint32_t)display_width;
+            }
             else
-                p_mp4->i_display_height /= sar;
+            {
+                double display_height = (double)p_mp4->i_display_height / sar;
+                MP4_FAIL_IF_ERR( display_height > UINT32_MAX, "display height is out of range.\n" );
+                p_mp4->i_display_height = (uint32_t)display_height;
+            }
         }
         if( !p_mp4->b_no_pasp )
         {
-            p_mp4->summary->par_h = p_param->vui.i_sar_width;
-            p_mp4->summary->par_v = p_param->vui.i_sar_height;
+            p_mp4->summary->par_h = (uint32_t)p_param->vui.i_sar_width;
+            p_mp4->summary->par_v = (uint32_t)p_param->vui.i_sar_height;
         }
     }
-    p_mp4->summary->color.primaries_index = p_param->vui.i_colorprim;
-    p_mp4->summary->color.transfer_index  = p_param->vui.i_transfer;
-    p_mp4->summary->color.matrix_index    = p_param->vui.i_colmatrix >= 0 ? p_param->vui.i_colmatrix : ISOM_MATRIX_INDEX_UNSPECIFIED;
-    p_mp4->summary->color.full_range      = p_param->vui.b_fullrange >= 0 ? p_param->vui.b_fullrange : 0;
+    int color_matrix = p_param->vui.i_colmatrix >= 0 ? p_param->vui.i_colmatrix : ISOM_MATRIX_INDEX_UNSPECIFIED;
+    int full_range = p_param->vui.b_fullrange >= 0 ? p_param->vui.b_fullrange : 0;
+    MP4_FAIL_IF_ERR( p_param->vui.i_colorprim < 0 || p_param->vui.i_colorprim > UINT16_MAX ||
+                     p_param->vui.i_transfer < 0 || p_param->vui.i_transfer > UINT16_MAX ||
+                     color_matrix < 0 || color_matrix > UINT16_MAX ||
+                     full_range > UINT8_MAX,
+                     "color metadata index is out of range.\n" );
+    p_mp4->summary->color.primaries_index = (uint16_t)p_param->vui.i_colorprim;
+    p_mp4->summary->color.transfer_index  = (uint16_t)p_param->vui.i_transfer;
+    p_mp4->summary->color.matrix_index    = (uint16_t)color_matrix;
+    p_mp4->summary->color.full_range      = (uint8_t)full_range;
 
     /* Set video track parameters. */
     lsmash_track_parameters_t track_param;
@@ -1286,15 +1473,18 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
     /* Set video media parameters. */
     lsmash_media_parameters_t media_param;
     lsmash_initialize_media_parameters( &media_param );
-    media_param.timescale = i_media_timescale;
+    media_param.timescale = (uint32_t)i_media_timescale;
 	media_param.ISO_language = lsmash_pack_iso_language( p_mp4->psz_language );
     media_param.media_handler_name = "L-SMASH Video Media Handler";
     if( p_mp4->b_brand_qt )
         media_param.data_handler_name = "L-SMASH URL Data Handler";
     if( p_mp4->major_brand != ISOM_BRAND_TYPE_QT )
     {
-        media_param.roll_grouping = p_param->b_intra_refresh;
-        media_param.rap_grouping = p_param->b_open_gop;
+        MP4_FAIL_IF_ERR( p_param->b_intra_refresh < 0 || p_param->b_intra_refresh > UINT8_MAX ||
+                         p_param->b_open_gop < 0 || p_param->b_open_gop > UINT8_MAX,
+                         "invalid video grouping parameter.\n" );
+        media_param.roll_grouping = (uint8_t)p_param->b_intra_refresh;
+        media_param.rap_grouping = (uint8_t)p_param->b_open_gop;
     }
     MP4_FAIL_IF_ERR( lsmash_set_media_parameters( p_mp4->p_root, p_mp4->i_track, &media_param ),
                      "failed to set media parameters for video.\n" );
@@ -1313,14 +1503,18 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
 {
     mp4_hnd_t *p_mp4 = handle;
 
-    if( p_nal[0].i_payload < H264_NALU_LENGTH_SIZE || p_nal[1].i_payload < H264_NALU_LENGTH_SIZE )
+    if( !p_mp4 || !p_nal ||
+        p_nal[0].i_payload < H264_NALU_LENGTH_SIZE || p_nal[1].i_payload < H264_NALU_LENGTH_SIZE || p_nal[2].i_payload < 0 ||
+        !p_nal[0].p_payload || !p_nal[1].p_payload || (p_nal[2].i_payload && !p_nal[2].p_payload) )
         return -1;
 
-    uint32_t sps_size = p_nal[0].i_payload - H264_NALU_LENGTH_SIZE;
-    uint32_t pps_size = p_nal[1].i_payload - H264_NALU_LENGTH_SIZE;
-    uint32_t sei_size = p_nal[2].i_payload;
+    uint32_t sps_size = (uint32_t)(p_nal[0].i_payload - H264_NALU_LENGTH_SIZE);
+    uint32_t pps_size = (uint32_t)(p_nal[1].i_payload - H264_NALU_LENGTH_SIZE);
+    uint32_t sei_size = (uint32_t)p_nal[2].i_payload;
 
     if( sps_size > UINT16_MAX || pps_size > UINT16_MAX )
+        return -1;
+    if( sps_size > (uint32_t)INT_MAX - pps_size || sei_size > (uint32_t)INT_MAX - sps_size - pps_size )
         return -1;
 
     uint8_t *sps = p_nal[0].p_payload + H264_NALU_LENGTH_SIZE;
@@ -1329,6 +1523,11 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
 
     lsmash_codec_specific_t *cs = lsmash_create_codec_specific_data( LSMASH_CODEC_SPECIFIC_DATA_TYPE_ISOM_VIDEO_H264,
                                                                      LSMASH_CODEC_SPECIFIC_FORMAT_STRUCTURED );
+    if( !cs )
+    {
+        MP4_LOG_ERROR( "failed to allocate H.264 specific info.\n" );
+        return -1;
+    }
 
     lsmash_h264_specific_parameters_t *param = (lsmash_h264_specific_parameters_t *)cs->data.structured;
     param->lengthSizeMinusOne = H264_NALU_LENGTH_SIZE - 1;
@@ -1337,6 +1536,7 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
      * The remaining parameters are automatically set by SPS. */
     if( lsmash_append_h264_parameter_set( param, H264_PARAMETER_SET_TYPE_SPS, sps, sps_size ) )
     {
+        lsmash_destroy_codec_specific_data( cs );
         MP4_LOG_ERROR( "failed to append SPS.\n" );
         return -1;
     }
@@ -1344,12 +1544,14 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     /* PPS */
     if( lsmash_append_h264_parameter_set( param, H264_PARAMETER_SET_TYPE_PPS, pps, pps_size ) )
     {
+        lsmash_destroy_codec_specific_data( cs );
         MP4_LOG_ERROR( "failed to append PPS.\n" );
         return -1;
     }
 
     if( lsmash_add_codec_specific_data( (lsmash_summary_t *)p_mp4->summary, cs ) )
     {
+        lsmash_destroy_codec_specific_data( cs );
         MP4_LOG_ERROR( "failed to add H.264 specific info.\n" );
         return -1;
     }
@@ -1382,29 +1584,45 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
         }
     }
 
-    p_mp4->i_sample_entry = lsmash_add_sample_entry( p_mp4->p_root, p_mp4->i_track, p_mp4->summary );
-    MP4_FAIL_IF_ERR( !p_mp4->i_sample_entry,
+    int video_sample_entry = lsmash_add_sample_entry( p_mp4->p_root, p_mp4->i_track, p_mp4->summary );
+    MP4_FAIL_IF_ERR( video_sample_entry <= 0,
                      "failed to add sample entry for video.\n" );
+    p_mp4->i_sample_entry = (uint32_t)video_sample_entry;
 
     /* SEI */
-    p_mp4->p_sei_buffer = malloc( sei_size );
-    MP4_FAIL_IF_ERR( !p_mp4->p_sei_buffer,
-                     "failed to allocate sei transition buffer.\n" );
-    memcpy( p_mp4->p_sei_buffer, sei, sei_size );
+    if( sei_size )
+    {
+        p_mp4->p_sei_buffer = malloc( sei_size );
+        MP4_FAIL_IF_ERR( !p_mp4->p_sei_buffer,
+                         "failed to allocate sei transition buffer.\n" );
+        memcpy( p_mp4->p_sei_buffer, sei, sei_size );
+    }
     p_mp4->i_sei_size = sei_size;
 
-    return sei_size + sps_size + pps_size;
+    return (int)(sei_size + sps_size + pps_size);
 }
 
 static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_t *p_picture )
 {
     mp4_hnd_t *p_mp4 = handle;
-    uint64_t dts, cts;
+    uint64_t dts = 0;
+    uint64_t cts = 0;
+
+    if( !p_mp4 || !p_picture || i_size < 0 || (i_size && !p_nalu) ||
+        p_mp4->i_numframe == INT_MAX ||
+        p_mp4->i_sei_size > UINT32_MAX - (uint32_t)i_size )
+        return -1;
 
     if( !p_mp4->i_numframe )
     {
-        p_mp4->i_start_offset = p_picture->i_dts * -1;
-        p_mp4->i_first_cts = p_mp4->b_dts_compress ? 0 : p_mp4->i_start_offset * p_mp4->i_time_inc;
+        uint64_t first_cts = 0;
+        MP4_FAIL_IF_ERR( p_picture->i_dts > 0 || p_picture->i_dts == INT64_MIN,
+                         "video DTS start offset is out of range.\n" );
+        p_mp4->i_start_offset = -p_picture->i_dts;
+        MP4_FAIL_IF_ERR( !p_mp4->b_dts_compress &&
+                         mp4_u64_mul_overflow( (uint64_t)p_mp4->i_start_offset, p_mp4->i_time_inc, &first_cts ),
+                         "video CTS start offset is out of range.\n" );
+        p_mp4->i_first_cts = p_mp4->b_dts_compress ? 0 : first_cts;
         if( p_mp4->psz_chapter && (p_mp4->b_brand_qt || p_mp4->b_brand_m4a) )
             MP4_FAIL_IF_ERR( lsmash_create_reference_chapter_track( p_mp4->p_root, p_mp4->i_track, p_mp4->psz_chapter ),
                              "failed to create reference chapter track.\n" );
@@ -1412,40 +1630,90 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
         {
             lsmash_edit_t edit;
             edit.duration   = ISOM_EDIT_DURATION_UNKNOWN32;     /* QuickTime doesn't support 64bit duration. */
-            edit.start_time = p_mp4->i_first_cts;
+            MP4_FAIL_IF_ERR( p_mp4->i_first_cts > INT64_MAX, "video edit start time is out of range.\n" );
+            edit.start_time = (int64_t)p_mp4->i_first_cts;
             edit.rate       = ISOM_EDIT_MODE_NORMAL;
             MP4_LOG_IF_ERR( lsmash_create_explicit_timeline_map( p_mp4->p_root, p_mp4->i_track, edit ),
                             "failed to set timeline map for video.\n" );
         }
     }
 
-    lsmash_sample_t *p_sample = lsmash_create_sample( i_size + p_mp4->i_sei_size );
+    uint32_t sample_size = (uint32_t)i_size + p_mp4->i_sei_size;
+    lsmash_sample_t *p_sample = lsmash_create_sample( sample_size );
     MP4_FAIL_IF_ERR( !p_sample,
                      "failed to create a video sample data.\n" );
+#define MP4_SAMPLE_FAIL_IF_ERR( cond, ... )\
+do\
+{\
+    if( cond )\
+    {\
+        lsmash_delete_sample( p_sample );\
+        MP4_LOG_ERROR( __VA_ARGS__ );\
+        return -1;\
+    }\
+} while( 0 )
+    MP4_SAMPLE_FAIL_IF_ERR( sample_size && !p_sample->data,
+                            "failed to create a video sample data.\n" );
 
     if( p_mp4->p_sei_buffer )
     {
+        MP4_SAMPLE_FAIL_IF_ERR( !p_mp4->i_sei_size,
+                                "invalid SEI transition buffer.\n" );
         memcpy( p_sample->data, p_mp4->p_sei_buffer, p_mp4->i_sei_size );
         free( p_mp4->p_sei_buffer );
         p_mp4->p_sei_buffer = NULL;
     }
+    else
+        MP4_SAMPLE_FAIL_IF_ERR( p_mp4->i_sei_size,
+                                "invalid SEI transition buffer.\n" );
 
-    memcpy( p_sample->data + p_mp4->i_sei_size, p_nalu, i_size );
+    if( i_size )
+        memcpy( p_sample->data + p_mp4->i_sei_size, p_nalu, (size_t)i_size );
     p_mp4->i_sei_size = 0;
 
     if( p_mp4->b_dts_compress )
     {
         if( p_mp4->i_numframe == 1 )
-            p_mp4->i_init_delta = (p_picture->i_dts + p_mp4->i_start_offset) * p_mp4->i_time_inc;
-        dts = p_mp4->i_numframe > p_mp4->i_delay_frames
-            ? p_picture->i_dts * p_mp4->i_time_inc
-            : p_mp4->i_numframe * (p_mp4->i_init_delta / p_mp4->i_dts_compress_multiplier);
-        cts = p_picture->i_pts * p_mp4->i_time_inc;
+        {
+            int64_t init_delta_ts;
+            uint64_t init_delta;
+            MP4_SAMPLE_FAIL_IF_ERR( p_picture->i_dts > INT64_MAX - p_mp4->i_start_offset,
+                                    "video DTS initial delta is out of range.\n" );
+            init_delta_ts = p_picture->i_dts + p_mp4->i_start_offset;
+            MP4_SAMPLE_FAIL_IF_ERR( init_delta_ts < 0 ||
+                                    mp4_u64_mul_overflow( (uint64_t)init_delta_ts, p_mp4->i_time_inc, &init_delta ) ||
+                                    init_delta > INT64_MAX,
+                                    "video DTS initial delta is out of range.\n" );
+            p_mp4->i_init_delta = (int64_t)init_delta;
+        }
+        if( p_mp4->i_numframe > p_mp4->i_delay_frames )
+        {
+            MP4_SAMPLE_FAIL_IF_ERR( p_picture->i_dts < 0 ||
+                                    mp4_u64_mul_overflow( (uint64_t)p_picture->i_dts, p_mp4->i_time_inc, &dts ),
+                                    "video DTS is out of range.\n" );
+        }
+        else
+        {
+            uint64_t init_delta_step = (uint64_t)p_mp4->i_init_delta / (uint64_t)p_mp4->i_dts_compress_multiplier;
+            MP4_SAMPLE_FAIL_IF_ERR( mp4_u64_mul_overflow( (uint64_t)p_mp4->i_numframe, init_delta_step, &dts ),
+                                    "video DTS is out of range.\n" );
+        }
+        MP4_SAMPLE_FAIL_IF_ERR( p_picture->i_pts < 0 ||
+                                mp4_u64_mul_overflow( (uint64_t)p_picture->i_pts, p_mp4->i_time_inc, &cts ),
+                                "video CTS is out of range.\n" );
     }
     else
     {
-        dts = (p_picture->i_dts + p_mp4->i_start_offset) * p_mp4->i_time_inc;
-        cts = (p_picture->i_pts + p_mp4->i_start_offset) * p_mp4->i_time_inc;
+        int64_t dts_ts, cts_ts;
+        MP4_SAMPLE_FAIL_IF_ERR( p_picture->i_dts > INT64_MAX - p_mp4->i_start_offset ||
+                                p_picture->i_pts > INT64_MAX - p_mp4->i_start_offset,
+                                "video timestamp is out of range.\n" );
+        dts_ts = p_picture->i_dts + p_mp4->i_start_offset;
+        cts_ts = p_picture->i_pts + p_mp4->i_start_offset;
+        MP4_SAMPLE_FAIL_IF_ERR( dts_ts < 0 || cts_ts < 0 ||
+                                mp4_u64_mul_overflow( (uint64_t)dts_ts, p_mp4->i_time_inc, &dts ) ||
+                                mp4_u64_mul_overflow( (uint64_t)cts_ts, p_mp4->i_time_inc, &cts ),
+                                "video timestamp is out of range.\n" );
     }
 
     p_sample->dts = dts;
@@ -1463,12 +1731,15 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
                                    ? ISOM_SAMPLE_IS_NOT_LEADING : ISOM_SAMPLE_IS_UNDECODABLE_LEADING;
             if( p_sample->prop.independent == ISOM_SAMPLE_IS_INDEPENDENT )
                 p_mp4->i_last_intra_cts = p_sample->cts;
-            p_sample->prop.post_roll.identifier = p_picture->i_frame_num % p_mp4->i_max_frame_num;
+            MP4_SAMPLE_FAIL_IF_ERR( p_mp4->i_max_frame_num <= 0 || p_picture->i_frame_num < 0 ||
+                                    p_mp4->i_recovery_frame_cnt < 0,
+                                    "invalid post-roll metadata.\n" );
+            p_sample->prop.post_roll.identifier = (uint32_t)(p_picture->i_frame_num % p_mp4->i_max_frame_num);
             if( p_picture->b_keyframe && p_picture->i_type != X264_TYPE_IDR )
             {
                 /* A picture with Recovery Point SEI */
                 p_sample->prop.ra_flags = ISOM_SAMPLE_RANDOM_ACCESS_FLAG_POST_ROLL_START;
-                p_sample->prop.post_roll.complete = (p_sample->prop.post_roll.identifier + p_mp4->i_recovery_frame_cnt) % p_mp4->i_max_frame_num;
+                p_sample->prop.post_roll.complete = (uint32_t)((p_sample->prop.post_roll.identifier + (uint32_t)p_mp4->i_recovery_frame_cnt) % (uint32_t)p_mp4->i_max_frame_num);
             }
         }
         else if( p_picture->i_type == X264_TYPE_I || p_picture->i_type == X264_TYPE_P || p_picture->i_type == X264_TYPE_BREF )
@@ -1489,30 +1760,40 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
 #if HAVE_ANY_AUDIO
     mp4_audio_hnd_t *p_audio = p_mp4->audio_hnd;
     if( p_audio )
-        if( write_audio_frames( p_mp4, p_sample->dts / (double)p_audio->i_video_timescale, 0 ) )
-            return -1;
+    {
+        MP4_SAMPLE_FAIL_IF_ERR( !p_audio->i_video_timescale ||
+                                write_audio_frames( p_mp4, p_sample->dts / (double)p_audio->i_video_timescale, 0 ),
+                                "failed to write audio frame(s).\n" );
+    }
 #endif
 
     if( p_mp4->b_fragments && p_mp4->i_numframe && p_sample->prop.ra_flags != ISOM_SAMPLE_RANDOM_ACCESS_FLAG_NONE )
     {
-        MP4_FAIL_IF_ERR( lsmash_flush_pooled_samples( p_mp4->p_root, p_mp4->i_track, p_sample->dts - p_mp4->i_prev_dts ),
-                         "failed to flush the rest of samples.\n" );
+        uint64_t fragment_delta = p_sample->dts > p_mp4->i_prev_dts ? p_sample->dts - p_mp4->i_prev_dts : 0;
+        MP4_SAMPLE_FAIL_IF_ERR( fragment_delta > UINT32_MAX ||
+                                lsmash_flush_pooled_samples( p_mp4->p_root, p_mp4->i_track, (uint32_t)fragment_delta ),
+                                "failed to flush the rest of samples.\n" );
 #if HAVE_ANY_AUDIO
         if( p_audio )
-            MP4_FAIL_IF_ERR( lsmash_flush_pooled_samples( p_mp4->p_root, p_audio->i_track, p_audio->summary->samples_in_frame ),
-                             "failed to flush the rest of samples for audio.\n" );
+            MP4_SAMPLE_FAIL_IF_ERR( !p_audio->summary ||
+                                    lsmash_flush_pooled_samples( p_mp4->p_root, p_audio->i_track, p_audio->summary->samples_in_frame ),
+                                    "failed to flush the rest of samples for audio.\n" );
 #endif
-        MP4_FAIL_IF_ERR( lsmash_create_fragment_movie( p_mp4->p_root ),
-                         "failed to create a movie fragment.\n" );
+        MP4_SAMPLE_FAIL_IF_ERR( lsmash_create_fragment_movie( p_mp4->p_root ),
+                                "failed to create a movie fragment.\n" );
     }
 
     /* Append data per sample. */
-    MP4_FAIL_IF_ERR( lsmash_append_sample( p_mp4->p_root, p_mp4->i_track, p_sample ),
-                     "failed to append a video frame.\n" );
+    if( mp4_append_sample_owned( p_mp4->p_root, p_mp4->i_track, &p_sample ) )
+    {
+        MP4_LOG_ERROR( "failed to append a video frame.\n" );
+        return -1;
+    }
 
     p_mp4->i_prev_dts = dts;
     p_mp4->i_numframe++;
 
+#undef MP4_SAMPLE_FAIL_IF_ERR
     return i_size;
 }
 

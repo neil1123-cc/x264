@@ -49,9 +49,12 @@ static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest
 
     if( h->mux_fc && h->video_stm )
     {
-        av_write_trailer( h->mux_fc );
-        av_freep( &h->video_stm->codec->extradata );
-        av_freep( &h->video_stm->codec );
+        if( h->video_stm->codec )
+        {
+            av_write_trailer( h->mux_fc );
+            av_freep( &h->video_stm->codec->extradata );
+            av_freep( &h->video_stm->codec );
+        }
         av_freep( &h->video_stm );
     }
 
@@ -102,7 +105,12 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
         return -1;
     }
     h->mux_fc->oformat = mux_fmt;
-    snprintf( h->mux_fc->filename, sizeof(h->mux_fc->filename), "%s", psz_filename );
+    int filename_len = snprintf( h->mux_fc->filename, sizeof(h->mux_fc->filename), "%s", psz_filename );
+    if( filename_len < 0 || (size_t)filename_len >= sizeof(h->mux_fc->filename) )
+    {
+        close_file( h, 0, 0 );
+        return -1;
+    }
 
     if( avio_open( &h->mux_fc->pb, psz_filename, AVIO_FLAG_WRITE ) < 0 )
     {
@@ -120,7 +128,9 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
     avi_hnd_t *h = handle;
     AVCodecContext *c;
 
-    if( !h->mux_fc || h->video_stm )
+    if( !h || !p_param || !h->mux_fc || h->video_stm ||
+        p_param->i_timebase_num <= 0 || p_param->i_timebase_den <= 0 ||
+        p_param->i_width <= 0 || p_param->i_height <= 0 )
         return -1;
 
     h->video_stm = avformat_new_stream( h->mux_fc, 0 );
@@ -128,6 +138,8 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
         return -1;
 
     c = h->video_stm->codec;
+    if( !c )
+        return -1;
     c->flags |= p_param->b_repeat_headers ? 0 : AV_CODEC_FLAG_GLOBAL_HEADER;
     c->time_base.num = p_param->i_timebase_num;
     c->time_base.den = p_param->i_timebase_den;
@@ -204,6 +216,8 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
         return -1;
 
     c = h->video_stm->codec;
+    if( !c )
+        return -1;
     if( c->flags & AV_CODEC_FLAG_GLOBAL_HEADER )
     {
         c->extradata_size = i_size - p_nal[2].i_payload;

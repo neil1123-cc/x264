@@ -13,6 +13,8 @@ static int x264_af_mul_size( size_t a, size_t b, size_t *out )
 static int x264_af_buffer_size( unsigned channels, unsigned samplecount, size_t elem_size, size_t *size )
 {
     size_t samples;
+    if( !elem_size || (samplecount && !channels) )
+        return -1;
     if( x264_af_mul_size( channels, samplecount, &samples ) || x264_af_mul_size( samples, elem_size, size ) )
         return -1;
     return 0;
@@ -22,6 +24,8 @@ float **x264_af_get_buffer( unsigned channels, unsigned samplecount )
 {
     size_t sample_size;
     size_t channels_size;
+    if( samplecount && !channels )
+        return NULL;
     if( x264_af_mul_size( channels, sizeof(float*), &channels_size ) ||
         x264_af_mul_size( samplecount, sizeof(float), &sample_size ) )
         return NULL;
@@ -43,6 +47,10 @@ float **x264_af_get_buffer( unsigned channels, unsigned samplecount )
 int x264_af_resize_buffer( float **buffer, unsigned channels, unsigned samplecount )
 {
     size_t sample_size;
+    if( samplecount && !channels )
+        return -1;
+    if( channels && !buffer )
+        return -1;
     if( x264_af_mul_size( samplecount, sizeof(float), &sample_size ) )
         return -1;
     for( unsigned c = 0; c < channels; c++ )
@@ -73,11 +81,26 @@ int x264_af_resize_fill_buffer( float **buffer, unsigned out_samplecount, unsign
 
 float **x264_af_dup_buffer( float **buffer, unsigned channels, unsigned samplecount )
 {
+    size_t sample_size;
+    if( samplecount && (!channels || !buffer) )
+        return NULL;
+    if( x264_af_mul_size( samplecount, sizeof(float), &sample_size ) )
+        return NULL;
     float **buf = x264_af_get_buffer( channels, samplecount );
     if( !buf )
         return NULL;
     for( unsigned c = 0; c < channels; c++ )
-        memcpy( buf[c], buffer[c], sizeof(float) * (size_t)samplecount );
+    {
+        if( sample_size )
+        {
+            if( !buffer[c] )
+            {
+                x264_af_free_buffer( buf, channels );
+                return NULL;
+            }
+            memcpy( buf[c], buffer[c], sample_size );
+        }
+    }
     return buf;
 }
 
@@ -92,19 +115,35 @@ void x264_af_free_buffer( float **buffer, unsigned channels )
 
 int x264_af_cat_buffer( float **buf, unsigned bufsamples, float **in, unsigned insamples, unsigned channels )
 {
+    if( (bufsamples || insamples) && !channels )
+        return -1;
     if( bufsamples > UINT_MAX - insamples )
         return -1;
+    if( channels && !buf )
+        return -1;
+    if( insamples )
+    {
+        if( !in )
+            return -1;
+        for( unsigned c = 0; c < channels; c++ )
+            if( !in[c] )
+                return -1;
+    }
     if( x264_af_resize_buffer( buf, channels, bufsamples + insamples ) < 0 )
         return -1;
     for( unsigned c = 0; c < channels; c++ )
+    {
+        if( insamples && !buf[c] )
+            return -1;
         for( unsigned s = 0; s < insamples; s++ )
             buf[c][bufsamples+s] = in[c][s];
+    }
     return 0;
 }
 
 static inline int x264_is_interleaved_format(int fmt)
 {
-    return fmt <= SMPFMT_DBL;
+    return fmt >= SMPFMT_U8 && fmt <= SMPFMT_DBL;
 }
 
 static inline int x264_interleaved_format(int fmt)
@@ -116,31 +155,46 @@ static inline int x264_interleaved_format(int fmt)
 
 float **x264_af_deinterleave ( float *samples, unsigned channels, unsigned samplecount )
 {
+    size_t totalsamples;
+    if( x264_af_mul_size( channels, samplecount, &totalsamples ) ||
+        (samplecount && !channels) || (totalsamples && !samples) )
+        return NULL;
     float **deint = x264_af_get_buffer( channels, samplecount );
     if( !deint )
         return NULL;
     for( unsigned s = 0; s < samplecount; s++ )
         for( unsigned c = 0; c < channels; c++ )
-            deint[c][s] = samples[s*channels + c];
+            deint[c][s] = samples[(size_t)s * channels + c];
     return deint;
 }
 
 float *x264_af_interleave ( float **in, unsigned channels, unsigned samplecount )
 {
     size_t size;
+    if( samplecount && !channels )
+        return NULL;
     if( x264_af_buffer_size( channels, samplecount, sizeof(float), &size ) )
         return NULL;
+    if( !size )
+        return NULL;
+    if( !in )
+        return NULL;
+    for( unsigned c = 0; c < channels; c++ )
+        if( !in[c] )
+            return NULL;
     float *inter = size ? malloc( size ) : NULL;
-    if( !inter && size )
+    if( !inter )
         return NULL;
     for( unsigned c = 0; c < channels; c++ )
         for( unsigned s = 0; s < samplecount; s++ )
-            inter[s*channels + c] = in[c][s];
+            inter[(size_t)s * channels + c] = in[c][s];
     return inter;
 }
 
 float **x264_af_deinterleave2( uint8_t *samples, enum SampleFmt fmt, unsigned channels, unsigned samplecount )
 {
+    if( samplecount && (!channels || !samples) )
+        return NULL;
     float  *in  = (float*) x264_af_convert( SMPFMT_FLT, samples, fmt, channels, samplecount );
     if( !in )
         return NULL;
@@ -157,7 +211,7 @@ float **x264_af_deinterleave2( uint8_t *samples, enum SampleFmt fmt, unsigned ch
             return NULL;
         }
         for (i = 0; i < channels; ++i) {
-            float *base = &in[i * samplecount];
+            float *base = &in[(size_t)i * samplecount];
             for (j = 0; j < samplecount; ++j)
                 out[i][j] = base[j];
         }
@@ -168,6 +222,8 @@ float **x264_af_deinterleave2( uint8_t *samples, enum SampleFmt fmt, unsigned ch
 
 uint8_t *x264_af_interleave2( enum SampleFmt outfmt, float **in, unsigned channels, unsigned samplecount )
 {
+    if( samplecount && (!channels || !in) )
+        return NULL;
     float   *tmp = x264_af_interleave( in, channels, samplecount );
     if( !tmp )
         return NULL;
@@ -178,14 +234,20 @@ uint8_t *x264_af_interleave2( enum SampleFmt outfmt, float **in, unsigned channe
 
 uint8_t *x264_af_interleave3( enum SampleFmt outfmt, float **in, unsigned channels, unsigned samplecount, int *map )
 {
-    void *map_tmp[8];
+    float *map_tmp[8];
     if( channels > ARRAY_ELEMS(map_tmp) )
         return NULL;
+    if( !samplecount )
+        return NULL;
+    if( !channels || !in || !map )
+        return NULL;
     for( unsigned i = 0; i < channels; i++ )
-        map_tmp[i] = in[i];
-    for( unsigned i = 0; i < channels; i++ )
-        in[i] = map_tmp[map[i]];
-    float   *tmp = x264_af_interleave( in, channels, samplecount );
+    {
+        if( map[i] < 0 || (unsigned)map[i] >= channels || !in[map[i]] )
+            return NULL;
+        map_tmp[i] = in[map[i]];
+    }
+    float   *tmp = x264_af_interleave( map_tmp, channels, samplecount );
     if( !tmp )
         return NULL;
     uint8_t *out = x264_af_convert( outfmt, (uint8_t*) tmp, SMPFMT_FLT, channels, samplecount );
@@ -229,11 +291,18 @@ uint8_t *x264_af_convert( enum SampleFmt outfmt, uint8_t *in, enum SampleFmt fmt
 {
     size_t totalsamples;
     size_t sz;
-    if( x264_af_buffer_size( channels, samplecount, samplesize( outfmt ), &sz ) ||
+    int in_sample_size  = samplesize( fmt );
+    int out_sample_size = samplesize( outfmt );
+    if( in_sample_size <= 0 || out_sample_size <= 0 ||
+        x264_af_buffer_size( channels, samplecount, (size_t)out_sample_size, &sz ) ||
         x264_af_mul_size( channels, samplecount, &totalsamples ) )
         return NULL;
-    uint8_t *out = sz ? malloc( sz ) : NULL;
-    if( !out && sz )
+    if( !sz )
+        return NULL;
+    if( !in )
+        return NULL;
+    uint8_t *out = malloc( sz );
+    if( !out )
         return NULL;
 
     fmt = x264_interleaved_format(fmt);
@@ -255,25 +324,25 @@ uint8_t *x264_af_convert( enum SampleFmt outfmt, uint8_t *in, enum SampleFmt fmt
     }
 #define INPUT( itype ) (((itype*)in)[i])
 
-    CONVERT( SMPFMT_U8,  SMPFMT_S16, int16_t, (INPUT( uint8_t ) - 0x80) << 8 );
-    CONVERT( SMPFMT_U8,  SMPFMT_S32, int32_t, (INPUT( uint8_t ) - 0x80) << 24 );
-    CONVERT( SMPFMT_U8,  SMPFMT_FLT, float,   (INPUT( uint8_t ) - 0x80) * (1.0 / (1<<7)) );
-    CONVERT( SMPFMT_U8,  SMPFMT_DBL, double,  (INPUT( uint8_t ) - 0x80) * (1.0 / (1<<7)) );
+    CONVERT( SMPFMT_U8,  SMPFMT_S16, int16_t, ((int)INPUT( uint8_t ) - 0x80) * 256 );
+    CONVERT( SMPFMT_U8,  SMPFMT_S32, int32_t, ((int)INPUT( uint8_t ) - 0x80) * 16777216 );
+    CONVERT( SMPFMT_U8,  SMPFMT_FLT, float,   (INPUT( uint8_t ) - 0x80) * (1.0f / 128.0f) );
+    CONVERT( SMPFMT_U8,  SMPFMT_DBL, double,  (INPUT( uint8_t ) - 0x80) * (1.0 / 128.0) );
     CONVERT( SMPFMT_S16, SMPFMT_U8,  uint8_t, (INPUT( int16_t ) >> 8) + 0x80 );
-    CONVERT( SMPFMT_S16, SMPFMT_S32, int32_t,  INPUT( int16_t ) << 16 );
-    CONVERT( SMPFMT_S16, SMPFMT_FLT, float,    INPUT( int16_t ) * (1.0 / (1<<15)) );
-    CONVERT( SMPFMT_S16, SMPFMT_DBL, double,   INPUT( int16_t ) * (1.0 / (1<<15)) );
+    CONVERT( SMPFMT_S16, SMPFMT_S32, int32_t,  (int32_t)INPUT( int16_t ) * 65536 );
+    CONVERT( SMPFMT_S16, SMPFMT_FLT, float,    INPUT( int16_t ) * (1.0f / 32768.0f) );
+    CONVERT( SMPFMT_S16, SMPFMT_DBL, double,   INPUT( int16_t ) * (1.0 / 32768.0) );
     CONVERT( SMPFMT_S32, SMPFMT_U8,  uint8_t, (INPUT( int32_t ) >> 24) + 0x80 );
     CONVERT( SMPFMT_S32, SMPFMT_S16, int16_t,  INPUT( int32_t ) >> 16 );
-    CONVERT( SMPFMT_S32, SMPFMT_FLT, float,    INPUT( int32_t ) * (1.0 / (1<<31)) );
-    CONVERT( SMPFMT_S32, SMPFMT_DBL, double,   INPUT( int32_t ) * (1.0 / (1<<31)) );
-    CONVERT( SMPFMT_FLT, SMPFMT_U8,  uint8_t,  clip8( lrintf(  INPUT( float )  * (1<<7) ) + 0x80 ) );
-    CONVERT( SMPFMT_FLT, SMPFMT_S16, int16_t, clip16( lrintf(  INPUT( float )  * (1<<15) ) ) );
-    CONVERT( SMPFMT_FLT, SMPFMT_S32, int32_t, clip32( llrintf( INPUT( float )  * (1U<<31) ) ) );
+    CONVERT( SMPFMT_S32, SMPFMT_FLT, float,    INPUT( int32_t ) * (1.0f / 2147483648.0f) );
+    CONVERT( SMPFMT_S32, SMPFMT_DBL, double,   INPUT( int32_t ) * (1.0 / 2147483648.0) );
+    CONVERT( SMPFMT_FLT, SMPFMT_U8,  uint8_t,  clip8( (int64_t)lrintf(  INPUT( float )  * 128.0f ) + 0x80 ) );
+    CONVERT( SMPFMT_FLT, SMPFMT_S16, int16_t, clip16( (int64_t)lrintf(  INPUT( float )  * 32768.0f ) ) );
+    CONVERT( SMPFMT_FLT, SMPFMT_S32, int32_t, clip32( (int64_t)llrintf( INPUT( float )  * 2147483648.0f ) ) );
     CONVERT( SMPFMT_FLT, SMPFMT_DBL, double,   INPUT( float ) );
-    CONVERT( SMPFMT_DBL, SMPFMT_U8,  uint8_t,  clip8( lrintf(  INPUT( double ) * (1<<7) ) + 0x80 ) );
-    CONVERT( SMPFMT_DBL, SMPFMT_S16, int16_t, clip16( lrintf(  INPUT( double ) * (1<<15) ) ) );
-    CONVERT( SMPFMT_DBL, SMPFMT_S32, int32_t, clip32( llrintf( INPUT( double ) * (1U<<31) ) ) );
+    CONVERT( SMPFMT_DBL, SMPFMT_U8,  uint8_t,  clip8( (int64_t)lrint(  INPUT( double ) * 128.0 ) + 0x80 ) );
+    CONVERT( SMPFMT_DBL, SMPFMT_S16, int16_t, clip16( (int64_t)lrint(  INPUT( double ) * 32768.0 ) ) );
+    CONVERT( SMPFMT_DBL, SMPFMT_S32, int32_t, clip32( (int64_t)llrint( INPUT( double ) * 2147483648.0 ) ) );
     CONVERT( SMPFMT_DBL, SMPFMT_FLT, float,    INPUT( double ) );
 #undef INPUT
 #undef CONVERT

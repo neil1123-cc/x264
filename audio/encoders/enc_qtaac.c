@@ -55,6 +55,42 @@ typedef struct enc_qtaac_t
     CodecConfig config;
 } enc_qtaac_t;
 
+static int set_framesize( audio_info_t *info, const char *name )
+{
+    if( info->framelen <= 0 || info->samplesize <= 0 ||
+        (uint64_t)info->framelen > SIZE_MAX / (uint64_t)info->samplesize )
+    {
+        x264_cli_log( name, X264_LOG_ERROR, "invalid audio frame size\n" );
+        return -1;
+    }
+    info->framesize = (size_t)info->framelen * (size_t)info->samplesize;
+    return 0;
+}
+
+static int get_sample_end( int64_t first_sample, int framelen, int64_t *last_sample )
+{
+    if( first_sample < 0 || framelen <= 0 || first_sample > INT64_MAX - framelen )
+        return -1;
+    *last_sample = first_sample + framelen;
+    return 0;
+}
+
+static int add_frame_dts( int64_t *dts, int framelen )
+{
+    if( framelen <= 0 || ( *dts != INVALID_DTS && *dts > INT64_MAX - framelen ) )
+        return -1;
+    *dts += framelen;
+    return 0;
+}
+
+static void add_skip_samples( int64_t *last_sample, uint64_t samplecount )
+{
+    if( *last_sample >= 0 && samplecount <= (uint64_t)INT64_MAX - (uint64_t)*last_sample )
+        *last_sample += samplecount;
+    else
+        *last_sample = INT64_MAX;
+}
+
 enum
 {
     BitRateControlMode_LC_ABR            = 0,
@@ -536,8 +572,14 @@ static hnd_t qtaac_init( hnd_t filter_chain, const char *opt_str )
 
     audio_hnd_t *chain = filter_chain;
     enc_qtaac_t *h = calloc( 1, sizeof( enc_qtaac_t ) );
+    if( !h )
+    {
+        free( opts );
+        return NULL;
+    }
     h->filter_chain = chain;
     h->info = chain->info;
+    h->info.opaque = NULL;
     h->info.codec_name = "aac";
 
     h->config.he_flag = x264_otob( x264_get_option( "sbr", opts ), 0 );
@@ -568,6 +610,7 @@ static hnd_t qtaac_init( hnd_t filter_chain, const char *opt_str )
     h->info.samplerate = x264_otof( x264_get_option( "samplerate", opts ), chain->info.samplerate );
 
     free( opts );
+    opts = NULL;
 
     if( h->info.samplerate > chain->info.samplerate )
     {
@@ -596,17 +639,28 @@ static hnd_t qtaac_init( hnd_t filter_chain, const char *opt_str )
     if( QTGetComponentProperty( h->ci, kQTPropertyClass_SCAudio, kQTSCAudioPropertyID_BasicDescription, sizeof(outdesc), &outdesc, NULL ) != noErr )
         goto error;
 
+    if( outdesc.mSampleRate <= 0 || outdesc.mSampleRate > INT_MAX ||
+        outdesc.mChannelsPerFrame <= 0 || outdesc.mChannelsPerFrame > 8 ||
+        outdesc.mFramesPerPacket <= 0 || outdesc.mFramesPerPacket > INT_MAX )
+    {
+        x264_cli_log( "qtaac", X264_LOG_ERROR, "invalid quicktime audio parameters\n" );
+        goto error;
+    }
+
     h->info.samplerate     = outdesc.mSampleRate;
     h->info.timebase       = (timebase_t){ 1, h->info.samplerate };
     h->info.channels       = outdesc.mChannelsPerFrame;
     h->info.framelen       = outdesc.mFramesPerPacket;
     h->info.chansize       = 4;
     h->info.samplesize     = h->info.channels * h->info.chansize;
-    h->info.framesize      = h->info.framelen * h->info.samplesize;
+    if( set_framesize( &h->info, "qtaac" ) )
+        goto error;
     h->info.depth          = 32;
     h->info.last_delta     = h->info.framelen;
 
     audio_aac_info_t *aacinfo = malloc( sizeof( audio_aac_info_t ) );
+    if( !aacinfo )
+        goto error;
     aacinfo->has_sbr          = !!h->config.he_flag;
     h->info.opaque            = aacinfo;
 
@@ -617,7 +671,9 @@ static hnd_t qtaac_init( hnd_t filter_chain, const char *opt_str )
     h->last_dts = INVALID_DTS;
     h->finishing = 0;
     h->samplebuffer = NULL;
-    h->bufsize = size;
+    if( size > INT_MAX )
+        goto error;
+    h->bufsize = (int)size;
     if( ( h->buffer = malloc( h->bufsize )) == NULL )
         goto error;
 
@@ -630,9 +686,11 @@ static hnd_t qtaac_init( hnd_t filter_chain, const char *opt_str )
     UInt32 asc_size;
 
     read_AudioSpecificConfig( esds_buf, size, &asc, &asc_size );
-    if( asc_size <= 0 || !asc )
+    if( asc_size <= 0 || asc_size > INT_MAX || !asc )
         goto error;
     h->info.extradata      = calloc( 1, asc_size );
+    if( !h->info.extradata )
+        goto error;
     h->info.extradata_size = asc_size;
     memcpy( h->info.extradata, asc, asc_size );
 
@@ -645,6 +703,19 @@ static hnd_t qtaac_init( hnd_t filter_chain, const char *opt_str )
     return h;
 
 error:
+    free( opts );
+    if( h )
+    {
+        if( h->ci )
+            CloseComponent( h->ci );
+        free( h->buffer );
+        free( h->samplebuffer );
+        free( h->info.extradata );
+        free( h->info.opaque );
+        if( h->in )
+            x264_af_free_packet( h->in );
+        free( h );
+    }
     return NULL;
 }
 
@@ -687,8 +758,13 @@ static OSStatus pcmInputDataProc( ComponentInstance ci,
 
     if( h->in )
         x264_af_free_packet( h->in );
+    h->in = NULL;
 
-    if( !( h->in = x264_af_get_samples( h->filter_chain, h->last_sample, h->last_sample + h->info.framelen ) ) )
+    int64_t last_sample;
+    if( get_sample_end( h->last_sample, h->info.framelen, &last_sample ) )
+        goto error;
+
+    if( !( h->in = x264_af_get_samples( h->filter_chain, h->last_sample, last_sample ) ) )
         goto eof_reached;
 
     if( h->in->samplecount < requested_packets )
@@ -698,18 +774,36 @@ static OSStatus pcmInputDataProc( ComponentInstance ci,
         h->last_dts = h->last_sample;
     h->last_sample += h->in->samplecount;
 
-    if( h->samplebuffer )
-        free( h->samplebuffer );
+    if( h->info.samplesize <= 0 ||
+        h->in->samplecount > UINT32_MAX / (unsigned)h->info.samplesize )
+        goto error;
+    UInt32 data_size = h->in->samplecount * h->info.samplesize;
+
+    free( h->samplebuffer );
+    h->samplebuffer = NULL;
     h->samplebuffer = x264_af_interleave3( SMPFMT_FLT, h->in->samples, h->info.channels, h->in->samplecount, qt_channel_map[h->info.channels-1] );
+    if( h->in->samplecount && !h->samplebuffer )
+        goto error;
 
     ioData->mNumberBuffers = 1;
     ioData->mBuffers[0].mNumberChannels = h->info.channels;
-    ioData->mBuffers[0].mDataByteSize = h->info.samplesize * h->in->samplecount;
+    ioData->mBuffers[0].mDataByteSize = data_size;
     ioData->mBuffers[0].mData = h->samplebuffer;
 
     *ioNumberDataPackets = h->in->samplecount;
 
     return noErr;
+
+error:
+    if( h->in )
+        x264_af_free_packet( h->in );
+    h->in = NULL;
+    ioData->mNumberBuffers = 0;
+    ioData->mBuffers[0].mData = NULL;
+    ioData->mBuffers[0].mDataByteSize = 0;
+    *ioNumberDataPackets = 0;
+
+    return -1;
 
 eof_reached:
     h->finishing = 1;
@@ -740,13 +834,34 @@ static audio_packet_t *fill_buffer( enc_qtaac_t *h )
 
     OSStatus err = SCAudioFillBuffer( h->ci, pcmInputDataProc, h, &npackets, &list, &desc );
 
-    if( err || desc.mDataByteSize == 0 || npackets == 0 )
+    if( err )
+    {
+        h->finishing = 1;
         return NULL;
+    }
+    if( desc.mDataByteSize == 0 || npackets == 0 )
+        return NULL;
+    if( desc.mDataByteSize > INT_MAX )
+    {
+        h->finishing = 1;
+        return NULL;
+    }
 
     out = calloc( 1, sizeof(audio_packet_t) );
+    if( !out )
+    {
+        h->finishing = 1;
+        return NULL;
+    }
     out->info = h->info;
-    out->size = desc.mDataByteSize;
+    out->size = (int)desc.mDataByteSize;
     out->data = malloc( desc.mDataByteSize );
+    if( !out->data )
+    {
+        h->finishing = 1;
+        x264_af_free_packet( out );
+        return NULL;
+    }
     memcpy( out->data, h->buffer, out->size );
 
     return out;
@@ -767,15 +882,23 @@ static audio_packet_t *get_next_packet( hnd_t handle )
 
     } while( !out && !h->finishing );
 
+    if( !out )
+        return NULL;
+
     out->dts = h->last_dts;
-    h->last_dts += h->info.framelen;
+    if( add_frame_dts( &h->last_dts, h->info.framelen ) )
+    {
+        x264_af_free_packet( out );
+        return NULL;
+    }
 
     return out;
 }
 
 static void skip_samples( hnd_t handle, uint64_t samplecount )
 {
-    ((enc_qtaac_t*)handle)->last_sample += samplecount;
+    enc_qtaac_t *h = handle;
+    add_skip_samples( &h->last_sample, samplecount );
 }
 
 static audio_packet_t *finish( hnd_t encoder )
@@ -789,7 +912,11 @@ static audio_packet_t *finish( hnd_t encoder )
         return NULL;
 
     out->dts = h->last_dts;
-    h->last_dts += h->info.framelen;
+    if( add_frame_dts( &h->last_dts, h->info.framelen ) )
+    {
+        x264_af_free_packet( out );
+        return NULL;
+    }
 
     return out;
 }

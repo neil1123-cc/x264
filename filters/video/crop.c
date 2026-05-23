@@ -25,6 +25,7 @@
  *****************************************************************************/
 
 #include "video.h"
+#include <limits.h>
 
 #define NAME "crop"
 #define FAIL_IF_ERROR( cond, ... ) FAIL_IF_ERR( cond, NAME, __VA_ARGS__ )
@@ -73,12 +74,31 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
     static const char * const optlist[] = { "left", "top", "right", "bottom", NULL };
     char **opts = x264_split_options( opt_string, optlist );
     if( !opts )
+    {
+        free( h );
         return -1;
+    }
 
     int err = handle_opts( h, info, opts, optlist );
     free( opts );
     if( err )
+    {
+        free( h );
         return -1;
+    }
+
+    if( info->width <= 0 || info->height <= 0 ||
+        h->dims[0] > INT_MAX - h->dims[2] ||
+        h->dims[1] > INT_MAX - h->dims[3] ||
+        h->dims[0] + h->dims[2] >= info->width ||
+        h->dims[1] + h->dims[3] >= info->height )
+    {
+        x264_cli_log( NAME, X264_LOG_ERROR, "invalid output resolution %dx%d\n",
+                      info->width - h->dims[0] - h->dims[2],
+                      info->height - h->dims[1] - h->dims[3] );
+        free( h );
+        return -1;
+    }
 
     h->dims[2] = info->width  - h->dims[0] - h->dims[2];
     h->dims[3] = info->height - h->dims[1] - h->dims[3];

@@ -258,7 +258,9 @@ static void suggest_num_range( int start, int end, const char *cur, size_t cur_l
     char buf[16];
     for( int i = start; i <= end; i++ )
     {
-        snprintf( buf, sizeof( buf ), "%d", i );
+        int written = snprintf( buf, sizeof( buf ), "%d", i );
+        if( written < 0 || (size_t)written >= sizeof( buf ) )
+            continue;
         suggest( buf, cur, cur_len );
     }
 }
@@ -295,6 +297,8 @@ static void suggest_token( const char *s, int delim, const char *cur, size_t cur
 
 int x264_cli_autocomplete( const char *prev, const char *cur )
 {
+    if( !prev || !cur )
+        return 1;
     size_t cur_len = strlen( cur );
     if( 0 );
     OPT( "--alternative-transfer" )

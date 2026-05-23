@@ -42,8 +42,11 @@
 #include <fcntl.h>    /* _O_BINARY */
 #endif
 
-#include <signal.h>
+#include <ctype.h>
+#include <errno.h>
+#include <float.h>
 #include <getopt.h>
+#include <signal.h>
 #include <time.h>
 
 /* Include FFmpeg headers first to avoid macro redefinition warnings */
@@ -90,6 +93,172 @@ static int append_audio_option( char *dst, size_t dst_size, size_t *len, const c
     return 0;
 }
 
+static const char *cli_skip_space( const char *arg )
+{
+    while( isspace( (unsigned char)*arg ) )
+        arg++;
+    return arg;
+}
+
+static int cli_at_end( const char *arg )
+{
+    return !*cli_skip_space( arg );
+}
+
+static int cli_at_line_end( const char *arg )
+{
+    arg = cli_skip_space( arg );
+    return !*arg || *arg == '#';
+}
+
+static int parse_cli_int_end( const char *arg, char **end, int *dst )
+{
+    long value;
+
+    if( !arg || !end || !dst )
+        return -1;
+
+    errno = 0;
+    value = strtol( arg, end, 10 );
+    if( *end == arg || errno == ERANGE || value < INT_MIN || value > INT_MAX )
+        return -1;
+
+    *dst = (int)value;
+    return 0;
+}
+
+static int parse_cli_int( const char *arg, int *dst )
+{
+    char *end;
+
+    if( parse_cli_int_end( arg, &end, dst ) || !cli_at_end( end ) )
+        return -1;
+
+    return 0;
+}
+
+static int parse_cli_uint64_end( const char *arg, char **end, uint64_t *dst )
+{
+    const char *p;
+    unsigned long long value;
+
+    if( !arg || !end || !dst )
+        return -1;
+
+    p = cli_skip_space( arg );
+    if( *p == '-' )
+        return -1;
+
+    errno = 0;
+    value = strtoull( arg, end, 10 );
+    if( *end == arg || errno == ERANGE )
+        return -1;
+
+    *dst = (uint64_t)value;
+    return 0;
+}
+
+static int parse_cli_uint64( const char *arg, uint64_t *dst )
+{
+    char *end;
+
+    if( parse_cli_uint64_end( arg, &end, dst ) || !cli_at_end( end ) )
+        return -1;
+
+    return 0;
+}
+
+static int parse_cli_uint32( const char *arg, uint32_t *dst )
+{
+    uint64_t value;
+
+    if( parse_cli_uint64( arg, &value ) || value > UINT32_MAX )
+        return -1;
+
+    *dst = (uint32_t)value;
+    return 0;
+}
+
+static int parse_cli_double_end( const char *arg, char **end, double *dst )
+{
+    const char *p;
+    double value;
+
+    if( !arg || !end || !dst )
+        return -1;
+
+    p = cli_skip_space( arg );
+    if( *p == '+' || *p == '-' )
+        p++;
+    if( !( (*p >= '0' && *p <= '9') || *p == '.' ) )
+        return -1;
+
+    errno = 0;
+    value = strtod( arg, end );
+    if( *end == arg || errno == ERANGE )
+        return -1;
+
+    *dst = value;
+    return 0;
+}
+
+static int parse_cli_double( const char *arg, double *dst )
+{
+    char *end;
+
+    if( parse_cli_double_end( arg, &end, dst ) || !cli_at_end( end ) )
+        return -1;
+
+    return 0;
+}
+
+static int parse_cli_float( const char *arg, float *dst )
+{
+    double value;
+
+    if( parse_cli_double( arg, &value ) || value < -FLT_MAX || value > FLT_MAX )
+        return -1;
+
+    *dst = (float)value;
+    return 0;
+}
+
+static int parse_cli_display_size( const char *arg, double *width, double *height )
+{
+    char *end;
+
+    if( parse_cli_double_end( arg, &end, width ) || *end != 'x' ||
+        parse_cli_double( end + 1, height ) )
+        return -1;
+
+    return 0;
+}
+
+static int parse_cli_timebase( const char *arg, uint32_t fallback_num, uint64_t *num, uint64_t *den )
+{
+    char *end;
+    uint64_t value;
+
+    if( parse_cli_uint64_end( arg, &end, &value ) )
+        return -1;
+
+    if( *end == '/' )
+    {
+        *num = value;
+        if( parse_cli_uint64( end + 1, den ) )
+            return -1;
+    }
+    else if( cli_at_end( end ) )
+    {
+        *num = fallback_num;
+        *den = value;
+    }
+    else
+        return -1;
+
+    return *num && *den ? 0 : -1;
+}
+
 #if HAVE_FFMS
 #include <ffms.h>
 #endif
@@ -121,22 +290,44 @@ static int get_argv_utf8( int *argc_ptr, char ***argv_ptr )
     if( argv_utf16 )
     {
         int argc = *argc_ptr;
-        int offset = (argc+1) * sizeof(char*);
-        int size = offset;
+        int valid = argc >= 0 && (size_t)argc < SIZE_MAX / sizeof(char*) - 1;
+        size_t offset = valid ? ((size_t)argc + 1) * sizeof(char*) : 0;
+        size_t size = offset;
 
-        for( int i = 0; i < argc; i++ )
-            size += WideCharToMultiByte( CP_UTF8, 0, argv_utf16[i], -1, NULL, 0, NULL, NULL );
+        if( valid )
+            for( int i = 0; i < argc; i++ )
+            {
+                int bytes = WideCharToMultiByte( CP_UTF8, 0, argv_utf16[i], -1, NULL, 0, NULL, NULL );
+                if( bytes <= 0 || size > SIZE_MAX - (size_t)bytes || size + (size_t)bytes > INT_MAX )
+                {
+                    valid = 0;
+                    break;
+                }
+                size += (size_t)bytes;
+            }
 
-        char **argv = *argv_ptr = malloc( size );
+        char **argv = valid ? malloc( size ) : NULL;
         if( argv )
         {
             for( int i = 0; i < argc; i++ )
             {
                 argv[i] = (char*)argv + offset;
-                offset += WideCharToMultiByte( CP_UTF8, 0, argv_utf16[i], -1, argv[i], size-offset, NULL, NULL );
+                int bytes = WideCharToMultiByte( CP_UTF8, 0, argv_utf16[i], -1, argv[i], (int)(size - offset), NULL, NULL );
+                if( bytes <= 0 )
+                {
+                    valid = 0;
+                    break;
+                }
+                offset += (size_t)bytes;
             }
-            argv[argc] = NULL;
-            ret = 1;
+            if( valid )
+            {
+                argv[argc] = NULL;
+                *argv_ptr = argv;
+                ret = 1;
+            }
+            else
+                free( argv );
         }
         LocalFree( argv_utf16 );
     }
@@ -579,19 +770,28 @@ static char const *strtable_lookup( const char * const table[], int idx )
     return ( idx >= 0 && idx < i && *table[idx] ) ? table[idx] : "???";
 }
 
-static char *stringify_names( char *buf, const char * const names[] )
+static char *stringify_names_limited( char *buf, size_t buf_size, const char * const names[] )
 {
-    int i = 0;
-    char *p = buf;
-    for( p[0] = 0; names[i]; i++ )
+    if( !buf || !buf_size )
+        return buf;
+    size_t len = 0;
+    buf[0] = 0;
+    for( int i = 0; names[i]; i++ )
         if( *names[i] )
         {
-            if( p != buf )
-                p += sprintf( p, ", " );
-            p += sprintf( p, "%s", names[i] );
+            int written = snprintf( buf + len, buf_size - len, "%s%s", len ? ", " : "", names[i] );
+            if( written < 0 )
+                break;
+            if( (size_t)written >= buf_size - len )
+            {
+                buf[buf_size-1] = 0;
+                break;
+            }
+            len += (size_t)written;
         }
     return buf;
 }
+#define stringify_names( buf, names ) stringify_names_limited( buf, sizeof(buf), names )
 
 #define INDENT "                                "
 #define INDENT_LEN 32 // strlen( INDENT )
@@ -1778,9 +1978,9 @@ static int select_input( const char *demuxer, char *used_demuxer, size_t used_de
 
         FAIL_IF_ERROR( !(*p_handle), "could not open input file `%s' via any method!\n", filename );
     }
-    if( strlen( module ) >= used_demuxer_size )
+    int module_len = snprintf( used_demuxer, used_demuxer_size, "%s", module );
+    if( module_len < 0 || (size_t)module_len >= used_demuxer_size )
         return -1;
-    strcpy( used_demuxer, module );
 
     return 0;
 }
@@ -1883,9 +2083,9 @@ static int select_audio_demuxer( const char *demuxer, char *used_demuxer, size_t
         *encoder = "copy";
 #endif
 
-    if( strlen( module ) >= used_demuxer_size )
+    int module_len = snprintf( used_demuxer, used_demuxer_size, "%s", module );
+    if( module_len < 0 || (size_t)module_len >= used_demuxer_size )
         return -1;
-    strcpy( used_demuxer, module );
     return 0;
 }
 
@@ -2012,10 +2212,12 @@ static int parse( int argc, char **argv, x264_param_t *param, cli_opt_t *opt )
                 print_version_info();
                 exit(0);
             case OPT_FRAMES:
-                param->i_frame_total = X264_MAX( atoi( optarg ), 0 );
+                b_error |= parse_cli_int( optarg, &param->i_frame_total );
+                param->i_frame_total = X264_MAX( param->i_frame_total, 0 );
                 break;
             case OPT_SEEK:
-                opt->i_seek = X264_MAX( atoi( optarg ), 0 );
+                b_error |= parse_cli_int( optarg, &opt->i_seek );
+                opt->i_seek = X264_MAX( opt->i_seek, 0 );
                 break;
             case 'o':
                 output_filename = optarg;
@@ -2046,7 +2248,8 @@ static int parse( int argc, char **argv, x264_param_t *param, cli_opt_t *opt )
                 b_thread_input = 1;
                 break;
             case OPT_DEMUXER_THREADS:
-                input_opt.demuxer_threads = X264_MAX( atoi( optarg ), 1 );
+                b_error |= parse_cli_int( optarg, &input_opt.demuxer_threads );
+                input_opt.demuxer_threads = X264_MAX( input_opt.demuxer_threads, 1 );
                 break;
             case OPT_QUIET:
                 cli_log_level = param->i_log_level = X264_LOG_NONE;
@@ -2058,7 +2261,7 @@ static int parse( int argc, char **argv, x264_param_t *param, cli_opt_t *opt )
                 if( !parse_enum_value( optarg, x264_log_level_names, &cli_log_level ) )
                     cli_log_level += X264_LOG_NONE;
                 else
-                    cli_log_level = atoi( optarg );
+                    b_error |= parse_cli_int( optarg, &cli_log_level );
                 param->i_log_level = cli_log_level;
                 break;
             case OPT_STYLISH:
@@ -2071,7 +2274,7 @@ static int parse( int argc, char **argv, x264_param_t *param, cli_opt_t *opt )
                 if( !parse_enum_value( optarg, x264_log_level_names, &cli_log_file_level ) )
                     cli_log_file_level += X264_LOG_NONE;
                 else
-                    cli_log_file_level = atoi( optarg );
+                    b_error |= parse_cli_int( optarg, &cli_log_file_level );
                 goto generic_option;
             case OPT_NOPROGRESS:
                 opt->b_progress = 0;
@@ -2128,10 +2331,10 @@ static int parse( int argc, char **argv, x264_param_t *param, cli_opt_t *opt )
                 input_opt.colorspace = optarg;
                 break;
             case OPT_INPUT_DEPTH:
-                input_opt.bit_depth = atoi( optarg );
+                b_error |= parse_cli_int( optarg, &input_opt.bit_depth );
                 break;
             case OPT_OUTPUT_DEPTH:
-                param->i_bitdepth = atoi( optarg );
+                b_error |= parse_cli_int( optarg, &param->i_bitdepth );
                 break;
             case OPT_DTS_COMPRESSION:
                 output_opt.use_dts_compress = 1;
@@ -2186,22 +2389,26 @@ static int parse( int argc, char **argv, x264_param_t *param, cli_opt_t *opt )
                 FAIL_IF_ERROR( parse_enum_name( optarg, audio_demuxers, &audio_demuxer ), "Unknown audio demuxer `%s'\n", optarg );
                 break;
             case OPT_AUDIOTRACK:
-                audio_track = atoi( optarg );
+                b_error |= parse_cli_int( optarg, &audio_track );
                 break;
             case OPT_AUDIOBITRATE:
-                audio_bitrate = atof( optarg );
-                FAIL_IF_ERROR( audio_bitrate <= 0, "bitrate must be > 0.\n" );
+                b_error |= parse_cli_float( optarg, &audio_bitrate );
+                FAIL_IF_ERROR( !b_error && audio_bitrate <= 0, "bitrate must be > 0.\n" );
                 break;
             case OPT_AUDIOQUALITY:
-                audio_quality = (float) atof( optarg );
-                audio_quality_set = 1;
+                if( parse_cli_float( optarg, &audio_quality ) )
+                    b_error = 1;
+                else
+                    audio_quality_set = 1;
                 break;
             case OPT_AUDIOCODECQUALITY:
-                acodec_quality = (float) atof( optarg );
-                acodec_quality_set = 1;
+                if( parse_cli_float( optarg, &acodec_quality ) )
+                    b_error = 1;
+                else
+                    acodec_quality_set = 1;
                 break;
             case OPT_AUDIOSAMPLERATE:
-                audio_samplerate = atoi( optarg );
+                b_error |= parse_cli_int( optarg, &audio_samplerate );
                 break;
             case OPT_AUDIOEXTRAOPT:
                 audio_extraopt = optarg;
@@ -2222,7 +2429,7 @@ static int parse( int argc, char **argv, x264_param_t *param, cli_opt_t *opt )
                 output_opt.no_remux = 1;
                 break;
             case OPT_FORCE_DISPLAY_SIZE:
-                FAIL_IF_ERROR( 2 != sscanf( optarg, "%lfx%lf", &output_opt.display_width, &output_opt.display_height ),
+                FAIL_IF_ERROR( parse_cli_display_size( optarg, &output_opt.display_width, &output_opt.display_height ),
                                "invalid syntax for specifying display size: %s", optarg );
                 FAIL_IF_ERROR( output_opt.display_width <= 0 || output_opt.display_height <= 0, "display size must be positive.\n" );
                 break;
@@ -2230,7 +2437,7 @@ static int parse( int argc, char **argv, x264_param_t *param, cli_opt_t *opt )
                 output_opt.fragments = 1;
                 break;
             case OPT_PRIMING:
-                output_opt.priming = atoi( optarg );
+                b_error |= parse_cli_uint32( optarg, &output_opt.priming );
                 break;
             case OPT_COLORMATRIX:
                 b_user_colormatrix = 1;
@@ -2445,13 +2652,8 @@ generic_option:
     {
         uint64_t i_user_timebase_num;
         uint64_t i_user_timebase_den;
-        int ret = sscanf( input_opt.timebase, "%"SCNu64"/%"SCNu64, &i_user_timebase_num, &i_user_timebase_den );
-        FAIL_IF_ERROR( !ret, "invalid argument: timebase = %s\n", input_opt.timebase );
-        if( ret == 1 )
-        {
-            i_user_timebase_num = info.timebase_num;
-            i_user_timebase_den = strtoul( input_opt.timebase, NULL, 10 );
-        }
+        FAIL_IF_ERROR( parse_cli_timebase( input_opt.timebase, info.timebase_num, &i_user_timebase_num, &i_user_timebase_den ),
+                       "invalid argument: timebase = %s\n", input_opt.timebase );
         FAIL_IF_ERROR( i_user_timebase_num > UINT32_MAX || i_user_timebase_den > UINT32_MAX,
                        "timebase you specified exceeds H.264 maximum\n" );
         opt->timebase_convert_multiplier = ((double)i_user_timebase_den / info.timebase_den)
@@ -2538,19 +2740,55 @@ generic_option:
 static void parse_qpfile( cli_opt_t *opt, x264_picture_t *pic, int i_frame )
 {
     int num = -1;
-    char type;
     char buf[100];
     while( num < i_frame )
     {
         int64_t file_pos = ftell( opt->qpfile );
         int qp = -1;
-        int ret = fscanf( opt->qpfile, " %99[^\n]\n", buf );
+        char type = 0;
+        int b_truncated = 0;
+        int ret = EOF;
+        do
+        {
+            ret = fgets( buf, sizeof(buf), opt->qpfile ) ? 1 : EOF;
+        } while( ret == 1 && cli_at_end( buf ) );
+        if( ret == 1 && !strchr( buf, '\n' ) && strlen( buf ) == sizeof(buf)-1 )
+        {
+            int c = fgetc( opt->qpfile );
+            if( c != EOF )
+            {
+                b_truncated = c != '\n' && c != '\r';
+                ungetc( c, opt->qpfile );
+            }
+        }
         if( ret == 1 )
         {
-            ret = sscanf( buf, "%d %c %d", &num, &type, &qp );
-            if( ret == EOF )
+            char *end;
+            const char *p = buf;
+            if( parse_cli_int_end( p, &end, &num ) )
                 ret = 0;
+            else
+            {
+                p = cli_skip_space( end );
+                if( cli_at_line_end( p ) )
+                    ret = 1;
+                else
+                {
+                    type = *p++;
+                    p = cli_skip_space( p );
+                    if( cli_at_line_end( p ) )
+                        ret = 2;
+                    else if( !strncasecmp( p, "none", 4 ) && cli_at_line_end( p + 4 ) )
+                        ret = 2;
+                    else if( parse_cli_int_end( p, &end, &qp ) || !cli_at_line_end( end ) )
+                        ret = 0;
+                    else
+                        ret = 3;
+                }
+            }
         }
+        if( b_truncated && num <= i_frame )
+            ret = 0;
         pic->i_type = X264_TYPE_AUTO;
         pic->i_qpplus1 = X264_QP_AUTO;
         if( num > i_frame || ret == EOF )
@@ -2638,16 +2876,22 @@ static int64_t print_status( int64_t i_start, int64_t i_previous, int i_frame, i
         estsz_prec = estsz < 1024000 ? 2 : estsz < 10240000 ? 1 : 0;
         estsz_num  = estsz < 1024 ? estsz : estsz / 1024;
         estsz_unit = estsz < 1024 ? "K" : "M";
-        sprintf( buf, "x264 [%.1f%%] %d/%d frames, %.*f fps, %.*f kb/s, %.*f %sB, eta %d:%02d:%02d, est.size %.*f %sB",
-                 percentage, i_frame, i_frame_total, fps_prec, fps, bitrate_prec, bitrate,
-                 file_prec, file_num, file_unit,
-                 eta_hh, eta_mm, eta_ss,
-                 estsz_prec, estsz_num, estsz_unit );
+        int buf_len = snprintf( buf, sizeof(buf), "x264 [%.1f%%] %d/%d frames, %.*f fps, %.*f kb/s, %.*f %sB, eta %d:%02d:%02d, est.size %.*f %sB",
+                                percentage, i_frame, i_frame_total, fps_prec, fps, bitrate_prec, bitrate,
+                                file_prec, file_num, file_unit,
+                                eta_hh, eta_mm, eta_ss,
+                                estsz_prec, estsz_num, estsz_unit );
+        if( buf_len < 0 || (size_t)buf_len >= sizeof(buf) )
+            return i_previous;
     }
     else
-        sprintf( buf, "x264 %d frames: %.*f fps, %.*f kb/s, %.*f %sB",
-                 i_frame, fps_prec, fps, bitrate_prec, bitrate,
-                 file_prec, file_num, file_unit );
+    {
+        int buf_len = snprintf( buf, sizeof(buf), "x264 %d frames: %.*f fps, %.*f kb/s, %.*f %sB",
+                                i_frame, fps_prec, fps, bitrate_prec, bitrate,
+                                file_prec, file_num, file_unit );
+        if( buf_len < 0 || (size_t)buf_len >= sizeof(buf) )
+            return i_previous;
+    }
 
     if( param->b_stylish )
     {
@@ -2655,18 +2899,22 @@ static int64_t print_status( int64_t i_start, int64_t i_previous, int i_frame, i
         int secs = i_elapsed / 1000000;
         if( i_frame_total )
         {
-            sprintf( buf_stylish, "x264 [%5.1f%%]  %6d/%-6d  %5.*f  %6.*f  %3d:%02d:%02d  %3d:%02d:%02d  %6.*f %1sB  %6.*f %1sB",
-                     percentage, i_frame, i_frame_total, fps_prec, fps, bitrate_prec, bitrate,
-                     secs/3600, (secs/60)%60, secs%60, eta_hh, eta_mm, eta_ss,
-                     file_prec, file_num, file_unit,
-                     estsz_prec, estsz_num, estsz_unit );
+            int buf_len = snprintf( buf_stylish, sizeof(buf_stylish), "x264 [%5.1f%%]  %6d/%-6d  %5.*f  %6.*f  %3d:%02d:%02d  %3d:%02d:%02d  %6.*f %1sB  %6.*f %1sB",
+                                    percentage, i_frame, i_frame_total, fps_prec, fps, bitrate_prec, bitrate,
+                                    secs/3600, (secs/60)%60, secs%60, eta_hh, eta_mm, eta_ss,
+                                    file_prec, file_num, file_unit,
+                                    estsz_prec, estsz_num, estsz_unit );
+            if( buf_len < 0 || (size_t)buf_len >= sizeof(buf_stylish) )
+                return i_previous;
         }
         else
         {
-            sprintf( buf_stylish, "x264 %6d  %5.*f  %6.*f  %3d:%02d:%02d  %6.*f %1sB",
-                     i_frame, fps_prec, fps, bitrate_prec, bitrate,
-                     secs/3600, (secs/60)%60, secs%60,
-                     file_prec, file_num, file_unit );
+            int buf_len = snprintf( buf_stylish, sizeof(buf_stylish), "x264 %6d  %5.*f  %6.*f  %3d:%02d:%02d  %6.*f %1sB",
+                                    i_frame, fps_prec, fps, bitrate_prec, bitrate,
+                                    secs/3600, (secs/60)%60, secs%60,
+                                    file_prec, file_num, file_unit );
+            if( buf_len < 0 || (size_t)buf_len >= sizeof(buf_stylish) )
+                return i_previous;
         }
         fprintf( stderr, "%s  \r", buf_stylish+5 );
     }

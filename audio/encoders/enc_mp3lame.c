@@ -20,10 +20,39 @@ typedef struct enc_lame_t
     audio_packet_t *in;
 } enc_lame_t;
 
+static int get_sample_end( int64_t first_sample, int framelen, int64_t *last_sample )
+{
+    if( first_sample < 0 || framelen <= 0 || first_sample > INT64_MAX - framelen )
+        return -1;
+    *last_sample = first_sample + framelen;
+    return 0;
+}
+
+static int add_frame_dts( int64_t *dts, int framelen )
+{
+    if( framelen <= 0 || ( *dts != INVALID_DTS && *dts > INT64_MAX - framelen ) )
+        return -1;
+    *dts += framelen;
+    return 0;
+}
+
+static void add_skip_samples( int64_t *last_sample, uint64_t samplecount )
+{
+    if( *last_sample >= 0 && samplecount <= (uint64_t)INT64_MAX - (uint64_t)*last_sample )
+        *last_sample += samplecount;
+    else
+        *last_sample = INT64_MAX;
+}
+
 static hnd_t init( hnd_t filter_chain, const char *opt_str )
 {
     assert( filter_chain );
     audio_hnd_t *chain = filter_chain;
+    if( chain->info.channels <= 0 || chain->info.samplerate <= 0 )
+    {
+        x264_cli_log( "lame", X264_LOG_ERROR, "invalid input audio parameters\n" );
+        return 0;
+    }
     if( chain->info.channels > 2 )
     {
         x264_cli_log( "lame", X264_LOG_ERROR, "only mono or stereo audio is supported\n" );
@@ -39,6 +68,11 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     }
 
     enc_lame_t *h   = calloc( 1, sizeof( enc_lame_t ) );
+    if( !h )
+    {
+        free( opts );
+        return NULL;
+    }
     h->filter_chain = chain;
     h->info         = chain->info;
     h->info.codec_name = "mp3";
@@ -60,6 +94,8 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     h->info.extradata_size = 0;
 
     h->lame = lame_init();
+    if( !h->lame )
+        goto error;
     // lame expects floats to be in the same range as shorts, our floats are -1..1 so tell it to scale
     lame_set_scale( h->lame, 32768 );
     lame_set_in_samplerate( h->lame, chain->info.samplerate );
@@ -78,18 +114,27 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
 
     lame_set_bWriteVbrTag( h->lame, 0 );
 
-    lame_init_params( h->lame );
+    if( lame_init_params( h->lame ) < 0 )
+        goto error;
 
     h->info.framelen   = lame_get_framesize( h->lame );
-    h->info.framesize  = h->info.framelen * 2;
+    if( h->info.framelen <= 0 || h->info.framelen > INT_MAX / 2 )
+        goto error;
+    h->info.framesize  = (size_t)h->info.framelen * 2;
     h->info.chansize   = 2;
     h->info.samplesize = 2 * h->info.channels;
     h->info.depth      = 16;
     h->info.timebase   = (timebase_t) { 1, h->info.samplerate };
     h->info.last_delta = h->info.framelen;
 
-    h->bufsize = 125 * h->info.framelen / 100 + 7200; // from lame.h, largest frame that the encoding functions may return
+    if( (uint64_t)h->info.framelen > (SIZE_MAX - 7200) / 125 )
+        goto error;
+    h->bufsize = (size_t)125 * (size_t)h->info.framelen / 100 + 7200; // from lame.h, largest frame that the encoding functions may return
+    if( h->bufsize > INT_MAX )
+        goto error;
     h->buffer = malloc( h->bufsize );
+    if( !h->buffer )
+        goto error;
     h->buf_index = 0;
     h->last_dts = INVALID_DTS;
 
@@ -98,6 +143,13 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
                   ( !is_vbr ? "kbps" : "" ), quality, h->info.samplerate );
 
     return h;
+
+error:
+    if( h->lame )
+        lame_close( h->lame );
+    free( h->buffer );
+    free( h );
+    return NULL;
 }
 
 static audio_info_t *get_info( hnd_t handle )
@@ -195,8 +247,12 @@ static audio_packet_t *get_next_packet( hnd_t handle )
         return NULL;
 
     audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
+    if( !out )
+        return NULL;
     out->info = h->info;
     out->data = malloc( h->bufsize );
+    if( !out->data )
+        goto error;
 
     do
     {
@@ -206,17 +262,24 @@ static audio_packet_t *get_next_packet( hnd_t handle )
             goto error; // Not an error here but it'd do the same handling
         }
         x264_af_free_packet( h->in );
+        h->in = NULL;
 
-        if( !( h->in = x264_af_get_samples( h->filter_chain, h->last_sample, h->last_sample + h->info.framelen ) ) )
+        int64_t last_sample;
+        if( get_sample_end( h->last_sample, h->info.framelen, &last_sample ) )
+            goto error;
+
+        if( !( h->in = x264_af_get_samples( h->filter_chain, h->last_sample, last_sample ) ) )
             goto error;
         if( h->last_dts == INVALID_DTS )
             h->last_dts = h->last_sample;
         h->last_sample += h->in->samplecount;
 
+        if( h->buf_index > h->bufsize )
+            goto error;
         len = lame_encode_buffer_float( h->lame, h->in->samples[0], h->in->samples[1],
                                               h->in->samplecount, h->buffer + h->buf_index, h->bufsize - h->buf_index );
 
-        if( len < 0 )
+        if( len < 0 || (size_t)len > h->bufsize - h->buf_index )
             goto error;
 
         h->buf_index += len;
@@ -225,7 +288,8 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     } while( !out->size );
 
     out->dts = h->last_dts;
-    h->last_dts += h->info.framelen;
+    if( add_frame_dts( &h->last_dts, h->info.framelen ) )
+        goto error;
     return out;
 
 error:
@@ -240,7 +304,8 @@ error:
 
 static void skip_samples( hnd_t handle, uint64_t samplecount )
 {
-    ((enc_lame_t*)handle)->last_sample += samplecount;
+    enc_lame_t *h = handle;
+    add_skip_samples( &h->last_sample, samplecount );
 }
 
 static audio_packet_t *finish( hnd_t encoder )
@@ -249,11 +314,17 @@ static audio_packet_t *finish( hnd_t encoder )
     int len;
 
     audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
+    if( !out )
+        return NULL;
     out->info = h->info;
     out->data = malloc( h->bufsize );
+    if( !out->data )
+        goto error;
 
+    if( h->buf_index > h->bufsize )
+        goto error;
     len = lame_encode_flush( h->lame, h->buffer + h->buf_index, h->bufsize - h->buf_index );
-    if( len < 0 )
+    if( len < 0 || (size_t)len > h->bufsize - h->buf_index )
         goto error;
 
     h->buf_index += len;
@@ -263,7 +334,8 @@ static audio_packet_t *finish( hnd_t encoder )
         goto error;
 
     out->dts = h->last_dts;
-    h->last_dts += h->info.framelen;
+    if( add_frame_dts( &h->last_dts, h->info.framelen ) )
+        goto error;
     return out;
 
 error:

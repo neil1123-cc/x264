@@ -41,6 +41,28 @@ typedef struct
 	int x264_bit_depth;
 } raw_hnd_t;
 
+static int raw_parse_dimension( const char *p, char **end, int *dst )
+{
+    long value;
+
+    errno = 0;
+    value = strtol( p, end, 10 );
+    if( *end == p || errno == ERANGE || value <= 0 || value > MAX_RESOLUTION )
+        return -1;
+
+    *dst = (int)value;
+    return 0;
+}
+
+static int raw_parse_resolution( const char *p, char **end, int *width, int *height )
+{
+    if( raw_parse_dimension( p, end, width ) || **end != 'x' ||
+        raw_parse_dimension( *end + 1, end, height ) )
+        return -1;
+
+    return 0;
+}
+
 static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, cli_input_opt_t *opt )
 {
     raw_hnd_t *h = calloc( 1, sizeof(raw_hnd_t) );
@@ -54,28 +76,23 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
             if( *p >= '0' && *p <= '9' )
             {
                 char *end;
-                long width = strtol( p, &end, 10 );
-                if( *end == 'x' )
+                int width, height;
+                if( !raw_parse_resolution( p, &end, &width, &height ) )
                 {
-                    long height = strtol( end + 1, &end, 10 );
-                    if( width > 0 && height > 0 && width <= MAX_RESOLUTION && height <= MAX_RESOLUTION )
-                    {
-                        info->width = (int)width;
-                        info->height = (int)height;
-                        break;
-                    }
+                    info->width = width;
+                    info->height = height;
+                    break;
                 }
             }
     }
     else
     {
         char *end;
-        long width = strtol( opt->resolution, &end, 10 );
-        long height = *end == 'x' ? strtol( end + 1, &end, 10 ) : 0;
-        FAIL_IF_ERROR( *end || width <= 0 || height <= 0 || width > MAX_RESOLUTION || height > MAX_RESOLUTION,
+        int width, height;
+        FAIL_IF_ERROR( raw_parse_resolution( opt->resolution, &end, &width, &height ) || *end,
                        "invalid resolution `%s'\n", opt->resolution );
-        info->width = (int)width;
-        info->height = (int)height;
+        info->width = width;
+        info->height = height;
     }
     FAIL_IF_ERROR( !info->width || !info->height, "raw input requires a resolution.\n" );
     if( opt->colorspace )

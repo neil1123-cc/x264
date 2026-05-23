@@ -19,6 +19,42 @@ typedef struct enc_faac_t
     audio_packet_t *in;
 } enc_faac_t;
 
+static int set_framesize( audio_info_t *info, const char *name )
+{
+    if( info->framelen <= 0 || info->samplesize <= 0 ||
+        (uint64_t)info->framelen > SIZE_MAX / (uint64_t)info->samplesize )
+    {
+        x264_cli_log( name, X264_LOG_ERROR, "invalid audio frame size\n" );
+        return -1;
+    }
+    info->framesize = (size_t)info->framelen * (size_t)info->samplesize;
+    return 0;
+}
+
+static int get_sample_end( int64_t first_sample, int framelen, int64_t *last_sample )
+{
+    if( first_sample < 0 || framelen <= 0 || first_sample > INT64_MAX - framelen )
+        return -1;
+    *last_sample = first_sample + framelen;
+    return 0;
+}
+
+static int add_frame_dts( int64_t *dts, int framelen )
+{
+    if( framelen <= 0 || ( *dts != INVALID_DTS && *dts > INT64_MAX - framelen ) )
+        return -1;
+    *dts += framelen;
+    return 0;
+}
+
+static void add_skip_samples( int64_t *last_sample, uint64_t samplecount )
+{
+    if( *last_sample >= 0 && samplecount <= (uint64_t)INT64_MAX - (uint64_t)*last_sample )
+        *last_sample += samplecount;
+    else
+        *last_sample = INT64_MAX;
+}
+
 static const int faac_channel_map[][8] = {
  { 0, },
  { 0, 1, },
@@ -35,6 +71,11 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     assert( filter_chain );
     audio_hnd_t *chain = filter_chain;
 
+    if( chain->info.channels <= 0 || chain->info.samplerate <= 0 )
+    {
+        x264_cli_log( "faac", X264_LOG_ERROR, "invalid input audio parameters\n" );
+        return NULL;
+    }
     if( chain->info.channels > 8 )
     {
         x264_cli_log( "faac", X264_LOG_ERROR, "channels > 8 is not supported\n" );
@@ -50,6 +91,11 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     }
 
     enc_faac_t *h      = calloc( 1, sizeof( enc_faac_t ) );
+    if( !h )
+    {
+        free( opts );
+        return NULL;
+    }
     h->filter_chain    = chain;
     h->info            = chain->info;
     h->info.codec_name = "aac";
@@ -78,8 +124,14 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
         goto error;
     }
 
-    h->info.framelen = samplesInput / h->info.channels;
+    unsigned long int framelen = samplesInput / h->info.channels;
     h->bufsize       = maxBytesOutput;
+    if( !framelen || framelen > INT_MAX || h->bufsize > INT_MAX )
+    {
+        x264_cli_log( "faac", X264_LOG_ERROR, "invalid encoder frame or buffer size\n" );
+        goto error;
+    }
+    h->info.framelen = (int)framelen;
 
     faacEncConfigurationPtr config = faacEncGetCurrentConfiguration( h->faac );
 
@@ -115,7 +167,7 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     unsigned char *asc;
     long unsigned int asc_size;
     faacEncGetDecoderSpecificInfo( h->faac, &asc, &asc_size );
-    if( !asc || asc_size <= 0 )
+    if( !asc || asc_size <= 0 || asc_size > INT_MAX )
     {
         x264_cli_log( "faac", X264_LOG_ERROR, "failed to retrieve decoder specific info\n" );
         goto error;
@@ -125,7 +177,8 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
 
     h->info.chansize   = 4;
     h->info.samplesize = 4 * h->info.channels;
-    h->info.framesize  = h->info.framelen * h->info.samplesize;
+    if( set_framesize( &h->info, "faac" ) )
+        goto error;
     h->info.depth      = 32;
     h->info.timebase   = (timebase_t) { 1, h->info.samplerate };
     h->info.last_delta = h->info.framelen;
@@ -142,6 +195,8 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
 error:
     if( h->faac )
         faacEncClose( h->faac );
+    if( h->info.extradata )
+        free( h->info.extradata );
     if( h )
         free( h );
     return NULL;
@@ -170,8 +225,12 @@ static audio_packet_t *get_next_packet( hnd_t handle )
         return NULL;
 
     audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
+    if( !out )
+        return NULL;
     out->info = h->info;
     out->data = malloc( h->bufsize );
+    if( !out->data )
+        goto error;
 
     do
     {
@@ -181,20 +240,31 @@ static audio_packet_t *get_next_packet( hnd_t handle )
             goto error; // Not an error here but it'd do the same handling
         }
         x264_af_free_packet( h->in );
+        h->in = NULL;
 
-        if( !( h->in = x264_af_get_samples( h->filter_chain, h->last_sample, h->last_sample + h->info.framelen ) ) )
+        int64_t last_sample;
+        if( get_sample_end( h->last_sample, h->info.framelen, &last_sample ) )
+            goto error;
+
+        if( !( h->in = x264_af_get_samples( h->filter_chain, h->last_sample, last_sample ) ) )
             goto error;
         if( h->last_dts == INVALID_DTS )
             h->last_dts = h->last_sample;
         h->last_sample += h->in->samplecount;
 
-        if( h->samplebuffer )
-            free( h->samplebuffer );
+        if( h->info.channels <= 0 || h->in->samplecount > (unsigned)(INT_MAX / h->info.channels) )
+            goto error;
+        int input_samples = h->in->samplecount * h->info.channels;
+
+        free( h->samplebuffer );
+        h->samplebuffer = NULL;
         h->samplebuffer = x264_af_interleave2( SMPFMT_FLT, h->in->samples, h->info.channels, h->in->samplecount );
-        for( int i=0; i<h->in->samplecount*h->info.channels; i++ )
+        if( input_samples && !h->samplebuffer )
+            goto error;
+        for( int i=0; i<input_samples; i++ )
             ((float *)h->samplebuffer)[i] *= 32768.0f;
 
-        ret = faacEncEncode( h->faac, h->samplebuffer, h->in->samplecount*h->info.channels, out->data, h->bufsize );
+        ret = faacEncEncode( h->faac, h->samplebuffer, input_samples, out->data, h->bufsize );
         if( ret < 0 )
         {
             x264_cli_log( "faac", X264_LOG_ERROR, "failed to encode audio\n" );
@@ -205,7 +275,8 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     } while( ret <= 0 );
 
     out->dts = h->last_dts;
-    h->last_dts += h->info.framelen;
+    if( add_frame_dts( &h->last_dts, h->info.framelen ) )
+        goto error;
     return out;
 
 error:
@@ -220,7 +291,8 @@ error:
 
 static void skip_samples( hnd_t handle, uint64_t samplecount )
 {
-    ((enc_faac_t*)handle)->last_sample += samplecount;
+    enc_faac_t *h = handle;
+    add_skip_samples( &h->last_sample, samplecount );
 }
 
 static audio_packet_t *finish( hnd_t encoder )
@@ -229,15 +301,20 @@ static audio_packet_t *finish( hnd_t encoder )
     int ret;
 
     audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
+    if( !out )
+        return NULL;
     out->info = h->info;
     out->data = malloc( h->bufsize );
+    if( !out->data )
+        goto error;
 
     ret = faacEncEncode( h->faac, NULL, 0, out->data, h->bufsize );
     if( ret <= 0 )
         goto error;
     out->size = ret;
     out->dts = h->last_dts;
-    h->last_dts += h->info.framelen;
+    if( add_frame_dts( &h->last_dts, h->info.framelen ) )
+        goto error;
     return out;
 
 error:

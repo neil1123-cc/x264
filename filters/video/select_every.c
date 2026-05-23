@@ -24,6 +24,7 @@
  *****************************************************************************/
 
 #include "video.h"
+#include <limits.h>
 
 #define NAME "select_every"
 #define FAIL_IF_ERROR( cond, ... ) FAIL_IF_ERR( cond, NAME, __VA_ARGS__ )
@@ -44,6 +45,18 @@ typedef struct
 
 cli_vid_filter_t select_every_filter;
 
+static int select_every_frame_number( selvry_hnd_t *h, int frame, int *pat_frame )
+{
+    if( frame < 0 || !h->pattern_len || !h->step_size )
+        return -1;
+    int64_t selected = h->pattern[frame % h->pattern_len] +
+                       (int64_t)(frame / h->pattern_len) * h->step_size;
+    if( selected > INT_MAX )
+        return -1;
+    *pat_frame = (int)selected;
+    return 0;
+}
+
 static void help( int longhelp )
 {
     printf( "      "NAME":step,offset1[,...]\n" );
@@ -57,32 +70,52 @@ static void help( int longhelp )
 
 static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x264_param_t *param, char *opt_string )
 {
-    selvry_hnd_t *h = malloc( sizeof(selvry_hnd_t) );
+    if( !opt_string )
+        return -1;
+    selvry_hnd_t *h = calloc( 1, sizeof(selvry_hnd_t) );
     if( !h )
         return -1;
-    h->pattern_len = 0;
-    h->step_size = 0;
     int offsets[MAX_PATTERN_SIZE];
     for( char *tok, *p = opt_string, UNUSED *saveptr = NULL; (tok = strtok_r( p, ",", &saveptr )); p = NULL )
     {
         int val = x264_otoi( tok, -1 );
         if( p )
         {
-            FAIL_IF_ERROR( val <= 0, "invalid step `%s'\n", tok );
+            if( val <= 0 )
+            {
+                x264_cli_log( NAME, X264_LOG_ERROR, "invalid step `%s'\n", tok );
+                goto fail;
+            }
             h->step_size = val;
             continue;
         }
-        FAIL_IF_ERROR( val < 0 || val >= h->step_size, "invalid offset `%s'\n", tok );
-        FAIL_IF_ERROR( h->pattern_len >= MAX_PATTERN_SIZE, "max pattern size %d reached\n", MAX_PATTERN_SIZE );
+        if( val < 0 || val >= h->step_size )
+        {
+            x264_cli_log( NAME, X264_LOG_ERROR, "invalid offset `%s'\n", tok );
+            goto fail;
+        }
+        if( h->pattern_len >= MAX_PATTERN_SIZE )
+        {
+            x264_cli_log( NAME, X264_LOG_ERROR, "max pattern size %d reached\n", MAX_PATTERN_SIZE );
+            goto fail;
+        }
         offsets[h->pattern_len++] = val;
     }
-    FAIL_IF_ERROR( !h->step_size, "no step size provided\n" );
-    FAIL_IF_ERROR( !h->pattern_len, "no offsets supplied\n" );
+    if( !h->step_size )
+    {
+        x264_cli_log( NAME, X264_LOG_ERROR, "no step size provided\n" );
+        goto fail;
+    }
+    if( !h->pattern_len )
+    {
+        x264_cli_log( NAME, X264_LOG_ERROR, "no offsets supplied\n" );
+        goto fail;
+    }
 
-    h->pattern = malloc( h->pattern_len * sizeof(int) );
+    h->pattern = malloc( (size_t)h->pattern_len * sizeof(int) );
     if( !h->pattern )
-        return -1;
-    memcpy( h->pattern, offsets, h->pattern_len * sizeof(int) );
+        goto fail;
+    memcpy( h->pattern, offsets, (size_t)h->pattern_len * sizeof(int) );
 
     /* determine required cache size to maintain pattern. */
     intptr_t max_rewind = 0;
@@ -97,26 +130,52 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
              break;
     }
     char name[20];
-    sprintf( name, "cache_%d", param->i_bitdepth );
-    if( x264_init_vid_filter( name, handle, filter, info, param, (void*)max_rewind ) )
-        return -1;
+    int name_len = snprintf( name, sizeof(name), "cache_%d", param->i_bitdepth );
+    if( name_len < 0 || (size_t)name_len >= sizeof(name) )
+        goto fail;
 
     /* done initing, overwrite properties */
+    video_info_t updated_info = *info;
     if( h->step_size != h->pattern_len )
     {
-        info->num_frames = (uint64_t)info->num_frames * h->pattern_len / h->step_size;
-        info->fps_den *= h->step_size;
-        info->fps_num *= h->pattern_len;
-        if( !param->b_accurate_fps )
-            x264_ntsc_fps( &info->fps_num, &info->fps_den );
-        x264_reduce_fraction( &info->fps_num, &info->fps_den );
-        if( info->vfr )
+        if( updated_info.num_frames > 0 )
         {
-            info->timebase_den *= h->pattern_len;
-            info->timebase_num *= h->step_size;
-            x264_reduce_fraction( &info->timebase_num, &info->timebase_den );
+            uint64_t num_frames = (uint64_t)updated_info.num_frames * (uint64_t)h->pattern_len / (uint64_t)h->step_size;
+            if( num_frames > INT_MAX )
+            {
+                x264_cli_log( NAME, X264_LOG_ERROR, "selected frame count is too large\n" );
+                goto fail;
+            }
+            updated_info.num_frames = (int)num_frames;
+        }
+        if( updated_info.fps_den > UINT32_MAX / (uint32_t)h->step_size ||
+            updated_info.fps_num > UINT32_MAX / (uint32_t)h->pattern_len )
+        {
+            x264_cli_log( NAME, X264_LOG_ERROR, "selected framerate is too large\n" );
+            goto fail;
+        }
+        updated_info.fps_den *= (uint32_t)h->step_size;
+        updated_info.fps_num *= (uint32_t)h->pattern_len;
+        if( !param->b_accurate_fps )
+            x264_ntsc_fps( &updated_info.fps_num, &updated_info.fps_den );
+        x264_reduce_fraction( &updated_info.fps_num, &updated_info.fps_den );
+        if( updated_info.vfr )
+        {
+            if( updated_info.timebase_den > UINT32_MAX / (uint32_t)h->pattern_len ||
+                updated_info.timebase_num > UINT32_MAX / (uint32_t)h->step_size )
+            {
+                x264_cli_log( NAME, X264_LOG_ERROR, "selected timebase is too large\n" );
+                goto fail;
+            }
+            updated_info.timebase_den *= (uint32_t)h->pattern_len;
+            updated_info.timebase_num *= (uint32_t)h->step_size;
+            x264_reduce_fraction( &updated_info.timebase_num, &updated_info.timebase_den );
         }
     }
+
+    if( x264_init_vid_filter( name, handle, filter, info, param, (void*)max_rewind ) )
+        goto fail;
+    *info = updated_info;
 
     h->pts = 0;
     h->vfr = info->vfr;
@@ -126,17 +185,26 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
     *handle = h;
 
     return 0;
+
+fail:
+    free( h->pattern );
+    free( h );
+    return -1;
 }
 
 static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 {
     selvry_hnd_t *h = handle;
-    int pat_frame = h->pattern[frame % h->pattern_len] + frame / h->pattern_len * h->step_size;
+    int pat_frame;
+    if( select_every_frame_number( h, frame, &pat_frame ) )
+        return -1;
     if( h->prev_filter.get_frame( h->prev_hnd, output, pat_frame ) )
         return -1;
     if( h->vfr )
     {
         output->pts = h->pts;
+        if( output->duration < 0 || h->pts > INT64_MAX - output->duration )
+            return -1;
         h->pts += output->duration;
     }
     return 0;
@@ -145,7 +213,9 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 static int release_frame( hnd_t handle, cli_pic_t *pic, int frame )
 {
     selvry_hnd_t *h = handle;
-    int pat_frame = h->pattern[frame % h->pattern_len] + frame / h->pattern_len * h->step_size;
+    int pat_frame;
+    if( select_every_frame_number( h, frame, &pat_frame ) )
+        return -1;
     return h->prev_filter.release_frame( h->prev_hnd, pic, pat_frame );
 }
 

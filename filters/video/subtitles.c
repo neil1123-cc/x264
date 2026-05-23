@@ -18,7 +18,7 @@
 * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02111, USA.
 *****************************************************************************/
 
-#include <Windows.h>
+#include <windows.h>
 #include "x264cli.h"
 #include "subtitles.h"
 #include "video.h"
@@ -30,13 +30,15 @@ csri_render_t csri_render;
 csri_close_t csri_close;
 
 //csri_openflag flags={};
-char* subfilename[16];
+enum { MAX_SUBTITLE_FILES = 16 };
+
+static char *subfilename[MAX_SUBTITLE_FILES];
 int subtotal = 0;
-HMODULE hVSFilter = 0;
+static HMODULE hVSFilter = 0;
 
 int add_sub(char *filename)
 {
-	if (subtotal<16)
+	if( filename && subtotal < MAX_SUBTITLE_FILES )
 	{
 		subfilename[subtotal++] = filename;
 		return 1;
@@ -84,34 +86,54 @@ static const char* get_csri_fmt_name(unsigned int fmt)
 	return "Unknown";
 }
 
+static int subtitles_load_csri(void)
+{
+	if (hVSFilter)
+		return 0;
+
+#if ARCH_X86_64
+	if (NULL == (hVSFilter = LoadLibraryA("VSFilter64.dll")))
+	{
+		x264_cli_log("subtitles", X264_LOG_ERROR, "failed to load VSFilter64.dll\n");
+		return -1;
+	}
+#else
+	if (NULL == (hVSFilter = LoadLibraryA("VSFilter.dll")))
+	{
+		x264_cli_log("subtitles", X264_LOG_ERROR, "failed to load VSFilter.dll\n");
+		return -1;
+	}
+#endif
+	csri_open_file = (csri_open_file_t)GetProcAddress(hVSFilter,"csri_open_file");
+	csri_close = (csri_close_t)GetProcAddress(hVSFilter,"csri_close");
+	csri_request_fmt = (csri_request_fmt_t)GetProcAddress(hVSFilter,"csri_request_fmt");
+	csri_render = (csri_render_t)GetProcAddress(hVSFilter,"csri_render");
+	csri_add_file = (csri_add_file_t)GetProcAddress(hVSFilter,"csri_add_file");
+	if( !csri_open_file || !csri_close || !csri_request_fmt || !csri_render )
+	{
+		x264_cli_log("subtitles", X264_LOG_ERROR, "VSFilter missing required CSRI interface\n");
+		csri_open_file = NULL;
+		csri_close = NULL;
+		csri_request_fmt = NULL;
+		csri_render = NULL;
+		csri_add_file = NULL;
+		FreeLibrary(hVSFilter);
+		hVSFilter = 0;
+		return -1;
+	}
+
+	return 0;
+}
+
 void* subtitles_new_renderer(const csri_fmt *fmt, uint32_t sarw, uint32_t sarh)
 {
 	int i;
 	csri_openflag flag;
 	void *subrenderinst;
 
-	if (!hVSFilter)
-	{
-#if ARCH_X86_64
-		if (NULL == (hVSFilter = LoadLibraryA("VSFilter64.dll")))
-		{
-			x264_cli_log("subtitles", X264_LOG_ERROR, "failed to load VSFilter64.dll\n");
-			return 0;
-		}
-#else
-		if (NULL == (hVSFilter = LoadLibraryA("VSFilter.dll")))
-		{
-			x264_cli_log("subtitles", X264_LOG_ERROR, "failed to load VSFilter.dll\n");
-			return 0;
-		}
-#endif
-		csri_open_file = (csri_open_file_t)GetProcAddress(hVSFilter,"csri_open_file");
-		csri_close = (csri_close_t)GetProcAddress(hVSFilter,"csri_close");
-		csri_request_fmt = (csri_request_fmt_t)GetProcAddress(hVSFilter,"csri_request_fmt");
-		csri_render = (csri_render_t)GetProcAddress(hVSFilter,"csri_render");
-		csri_add_file = (csri_add_file_t)GetProcAddress(hVSFilter,"csri_add_file");
-	}
-	if (sarw != sarh) // non-square par
+	if (!fmt || !subtotal || !subfilename[0] || subtitles_load_csri())
+		return 0;
+	if (sarw && sarh && sarw != sarh) // non-square par
 	{
 		flag.name = "PAR";
 		flag.data.dval = (double)sarw / sarh;
@@ -128,6 +150,7 @@ void* subtitles_new_renderer(const csri_fmt *fmt, uint32_t sarw, uint32_t sarh)
 	if (csri_request_fmt(subrenderinst, fmt))
 	{
 		x264_cli_log("subtitles", X264_LOG_ERROR, "csri does not support %s input\n", get_csri_fmt_name(fmt->pixfmt));
+		csri_close(subrenderinst);
 		return 0;
 	}
 	x264_cli_log("subtitles", X264_LOG_INFO, "loaded subtitles \"%s\"\n", subfilename[0]);
@@ -135,9 +158,9 @@ void* subtitles_new_renderer(const csri_fmt *fmt, uint32_t sarw, uint32_t sarh)
 		for (i=1; i<subtotal; i++)
 		{
 			if (csri_add_file(subrenderinst, subfilename[i], flag.name?&flag:NULL))
-				x264_cli_log("subtitles", X264_LOG_INFO, "loaded subtitles \"%s\"\n", subfilename[0]);
+				x264_cli_log("subtitles", X264_LOG_INFO, "loaded subtitles \"%s\"\n", subfilename[i]);
 			else
-				x264_cli_log("subtitles", X264_LOG_WARNING, "failed to load subtitles \"%s\"\n", subfilename[0]);
+				x264_cli_log("subtitles", X264_LOG_WARNING, "failed to load subtitles \"%s\"\n", subfilename[i]);
 		}
 	else
 		x264_cli_log("subtitles", X264_LOG_WARNING, "no csri_add_file interface, fail to render subtitles\n");
@@ -167,6 +190,8 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
 
 	subtitles_hnd_t *h;
 	csri_fmt fmt;
+	if( !handle || !filter || !info )
+		return -1;
 	if (!(h = calloc(1, sizeof(subtitles_hnd_t))))
 		return -1;
 	fmt.width = info->width;
@@ -199,7 +224,7 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
 		x264_cli_log( NAME, X264_LOG_ERROR, "unsupported colorspace\n");
 		fmt.pixfmt = -1;
 	}
-	if (fmt.pixfmt == -1 || !(h->subrenderinst = subtitles_new_renderer(&fmt, info->sar_height, info->sar_height)))
+	if (fmt.pixfmt == -1 || !(h->subrenderinst = subtitles_new_renderer(&fmt, info->sar_width, info->sar_height)))
 	{
 		free(h);
 		return -1;
@@ -221,7 +246,9 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
 static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 {
 	subtitles_hnd_t *h = handle;
-	csri_frame fr;
+	csri_frame fr = {0};
+	if( !h || !output || !h->subrenderinst || !csri_render )
+		return -1;
 	if( h->prev_filter.get_frame( h->prev_hnd, output, frame ) )
 		return -1;
 	fr.planes[0] = output->img.plane[0];
@@ -245,7 +272,7 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 		break;
 	}
 	fr.pixfmt = h->fmt;
-	subtitles_render_frame(h->subrenderinst, &fr, (h->vfr ? output->pts : frame) * h->scale_factor);
+	csri_render(h->subrenderinst, &fr, (h->vfr ? output->pts : frame) * h->scale_factor);
 	return 0;
 }
 
@@ -260,6 +287,10 @@ static int release_frame( hnd_t handle, cli_pic_t *pic, int frame )
 static void free_filter( hnd_t handle )
 {
 	subtitles_hnd_t *h = handle;
+	if( !h )
+		return;
+	if( h->subrenderinst && csri_close )
+		csri_close( h->subrenderinst );
 	h->prev_filter.free( h->prev_hnd );
 	free( h );
 }

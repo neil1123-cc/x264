@@ -24,6 +24,7 @@
  *****************************************************************************/
 
 #include "video.h"
+#include <limits.h>
 
 /* This filter converts the demuxer API into the filtering API for video frames.
  * Backseeking is prohibited here as not all demuxers are capable of doing so. */
@@ -39,13 +40,20 @@ cli_vid_filter_t source_filter;
 
 static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x264_param_t *param, char *opt_string )
 {
+    if( !handle || !*handle || !info || info->width <= 0 || info->height <= 0 ||
+        info->width > MAX_RESOLUTION || info->height > MAX_RESOLUTION )
+        return -1;
+
     source_hnd_t *h = calloc( 1, sizeof(source_hnd_t) );
     if( !h )
         return -1;
     h->cur_frame = -1;
 
     if( cli_input.picture_alloc( &h->pic, *handle, info->csp, info->width, info->height ) )
+    {
+        free( h );
         return -1;
+    }
 
     h->hin = *handle;
     *handle = h;
@@ -58,7 +66,8 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 {
     source_hnd_t *h = handle;
     /* do not allow requesting of frames from before the current position */
-    if( frame <= h->cur_frame || cli_input.read_frame( &h->pic, h->hin, frame ) )
+    if( !h || !output || frame < 0 || frame <= h->cur_frame ||
+        cli_input.read_frame( &h->pic, h->hin, frame ) )
         return -1;
     h->cur_frame = frame;
     *output = h->pic;
@@ -76,8 +85,11 @@ static int release_frame( hnd_t handle, cli_pic_t *pic, int frame )
 static void free_filter( hnd_t handle )
 {
     source_hnd_t *h = handle;
+    if( !h )
+        return;
     cli_input.picture_clean( &h->pic, h->hin );
-    cli_input.close_file( h->hin );
+    if( h->hin )
+        cli_input.close_file( h->hin );
     free( h );
 }
 

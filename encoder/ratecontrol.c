@@ -29,6 +29,10 @@
 
 #undef NDEBUG // always check asserts, the speed effect is far too small to disable them
 
+#include <ctype.h>
+#include <errno.h>
+#include <math.h>
+
 #include "common/common.h"
 #include "ratecontrol.h"
 #include "me.h"
@@ -196,9 +200,360 @@ static void update_predictor( predictor_t *p, float q, float var, float bits );
 
 #define X264_RC_PRED_COEFFS 3
 
+static int stats_option_token_end( char c )
+{
+    return c == '\0' || c == ' ';
+}
+
+static const char *stats_find_option( const char *opts, const char *opt )
+{
+    size_t opt_len = strlen( opt );
+
+    for( const char *p = opts; *p; )
+    {
+        while( *p == ' ' )
+            p++;
+        if( !strncmp( p, opt, opt_len ) && p[opt_len] == '=' )
+            return p + opt_len + 1;
+        p = strchr( p, ' ' );
+        if( !p )
+            return NULL;
+    }
+
+    return NULL;
+}
+
+static int stats_parse_int_token( const char *p, int *dst )
+{
+    char *end;
+    long value;
+
+    if( *p == '-' || *p == '+' )
+    {
+        if( p[1] < '0' || p[1] > '9' )
+            return -1;
+    }
+    else if( *p < '0' || *p > '9' )
+        return -1;
+
+    errno = 0;
+    value = strtol( p, &end, 10 );
+    if( end == p || errno == ERANGE || value < INT_MIN || value > INT_MAX ||
+        !stats_option_token_end( *end ) )
+        return -1;
+
+    *dst = (int)value;
+    return 0;
+}
+
+static int stats_parse_number_start( const char *p )
+{
+    if( *p == '-' || *p == '+' )
+        p++;
+    return *p >= '0' && *p <= '9';
+}
+
+static int stats_parse_int_value( const char **p, int *dst )
+{
+    char *end;
+    long value;
+
+    if( !stats_parse_number_start( *p ) )
+        return -1;
+
+    errno = 0;
+    value = strtol( *p, &end, 10 );
+    if( end == *p || errno == ERANGE || value < INT_MIN || value > INT_MAX )
+        return -1;
+
+    *dst = (int)value;
+    *p = end;
+    return 0;
+}
+
+static int stats_parse_int64_value( const char **p, int64_t *dst )
+{
+    char *end;
+    long long value;
+
+    if( !stats_parse_number_start( *p ) )
+        return -1;
+
+    errno = 0;
+    value = strtoll( *p, &end, 10 );
+    if( end == *p || errno == ERANGE || value < INT64_MIN || value > INT64_MAX )
+        return -1;
+
+    *dst = (int64_t)value;
+    *p = end;
+    return 0;
+}
+
+static int stats_parse_int16_value( const char **p, int16_t *dst )
+{
+    int value;
+
+    if( stats_parse_int_value( p, &value ) || value < INT16_MIN || value > INT16_MAX )
+        return -1;
+
+    *dst = (int16_t)value;
+    return 0;
+}
+
+static int stats_parse_float_value( const char **p, float *dst )
+{
+    char *end;
+    float value;
+
+    if( !stats_parse_number_start( *p ) )
+        return -1;
+
+    errno = 0;
+    value = strtof( *p, &end );
+    if( end == *p || errno == ERANGE || !isfinite( value ) )
+        return -1;
+
+    *dst = value;
+    *p = end;
+    return 0;
+}
+
+static int stats_parse_match( const char **p, const char *literal )
+{
+    size_t len = strlen( literal );
+
+    if( strncmp( *p, literal, len ) )
+        return -1;
+    *p += len;
+    return 0;
+}
+
+static int stats_parse_space( const char **p )
+{
+    if( !isspace( (unsigned char)**p ) )
+        return -1;
+    while( isspace( (unsigned char)**p ) )
+        (*p)++;
+    return 0;
+}
+
+static int stats_parse_pass2_main( const char *line, const char **end,
+                                   int *frame_number, int *frame_out_number,
+                                   char *pict_type, int64_t *duration,
+                                   int64_t *cpb_duration, float *qp_rc,
+                                   float *qp_aq, int *tex_bits, int *mv_bits,
+                                   int *misc_bits, int *i_count, int *p_count,
+                                   int *s_count, char *direct_mode )
+{
+    const char *p = line;
+
+    while( isspace( (unsigned char)*p ) )
+        p++;
+    if( stats_parse_match( &p, "in:" ) || stats_parse_int_value( &p, frame_number ) ||
+        stats_parse_space( &p ) || stats_parse_match( &p, "out:" ) || stats_parse_int_value( &p, frame_out_number ) ||
+        stats_parse_space( &p ) || stats_parse_match( &p, "type:" ) || !*p || isspace( (unsigned char)*p ) )
+        return -1;
+    *pict_type = *p++;
+
+    if( stats_parse_space( &p ) || stats_parse_match( &p, "dur:" ) || stats_parse_int64_value( &p, duration ) ||
+        stats_parse_space( &p ) || stats_parse_match( &p, "cpbdur:" ) || stats_parse_int64_value( &p, cpb_duration ) ||
+        stats_parse_space( &p ) || stats_parse_match( &p, "q:" ) || stats_parse_float_value( &p, qp_rc ) ||
+        stats_parse_space( &p ) || stats_parse_match( &p, "aq:" ) || stats_parse_float_value( &p, qp_aq ) ||
+        stats_parse_space( &p ) || stats_parse_match( &p, "tex:" ) || stats_parse_int_value( &p, tex_bits ) ||
+        stats_parse_space( &p ) || stats_parse_match( &p, "mv:" ) || stats_parse_int_value( &p, mv_bits ) ||
+        stats_parse_space( &p ) || stats_parse_match( &p, "misc:" ) || stats_parse_int_value( &p, misc_bits ) ||
+        stats_parse_space( &p ) || stats_parse_match( &p, "imb:" ) || stats_parse_int_value( &p, i_count ) ||
+        stats_parse_space( &p ) || stats_parse_match( &p, "pmb:" ) || stats_parse_int_value( &p, p_count ) ||
+        stats_parse_space( &p ) || stats_parse_match( &p, "smb:" ) || stats_parse_int_value( &p, s_count ) ||
+        stats_parse_space( &p ) || stats_parse_match( &p, "d:" ) || !*p || isspace( (unsigned char)*p ) )
+        return -1;
+    *direct_mode = *p++;
+    if( *p && !isspace( (unsigned char)*p ) )
+        return -1;
+
+    *end = p;
+    return 0;
+}
+
+static int stats_parse_ref_list( const char **p, int refcount[16], int *refs )
+{
+    const char *s = *p;
+    int count = 0;
+
+    for( ;; )
+    {
+        int value;
+
+        while( isspace( (unsigned char)*s ) )
+            s++;
+        if( !stats_parse_number_start( s ) )
+            break;
+        if( count >= 16 || stats_parse_int_value( &s, &value ) || value < 0 ||
+            !isspace( (unsigned char)*s ) )
+            return -1;
+        refcount[count++] = value;
+    }
+
+    *refs = count;
+    *p = s;
+    return 0;
+}
+
+static int stats_parse_weight_separator( const char **p )
+{
+    if( **p != ',' )
+        return -1;
+    (*p)++;
+    while( isspace( (unsigned char)**p ) )
+        (*p)++;
+    return 0;
+}
+
+static int stats_parse_weight_triplet( const char **p, int16_t *denom,
+                                       int16_t *scale, int16_t *offset )
+{
+    if( stats_parse_int16_value( p, denom ) || *denom < 0 ||
+        stats_parse_weight_separator( p ) || stats_parse_int16_value( p, scale ) ||
+        stats_parse_weight_separator( p ) || stats_parse_int16_value( p, offset ) )
+        return -1;
+    return 0;
+}
+
+static int stats_parse_weight_list( const char *p, ratecontrol_entry_t *rce )
+{
+    int16_t luma_denom, luma_scale, luma_offset;
+    int16_t chroma_denom, chroma_u_scale, chroma_u_offset;
+    int16_t chroma_v_scale, chroma_v_offset;
+
+    if( stats_parse_match( &p, "w:" ) ||
+        stats_parse_weight_triplet( &p, &luma_denom, &luma_scale, &luma_offset ) )
+        return -1;
+
+    if( *p == ',' )
+    {
+        if( stats_parse_weight_separator( &p ) ||
+            stats_parse_int16_value( &p, &chroma_denom ) || chroma_denom < 0 ||
+            stats_parse_weight_separator( &p ) || stats_parse_int16_value( &p, &chroma_u_scale ) ||
+            stats_parse_weight_separator( &p ) || stats_parse_int16_value( &p, &chroma_u_offset ) ||
+            stats_parse_weight_separator( &p ) || stats_parse_int16_value( &p, &chroma_v_scale ) ||
+            stats_parse_weight_separator( &p ) || stats_parse_int16_value( &p, &chroma_v_offset ) )
+            return -1;
+    }
+    else
+        chroma_denom = -1;
+
+    while( isspace( (unsigned char)*p ) )
+        p++;
+    if( *p )
+        return -1;
+
+    rce->i_weight_denom[0] = luma_denom;
+    rce->weight[0][0] = luma_scale;
+    rce->weight[0][1] = luma_offset;
+    rce->i_weight_denom[1] = chroma_denom;
+    if( chroma_denom >= 0 )
+    {
+        rce->weight[1][0] = chroma_u_scale;
+        rce->weight[1][1] = chroma_u_offset;
+        rce->weight[2][0] = chroma_v_scale;
+        rce->weight[2][1] = chroma_v_offset;
+    }
+
+    return 0;
+}
+
+static int stats_parse_positive_int( const char **p, int *dst )
+{
+    char *end;
+    long value;
+
+    errno = 0;
+    value = strtol( *p, &end, 10 );
+    if( end == *p || errno == ERANGE || value <= 0 || value > INT_MAX )
+        return -1;
+
+    *dst = (int)value;
+    *p = end;
+    return 0;
+}
+
+static int stats_parse_uint32( const char **p, uint32_t *dst )
+{
+    char *end;
+    unsigned long value;
+
+    if( **p < '0' || **p > '9' )
+        return -1;
+
+    errno = 0;
+    value = strtoul( *p, &end, 10 );
+    if( end == *p || errno == ERANGE || value > UINT32_MAX )
+        return -1;
+
+    *dst = (uint32_t)value;
+    *p = end;
+    return 0;
+}
+
+static int stats_parse_resolution( const char *opts, int *width, int *height )
+{
+    const char *p = opts + 9;
+
+    while( *p == ' ' )
+        p++;
+    if( stats_parse_positive_int( &p, width ) || *p++ != 'x' ||
+        stats_parse_positive_int( &p, height ) || !stats_option_token_end( *p ) ||
+        *width > INT_MAX / *height )
+        return -1;
+
+    return 0;
+}
+
+static int stats_parse_timebase( const char *opts, uint32_t *num, uint32_t *den )
+{
+    const char *p = stats_find_option( opts, "timebase" );
+
+    if( !p || stats_parse_uint32( &p, num ) || *p++ != '/' ||
+        stats_parse_uint32( &p, den ) || !stats_option_token_end( *p ) ||
+        !*num || !*den )
+        return -1;
+
+    return 0;
+}
+
+static int stats_copy_option_token( const char *opts, const char *opt, char *dst, size_t dst_size )
+{
+    const char *p = stats_find_option( opts, opt );
+    size_t len;
+
+    if( !p || !dst_size )
+        return -1;
+    len = strcspn( p, " " );
+    if( !len || len >= dst_size )
+        return -1;
+
+    memcpy( dst, p, len );
+    dst[len] = '\0';
+    return 0;
+}
+
+static int stats_option_matches_int( const char *opts, const char *opt, int value )
+{
+    const char *p = stats_find_option( opts, opt );
+    int i;
+
+    return p && !stats_parse_int_token( p, &i ) && i == value;
+}
+
 #define CMP_OPT_FIRST_PASS( opt, param_val )\
 {\
-    if( ( p = strstr( opts, opt "=" ) ) && sscanf( p, opt "=%d" , &i ) && param_val != i )\
+    const char *opt_value = stats_find_option( opts, opt );\
+    if( opt_value && stats_parse_int_token( opt_value, &i ) )\
+    {\
+        x264_log( h, X264_LOG_ERROR, opt " specified in stats file not valid\n" );\
+        return -1;\
+    }\
+    if( opt_value && param_val != i )\
     {\
         x264_log( h, X264_LOG_ERROR, "different " opt " setting than first pass (%d vs %d)\n", param_val, i );\
         return -1;\
@@ -1183,12 +1538,13 @@ int x264_ratecontrol_new( x264_t *h )
             int i, j;
             uint32_t k, l;
             char *opts = stats_buf;
+            const char *stats_opt_value;
             stats_in = strchr( stats_buf, '\n' );
             if( !stats_in )
                 return -1;
             *stats_in = '\0';
             stats_in++;
-            if( sscanf( opts, "#options: %dx%d", &i, &j ) != 2 )
+            if( stats_parse_resolution( opts, &i, &j ) )
             {
                 x264_log( h, X264_LOG_ERROR, "resolution specified in stats file not valid\n" );
                 return -1;
@@ -1198,12 +1554,12 @@ int x264_ratecontrol_new( x264_t *h )
                 rc->mbtree.srcdim[0] = i;
                 rc->mbtree.srcdim[1] = j;
             }
-            res_factor = (float)h->param.i_width * h->param.i_height / (i*j);
+            res_factor = (float)((double)h->param.i_width * h->param.i_height / ((double)i * j));
             /* Change in bits relative to resolution isn't quite linear on typical sources,
              * so we'll at least try to roughly approximate this effect. */
             res_factor_bits = powf( res_factor, 0.7 );
 
-            if( !( p = strstr( opts, "timebase=" ) ) || sscanf( p, "timebase=%u/%u", &k, &l ) != 2 )
+            if( stats_parse_timebase( opts, &k, &l ) )
             {
                 x264_log( h, X264_LOG_ERROR, "timebase specified in stats file not valid\n" );
                 return -1;
@@ -1224,11 +1580,15 @@ int x264_ratecontrol_new( x264_t *h )
             CMP_OPT_FIRST_PASS( "bluray_compat", h->param.b_bluray_compat );
             CMP_OPT_FIRST_PASS( "mbtree", h->param.rc.b_mb_tree );
 
-            if( (p = strstr( opts, "interlaced=" )) )
+            if( stats_find_option( opts, "interlaced" ) )
             {
                 char *current = h->param.b_interlaced ? h->param.b_tff ? "tff" : "bff" : h->param.b_fake_interlaced ? "fake" : "0";
                 char buf[5];
-                sscanf( p, "interlaced=%4s", buf );
+                if( stats_copy_option_token( opts, "interlaced", buf, sizeof(buf) ) )
+                {
+                    x264_log( h, X264_LOG_ERROR, "interlaced specified in stats file not valid\n" );
+                    return -1;
+                }
                 if( strcmp( current, buf ) )
                 {
                     x264_log( h, X264_LOG_ERROR, "different interlaced setting than first pass (%s vs %s)\n", current, buf );
@@ -1236,31 +1596,32 @@ int x264_ratecontrol_new( x264_t *h )
                 }
             }
 
-            if( (p = strstr( opts, "keyint=" )) )
+            const char *keyint = stats_find_option( opts, "keyint" );
+            if( keyint )
             {
-                p += 7;
                 char buf[13] = "infinite ";
                 if( h->param.i_keyint_max != X264_KEYINT_MAX_INFINITE && snprintf( buf, sizeof(buf), "%d ", h->param.i_keyint_max ) < 0 )
                     return -1;
                 size_t keyint_len = strlen( buf );
-                if( strncmp( p, buf, keyint_len ) )
+                if( strncmp( keyint, buf, keyint_len ) )
                 {
                     x264_log( h, X264_LOG_ERROR, "different keyint setting than first pass (%.*s vs %.*s)\n",
-                              (int)keyint_len-1, buf, (int)strcspn(p, " "), p );
+                              (int)keyint_len-1, buf, (int)strcspn(keyint, " "), keyint );
                     return -1;
                 }
             }
 
-            if( strstr( opts, "qp=0" ) && h->param.rc.i_rc_method == X264_RC_ABR )
+            if( stats_option_matches_int( opts, "qp", 0 ) && h->param.rc.i_rc_method == X264_RC_ABR )
                 x264_log( h, X264_LOG_WARNING, "1st pass was lossless, bitrate prediction will be inaccurate\n" );
 
-            if( !strstr( opts, "direct=3" ) && h->param.analyse.i_direct_mv_pred == X264_DIRECT_PRED_AUTO )
+            if( !stats_option_matches_int( opts, "direct", 3 ) && h->param.analyse.i_direct_mv_pred == X264_DIRECT_PRED_AUTO )
             {
                 x264_log( h, X264_LOG_WARNING, "direct=auto not used on the first pass\n" );
                 h->mb.b_direct_auto_write = 1;
             }
 
-            if( ( p = strstr( opts, "b_adapt=" ) ) && sscanf( p, "b_adapt=%d", &i ) && i >= X264_B_ADAPT_NONE && i <= X264_B_ADAPT_TRELLIS )
+            if( ( stats_opt_value = stats_find_option( opts, "b_adapt" ) ) &&
+                !stats_parse_int_token( stats_opt_value, &i ) && i >= X264_B_ADAPT_NONE && i <= X264_B_ADAPT_TRELLIS )
                 h->param.i_bframe_adaptive = i;
             else if( h->param.i_bframe )
             {
@@ -1268,8 +1629,16 @@ int x264_ratecontrol_new( x264_t *h )
                 return -1;
             }
 
-            if( (h->param.rc.b_mb_tree || h->param.rc.i_vbv_buffer_size) && ( p = strstr( opts, "rc_lookahead=" ) ) && sscanf( p, "rc_lookahead=%d", &i ) )
+            if( (h->param.rc.b_mb_tree || h->param.rc.i_vbv_buffer_size) &&
+                ( stats_opt_value = stats_find_option( opts, "rc_lookahead" ) ) )
+            {
+                if( stats_parse_int_token( stats_opt_value, &i ) || i < 0 )
+                {
+                    x264_log( h, X264_LOG_ERROR, "rc_lookahead specified in stats file not valid\n" );
+                    return -1;
+                }
                 h->param.rc.i_lookahead = i;
+            }
         }
 
         /* find number of pics */
@@ -1321,13 +1690,22 @@ int x264_ratecontrol_new( x264_t *h )
             char pict_type = 0;
             int e;
             char *next;
+            const char *stats_fields_end;
             float qp_rc, qp_aq;
-            int ref;
+            int64_t duration, cpb_duration;
+            int tex_bits, mv_bits, misc_bits, i_count, p_count, s_count;
+            char direct_mode;
 
             next= strchr(p, ';');
             if( next )
                 *next++ = 0; //sscanf is unbelievably slow on long strings
-            e = sscanf( p, " in:%d out:%d ", &frame_number, &frame_out_number );
+            e = stats_parse_pass2_main( p, &stats_fields_end, &frame_number, &frame_out_number, &pict_type,
+                                        &duration, &cpb_duration, &qp_rc, &qp_aq,
+                                        &tex_bits, &mv_bits, &misc_bits,
+                                        &i_count, &p_count, &s_count,
+                                        &direct_mode ) ? -1 : 14;
+            if( e < 0 )
+                goto parse_error;
 
             if( frame_number < 0 || frame_number >= rc->num_entries )
             {
@@ -1341,12 +1719,15 @@ int x264_ratecontrol_new( x264_t *h )
             }
             rce = &rc->entry[frame_number];
             rc->entry_out[frame_out_number] = rce;
-            rce->direct_mode = 0;
-
-            e += sscanf( p, " in:%*d out:%*d type:%c dur:%"SCNd64" cpbdur:%"SCNd64" q:%f aq:%f tex:%d mv:%d misc:%d imb:%d pmb:%d smb:%d d:%c",
-                   &pict_type, &rce->i_duration, &rce->i_cpb_duration, &qp_rc, &qp_aq, &rce->tex_bits,
-                   &rce->mv_bits, &rce->misc_bits, &rce->i_count, &rce->p_count,
-                   &rce->s_count, &rce->direct_mode );
+            rce->i_duration = duration;
+            rce->i_cpb_duration = cpb_duration;
+            rce->tex_bits = tex_bits;
+            rce->mv_bits = mv_bits;
+            rce->misc_bits = misc_bits;
+            rce->i_count = i_count;
+            rce->p_count = p_count;
+            rce->s_count = s_count;
+            rce->direct_mode = direct_mode;
             rce->tex_bits  *= res_factor_bits;
             rce->mv_bits   *= res_factor_bits;
             rce->misc_bits *= res_factor_bits;
@@ -1354,33 +1735,27 @@ int x264_ratecontrol_new( x264_t *h )
             rce->p_count   *= res_factor;
             rce->s_count   *= res_factor;
 
-            p = strstr( p, "ref:" );
-            if( !p )
+            const char *stats_ref_end = stats_fields_end;
+            while( isspace( (unsigned char)*stats_ref_end ) )
+                stats_ref_end++;
+            if( stats_parse_match( &stats_ref_end, "ref:" ) )
                 goto parse_error;
-            p += 4;
-            for( ref = 0; ref < 16; ref++ )
-            {
-                if( sscanf( p, " %d", &rce->refcount[ref] ) != 1 )
-                    break;
-                p = strchr( p+1, ' ' );
-                if( !p )
-                    goto parse_error;
-            }
-            rce->refs = ref;
+            if( stats_parse_ref_list( &stats_ref_end, rce->refcount, &rce->refs ) )
+                goto parse_error;
 
             /* find weights */
             rce->i_weight_denom[0] = rce->i_weight_denom[1] = -1;
-            char *w = strchr( p, 'w' );
+            const char *w = NULL;
+            if( *stats_ref_end )
+            {
+                if( strncmp( stats_ref_end, "w:", 2 ) )
+                    goto parse_error;
+                w = stats_ref_end;
+            }
             if( w )
             {
-                int count = sscanf( w, "w:%hd,%hd,%hd,%hd,%hd,%hd,%hd,%hd",
-                                    &rce->i_weight_denom[0], &rce->weight[0][0], &rce->weight[0][1],
-                                    &rce->i_weight_denom[1], &rce->weight[1][0], &rce->weight[1][1],
-                                    &rce->weight[2][0], &rce->weight[2][1] );
-                if( count == 3 )
-                    rce->i_weight_denom[1] = -1;
-                else if( count != 8 )
-                    rce->i_weight_denom[0] = rce->i_weight_denom[1] = -1;
+                if( stats_parse_weight_list( w, rce ) )
+                    goto parse_error;
             }
 
             if( pict_type != 'b' )
@@ -1496,26 +1871,74 @@ fail:
     return -1;
 }
 
+static int parse_zone_int( char **p, int *dst )
+{
+    char *end;
+    long value;
+
+    errno = 0;
+    value = strtol( *p, &end, 10 );
+    if( end == *p || errno == ERANGE || value < INT_MIN || value > INT_MAX )
+        return -1;
+    *dst = (int)value;
+    *p = end;
+    return 0;
+}
+
+static int parse_zone_float( char **p, float *dst )
+{
+    char *end;
+    float value;
+
+    errno = 0;
+    value = strtof( *p, &end );
+    if( end == *p || errno == ERANGE || !isfinite( value ) )
+        return -1;
+    *dst = value;
+    *p = end;
+    return 0;
+}
+
 static int parse_zone( x264_t *h, x264_zone_t *z, char *p )
 {
-    int len = 0;
     char *tok, UNUSED *saveptr=NULL;
     z->param = NULL;
     z->f_bitrate_factor = 1;
-    if( 3 <= sscanf(p, "%d,%d,q=%d%n", &z->i_start, &z->i_end, &z->i_qp, &len) )
-        z->b_force_qp = 1;
-    else if( 3 <= sscanf(p, "%d,%d,b=%f%n", &z->i_start, &z->i_end, &z->f_bitrate_factor, &len) )
-        z->b_force_qp = 0;
-    else if( 2 <= sscanf(p, "%d,%d%n", &z->i_start, &z->i_end, &len) )
-        z->b_force_qp = 0;
-    else
+    if( parse_zone_int( &p, &z->i_start ) || *p++ != ',' || parse_zone_int( &p, &z->i_end ) )
     {
         x264_log( h, X264_LOG_ERROR, "invalid zone: \"%s\"\n", p );
         return -1;
     }
-    p += len;
+    z->b_force_qp = 0;
+    if( *p == ',' )
+    {
+        if( !strncmp( p + 1, "q=", 2 ) )
+        {
+            p += 3;
+            if( parse_zone_int( &p, &z->i_qp ) )
+            {
+                x264_log( h, X264_LOG_ERROR, "invalid zone qp\n" );
+                return -1;
+            }
+            z->b_force_qp = 1;
+        }
+        else if( !strncmp( p + 1, "b=", 2 ) )
+        {
+            p += 3;
+            if( parse_zone_float( &p, &z->f_bitrate_factor ) )
+            {
+                x264_log( h, X264_LOG_ERROR, "invalid zone bitrate factor\n" );
+                return -1;
+            }
+        }
+    }
     if( !*p )
         return 0;
+    if( *p != ',' )
+    {
+        x264_log( h, X264_LOG_ERROR, "invalid zone: \"%s\"\n", p );
+        return -1;
+    }
     CHECKED_MALLOC( z->param, sizeof(x264_param_t) );
     memcpy( z->param, &h->param, sizeof(x264_param_t) );
     z->param->opaque = NULL;

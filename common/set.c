@@ -25,6 +25,9 @@
 
 #include "common.h"
 
+#include <ctype.h>
+#include <errno.h>
+
 #define SHIFT(x,s) ((s)<=0 ? (x)<<-(s) : ((x)+(1<<((s)-1)))>>(s))
 #define DIV(n,d) (((n) + ((d)>>1)) / (d))
 #define X264_QUANT_SCALE_MODES 6
@@ -327,12 +330,96 @@ void x264_cqm_delete( x264_t *h )
     x264_free( h->nr_offset_emergency );
 }
 
+static int cqm_is_delimiter( int c )
+{
+    return c == ',' || isspace( (unsigned char)c );
+}
+
+static int cqm_is_name_char( int c )
+{
+    return isalnum( (unsigned char)c ) || c == '_';
+}
+
+static const char *cqm_find_jmlist( const char *buf, const char *name )
+{
+    size_t len = strlen( name );
+    const char *p = buf;
+
+    while( (p = strstr( p, name )) )
+    {
+        const char *end = p + len;
+        if( (p == buf || !cqm_is_name_char( p[-1] )) &&
+            ((*end == 'U' || *end == 'V') ? !cqm_is_name_char( end[1] ) : !cqm_is_name_char( *end )) )
+            return p;
+        p++;
+    }
+
+    return NULL;
+}
+
+static const char *cqm_find_next_jmlist( const char *buf )
+{
+    static const char * const names[] =
+    {
+        "INTRA4X4_LUMA",
+        "INTER4X4_LUMA",
+        "INTRA4X4_CHROMA",
+        "INTER4X4_CHROMA",
+        "INTRA8X8_LUMA",
+        "INTER8X8_LUMA",
+        "INTRA8X8_CHROMA",
+        "INTER8X8_CHROMA",
+        NULL
+    };
+    const char *next = NULL;
+
+    for( int i = 0; names[i]; i++ )
+    {
+        const char *p = cqm_find_jmlist( buf, names[i] );
+        if( p && (!next || p < next) )
+            next = p;
+    }
+
+    return next;
+}
+
+static const char *cqm_next_value_start( const char *p, int first )
+{
+    if( !*p )
+        return NULL;
+    if( first )
+        while( cqm_is_delimiter( *p ) || *p == '=' )
+            p++;
+    else
+    {
+        if( !cqm_is_delimiter( *p ) )
+            return p;
+        while( cqm_is_delimiter( *p ) )
+            p++;
+    }
+
+    return *p ? p : NULL;
+}
+
+static int cqm_parse_int( const char *p, char **end, int *dst )
+{
+    long value;
+
+    errno = 0;
+    value = strtol( p, end, 10 );
+    if( *end == p || errno == ERANGE || value < INT_MIN || value > INT_MAX )
+        return -1;
+
+    *dst = (int)value;
+    return 0;
+}
+
 static int cqm_parse_jmlist( x264_t *h, const char *buf, const char *name,
                              uint8_t *cqm, const uint8_t *jvt, int length )
 {
     int i;
 
-    char *p = strstr( buf, name );
+    const char *p = cqm_find_jmlist( buf, name );
     if( !p )
     {
         memset( cqm, 16, length );
@@ -343,12 +430,20 @@ static int cqm_parse_jmlist( x264_t *h, const char *buf, const char *name,
     if( *p == 'U' || *p == 'V' )
         p++;
 
-    char *nextvar = strstr( p, "INT" );
+    const char *nextvar = cqm_find_next_jmlist( p );
 
-    for( i = 0; i < length && (p = strpbrk( p, " \t\n," )) && (p = strpbrk( p, "0123456789" )); i++ )
+    for( i = 0; i < length; i++ )
     {
+        char *end;
         int coef = -1;
-        sscanf( p, "%d", &coef );
+        p = cqm_next_value_start( p, i == 0 );
+        if( !p || (nextvar && p >= nextvar) )
+            break;
+        if( cqm_parse_int( p, &end, &coef ) || (*end && !cqm_is_delimiter( *end )) )
+        {
+            x264_log( h, X264_LOG_ERROR, "bad coefficient in list '%s'\n", name );
+            return -1;
+        }
         if( i == 0 && coef == 0 )
         {
             memcpy( cqm, jvt, length );
@@ -360,9 +455,10 @@ static int cqm_parse_jmlist( x264_t *h, const char *buf, const char *name,
             return -1;
         }
         cqm[i] = coef;
+        p = end;
     }
 
-    if( (nextvar && p > nextvar) || i != length )
+    if( i != length || (nextvar && p && p > nextvar) )
     {
         x264_log( h, X264_LOG_ERROR, "not enough coefficients in list '%s'\n", name );
         return -1;

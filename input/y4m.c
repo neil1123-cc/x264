@@ -25,6 +25,7 @@
  *****************************************************************************/
 
 #include "input.h"
+#include <errno.h>
 
 #define FAIL_IF_ERROR( cond, ... ) FAIL_IF_ERR( cond, "y4m", __VA_ARGS__ )
 
@@ -46,13 +47,74 @@ typedef struct
 #define Y4M_FRAME_MAGIC "FRAME"
 #define Y4M_MAX_HEADER 256
 
+static int parse_uint32_token( const char *tokstart, char **tokend, uint32_t *dst )
+{
+    unsigned long value;
+
+    if( *tokstart < '0' || *tokstart > '9' )
+        return -1;
+
+    errno = 0;
+    value = strtoul( tokstart, tokend, 10 );
+    if( errno == ERANGE || value > UINT32_MAX )
+        return -1;
+
+    *dst = (uint32_t)value;
+    return 0;
+}
+
+static int y4m_is_token_end( int c )
+{
+    return c == 0x20 || c == '\n';
+}
+
+static int parse_ratio_token( const char *tokstart, uint32_t *num, uint32_t *den )
+{
+    char *tokend;
+
+    if( parse_uint32_token( tokstart, &tokend, num ) || *tokend++ != ':' ||
+        parse_uint32_token( tokend, &tokend, den ) || *tokend != 0x20 )
+        return -1;
+
+    if( !*num && !*den )
+        return 1;
+    return !*num || !*den ? -1 : 0;
+}
+
+static int parse_depth_suffix( const char *tokstart, int *bit_depth )
+{
+    char *tokend;
+    uint32_t depth;
+
+    if( parse_uint32_token( tokstart, &tokend, &depth ) || !y4m_is_token_end( *tokend ) || depth > INT_MAX )
+        return -1;
+
+    *bit_depth = (int)depth;
+    return 0;
+}
+
+static int y4m_suffix_is( const char *suffix, const char *name )
+{
+    size_t len = strlen( name );
+    return !strncmp( suffix, name, len ) && y4m_is_token_end( suffix[len] );
+}
+
 static int parse_csp_and_depth( char *csp_name, int *bit_depth )
 {
     int csp = X264_CSP_MAX;
+    char *suffix;
 
     /* Set colorspace from known variants */
     if( !strncmp( "mono", csp_name, 4 ) )
+    {
         csp = X264_CSP_I400;
+        suffix = csp_name + 4;
+        if( *suffix != 0x20 && parse_depth_suffix( suffix, bit_depth ) )
+            return X264_CSP_MAX;
+        if( *suffix == 0x20 )
+            *bit_depth = 8;
+        return csp;
+    }
     else if( !strncmp( "420", csp_name, 3 ) )
         csp = X264_CSP_I420;
     else if( !strncmp( "422", csp_name, 3 ) )
@@ -60,10 +122,23 @@ static int parse_csp_and_depth( char *csp_name, int *bit_depth )
     else if( !strncmp( "444", csp_name, 3 ) && strncmp( "444alpha", csp_name, 8 ) ) // only accept alphaless 4:4:4
         csp = X264_CSP_I444;
 
-    /* Set high bit depth from known extensions */
-    if( sscanf( csp_name, "mono%d", bit_depth ) != 1 &&
-        sscanf( csp_name, "%*d%*[pP]%d", bit_depth ) != 1 )
+    if( csp == X264_CSP_MAX )
+        return csp;
+
+    suffix = csp_name + 3;
+    if( y4m_is_token_end( *suffix ) )
         *bit_depth = 8;
+    else if( (*suffix == 'p' || *suffix == 'P') && suffix[1] >= '0' && suffix[1] <= '9' )
+    {
+        if( parse_depth_suffix( suffix + 1, bit_depth ) )
+            return X264_CSP_MAX;
+    }
+    else if( csp == X264_CSP_I420 && (y4m_suffix_is( suffix, "jpeg" ) ||
+                                      y4m_suffix_is( suffix, "mpeg2" ) ||
+                                      y4m_suffix_is( suffix, "paldv" )) )
+        *bit_depth = 8;
+    else
+        return X264_CSP_MAX;
 
     return csp;
 }
@@ -119,16 +194,18 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         {
             case 'W': /* Width. Required. */
             {
-                long width = strtol( tokstart, &tokend, 10 );
-                FAIL_IF_ERROR( tokend == tokstart || width <= 0 || width > MAX_RESOLUTION, "invalid width `%s'\n", tokstart );
+                uint32_t width;
+                FAIL_IF_ERROR( parse_uint32_token( tokstart, &tokend, &width ) || *tokend != 0x20 ||
+                               !width || width > MAX_RESOLUTION, "invalid width `%s'\n", tokstart );
                 info->width = (int)width;
                 tokstart=tokend;
                 break;
             }
             case 'H': /* Height. Required. */
             {
-                long height = strtol( tokstart, &tokend, 10 );
-                FAIL_IF_ERROR( tokend == tokstart || height <= 0 || height > MAX_RESOLUTION, "invalid height `%s'\n", tokstart );
+                uint32_t height;
+                FAIL_IF_ERROR( parse_uint32_token( tokstart, &tokend, &height ) || *tokend != 0x20 ||
+                               !height || height > MAX_RESOLUTION, "invalid height `%s'\n", tokstart );
                 info->height = (int)height;
                 tokstart=tokend;
                 break;
@@ -158,7 +235,10 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
                 }
                 break;
             case 'F': /* Frame rate - 0:0 if unknown */
-                if( sscanf( tokstart, "%u:%u", &n, &d ) == 2 && n && d )
+            {
+                int ratio = parse_ratio_token( tokstart, &n, &d );
+                FAIL_IF_ERROR( ratio < 0, "invalid frame rate `%s'\n", tokstart );
+                if( !ratio )
                 {
                     if( !opt->b_accurate_fps )
                         x264_ntsc_fps( &n, &d );
@@ -168,9 +248,13 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
                 }
                 tokstart = strchr( tokstart, 0x20 );
                 break;
+            }
             case 'A': /* Pixel aspect - 0:0 if unknown */
+            {
                 /* Don't override the aspect ratio if sar has been explicitly set on the commandline. */
-                if( sscanf( tokstart, "%u:%u", &n, &d ) == 2 && n && d )
+                int ratio = parse_ratio_token( tokstart, &n, &d );
+                FAIL_IF_ERROR( ratio < 0, "invalid pixel aspect `%s'\n", tokstart );
+                if( !ratio )
                 {
                     x264_reduce_fraction( &n, &d );
                     info->sar_width  = n;
@@ -178,6 +262,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
                 }
                 tokstart = strchr( tokstart, 0x20 );
                 break;
+            }
             case 'X': /* Vendor extensions */
                 if( !strncmp( "YSCSS=", tokstart, 6 ) )
                 {
@@ -189,18 +274,20 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
                 {
                     /* ffmpeg's color range extension */
                     tokstart += 11;
-                    if( !strncmp( "FULL", tokstart, 4 ) )
+                    if( !strncmp( "FULL", tokstart, 4 ) && tokstart[4] == 0x20 )
                         info->fullrange = 1;
-                    else if( !strncmp( "LIMITED", tokstart, 7 ) )
+                    else if( !strncmp( "LIMITED", tokstart, 7 ) && tokstart[7] == 0x20 )
                         info->fullrange = 0;
+                    else
+                        FAIL_IF_ERROR( 1, "invalid color range `%s'\n", tokstart );
                 }
                 else if( !strncmp( "LENGTH=", tokstart, 7 ) )
                 {
                     /* x265 extension: total frame count for ETA */
-                    long num_frames;
+                    uint32_t num_frames;
                     tokstart += 7;
-                    num_frames = strtol( tokstart, &tokend, 10 );
-                    FAIL_IF_ERROR( tokend == tokstart || num_frames < 0 || num_frames > INT_MAX, "invalid frame count `%s'\n", tokstart );
+                    FAIL_IF_ERROR( parse_uint32_token( tokstart, &tokend, &num_frames ) || *tokend != 0x20 ||
+                                   num_frames > INT_MAX, "invalid frame count `%s'\n", tokstart );
                     info->num_frames = (int)num_frames;
                     tokstart = tokend;
                 }

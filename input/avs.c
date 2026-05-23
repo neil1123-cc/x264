@@ -126,6 +126,42 @@ typedef struct
 #endif
 } avs_hnd_t;
 
+static inline int invalid_dimensions( int width, int height )
+{
+    return width <= 0 || height <= 0 || width > MAX_RESOLUTION || height > MAX_RESOLUTION;
+}
+
+static inline int invalid_avs_dimensions( int width, int height, int allow_double_width )
+{
+    int max_width = allow_double_width ? MAX_RESOLUTION * 2 : MAX_RESOLUTION;
+    return width <= 0 || height <= 0 || width > max_width || height > MAX_RESOLUTION;
+}
+
+static void avs_release_value_if_defined( avs_hnd_t *h, AVS_Value *v )
+{
+    if( h && h->func.avs_release_value && avs_defined( *v ) )
+    {
+        h->func.avs_release_value( *v );
+        *v = avs_void;
+    }
+}
+
+static void avs_cleanup_handle( avs_hnd_t *h )
+{
+    if( !h )
+        return;
+    if( h->func.avs_release_clip && h->clip )
+        h->func.avs_release_clip( h->clip );
+    if( h->func.avs_delete_script_environment && h->env )
+        h->func.avs_delete_script_environment( h->env );
+    if( h->library )
+        avs_close( h->library );
+#if HAVE_AUDIO
+    free( h->filename );
+#endif
+    free( h );
+}
+
 /* load the library and functions we require from it */
 static int custom_avs_load_library( avs_hnd_t *h )
 {
@@ -225,32 +261,50 @@ static AVS_Value update_clip( avs_hnd_t *h, const AVS_VideoInfo **vi, AVS_Value 
     h->func.avs_release_clip( h->clip );
     h->clip = h->func.avs_take_clip( res, h->env );
     h->func.avs_release_value( release );
-    *vi = h->func.avs_get_video_info( h->clip );
+    *vi = h->clip ? h->func.avs_get_video_info( h->clip ) : NULL;
     return res;
 }
 
 static float get_avs_version( avs_hnd_t *h )
 {
-    FAIL_IF_ERROR( !h->func.avs_function_exists( h->env, "VersionNumber" ), "VersionNumber does not exist\n" );
+    if( !h->func.avs_function_exists( h->env, "VersionNumber" ) )
+    {
+        x264_cli_log( "avs", X264_LOG_ERROR, "VersionNumber does not exist\n" );
+        return -1;
+    }
     AVS_Value ver = h->func.avs_invoke( h->env, "VersionNumber", avs_new_value_array( NULL, 0 ), NULL );
-    FAIL_IF_ERROR( avs_is_error( ver ), "unable to determine avisynth version: %s\n", avs_as_error( ver ) );
-    FAIL_IF_ERROR( !avs_is_float( ver ), "VersionNumber did not return a float value\n" );
+    if( avs_is_error( ver ) )
+    {
+        x264_cli_log( "avs", X264_LOG_ERROR, "unable to determine avisynth version: %s\n", avs_as_error( ver ) );
+        avs_release_value_if_defined( h, &ver );
+        return -1;
+    }
+    if( !avs_is_float( ver ) )
+    {
+        x264_cli_log( "avs", X264_LOG_ERROR, "VersionNumber did not return a float value\n" );
+        avs_release_value_if_defined( h, &ver );
+        return -1;
+    }
     float ret = avs_as_float( ver );
-    h->func.avs_release_value( ver );
+    avs_release_value_if_defined( h, &ver );
     return ret;
 }
 
 #ifdef _WIN32
 static char *utf16_to_ansi( const wchar_t *utf16 )
 {
-    BOOL invalid;
+    if( !utf16 )
+        return NULL;
+    BOOL invalid = FALSE;
     int len = WideCharToMultiByte( CP_ACP, WC_NO_BEST_FIT_CHARS, utf16, -1, NULL, 0, NULL, &invalid );
     if( len && !invalid )
     {
-        char *ansi = malloc( len * sizeof( char ) );
+        char *ansi = malloc( (size_t)len );
         if( ansi )
         {
-            if( WideCharToMultiByte( CP_ACP, WC_NO_BEST_FIT_CHARS, utf16, -1, ansi, len, NULL, &invalid ) && !invalid )
+            invalid = FALSE;
+            int written = WideCharToMultiByte( CP_ACP, WC_NO_BEST_FIT_CHARS, utf16, -1, ansi, len, NULL, &invalid );
+            if( written == len && !invalid )
                 return ansi;
             free( ansi );
         }
@@ -268,13 +322,15 @@ static char *utf8_to_ansi( const char *filename )
         if( !(ansi = utf16_to_ansi( filename_utf16 )) )
         {
             /* Check for a legacy 8.3 short filename. */
-            int len = GetShortPathNameW( filename_utf16, NULL, 0 );
+            DWORD len = GetShortPathNameW( filename_utf16, NULL, 0 );
             if( len )
             {
-                wchar_t *short_utf16 = malloc( len * sizeof( wchar_t ) );
+                size_t short_utf16_size = (size_t)len * sizeof( wchar_t );
+                wchar_t *short_utf16 = short_utf16_size / sizeof( wchar_t ) == len ? malloc( short_utf16_size ) : NULL;
                 if( short_utf16 )
                 {
-                    if( GetShortPathNameW( filename_utf16, short_utf16, len ) )
+                    DWORD written = GetShortPathNameW( filename_utf16, short_utf16, len );
+                    if( written && written < len )
                         ansi = utf16_to_ansi( short_utf16 );
                     free( short_utf16 );
                 }
@@ -286,6 +342,16 @@ static char *utf8_to_ansi( const char *filename )
 }
 #endif
 
+#define FAIL_IF_ERROR_CLEANUP( cond, ... )\
+do\
+{\
+    if( cond )\
+    {\
+        x264_cli_log( "avs", X264_LOG_ERROR, __VA_ARGS__ );\
+        goto fail;\
+    }\
+} while( 0 )
+
 static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, cli_input_opt_t *opt )
 {
     FILE *fh = x264_fopen( psz_filename, "r" );
@@ -295,40 +361,41 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     fclose( fh );
     FAIL_IF_ERROR( !b_regular, "AVS input is incompatible with non-regular file `%s'\n", psz_filename );
 
+    AVS_Value res = avs_void;
+#ifdef _WIN32
+    char *ansi_filename = NULL;
+#endif
     avs_hnd_t *h = calloc( 1, sizeof(avs_hnd_t) );
     if( !h )
         return -1;
-    FAIL_IF_ERROR( custom_avs_load_library( h ), "failed to load avisynth\n" );
+    FAIL_IF_ERROR_CLEANUP( custom_avs_load_library( h ), "failed to load avisynth\n" );
     h->env = h->func.avs_create_script_environment( AVS_INTERFACE_25 );
+    FAIL_IF_ERROR_CLEANUP( !h->env, "failed to create avisynth script environment\n" );
     if( h->func.avs_get_error )
     {
         const char *error = h->func.avs_get_error( h->env );
-        FAIL_IF_ERROR( error, "%s\n", error );
+        FAIL_IF_ERROR_CLEANUP( error, "%s\n", error );
     }
     float avs_version = get_avs_version( h );
     if( avs_version <= 0 )
-        return -1;
+        goto fail;
     x264_cli_log( "avs", X264_LOG_DEBUG, "using avisynth version %.2f\n", avs_version );
 
 #ifdef _WIN32
     /* Avisynth doesn't support Unicode filenames. */
-    char *ansi_filename = utf8_to_ansi( psz_filename );
-    FAIL_IF_ERROR( !ansi_filename, "invalid ansi filename\n" );
+    ansi_filename = utf8_to_ansi( psz_filename );
+    FAIL_IF_ERROR_CLEANUP( !ansi_filename, "invalid ansi filename\n" );
     AVS_Value arg = avs_new_value_string( ansi_filename );
 #else
     AVS_Value arg = avs_new_value_string( psz_filename );
 #endif
 
-    AVS_Value res;
     const char *filename_ext = get_filename_extension( psz_filename );
 
     if( !strcasecmp( filename_ext, "avs" ) )
     {
         res = h->func.avs_invoke( h->env, "Import", arg, NULL );
-#ifdef _WIN32
-        free( ansi_filename );
-#endif
-        FAIL_IF_ERROR( avs_is_error( res ), "%s\n", avs_as_error( res ) );
+        FAIL_IF_ERROR_CLEANUP( avs_is_error( res ), "%s\n", avs_as_error( res ) );
         /* check if the user is using a multi-threaded script and apply distributor if necessary.
            adapted from avisynth's vfw interface */
         AVS_Value mt_test = h->func.avs_invoke( h->env, "GetMTMode", avs_new_value_bool( 0 ), NULL );
@@ -337,6 +404,12 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         if( mt_mode > 0 && mt_mode < 5 )
         {
             AVS_Value temp = h->func.avs_invoke( h->env, "Distributor", res, NULL );
+            if( avs_is_error( temp ) )
+            {
+                x264_cli_log( "avs", X264_LOG_ERROR, "%s\n", avs_as_error( temp ) );
+                avs_release_value_if_defined( h, &temp );
+                goto fail;
+            }
             h->func.avs_release_value( res );
             res = temp;
         }
@@ -346,9 +419,10 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         /* AviSynth+ need explicit invoke of AutoloadPlugins() for registering plugins functions */
         if( h->func.avs_function_exists( h->env, "AutoloadPlugins" ) )
         {
-            res = h->func.avs_invoke( h->env, "AutoloadPlugins", avs_new_value_array( NULL, 0 ), NULL );
-            if( avs_is_error( res ) )
-                x264_cli_log( "avs", X264_LOG_INFO, "AutoloadPlugins failed: %s\n", avs_as_string( res ) );
+            AVS_Value autoload = h->func.avs_invoke( h->env, "AutoloadPlugins", avs_new_value_array( NULL, 0 ), NULL );
+            if( avs_is_error( autoload ) )
+                x264_cli_log( "avs", X264_LOG_INFO, "AutoloadPlugins failed: %s\n", avs_as_error( autoload ) );
+            avs_release_value_if_defined( h, &autoload );
         }
 
         /* cycle through known source filters to find one that works */
@@ -375,21 +449,31 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
                 break;
             }
             x264_cli_printf( X264_LOG_INFO, "failed\n" );
+            avs_release_value_if_defined( h, &res );
         }
-#ifdef _WIN32
-        free( ansi_filename );
-#endif
-        FAIL_IF_ERROR( !filter[i], "unable to find source filter to open `%s'\n", psz_filename );
+        FAIL_IF_ERROR_CLEANUP( !filter[i], "unable to find source filter to open `%s'\n", psz_filename );
         if( !strcasecmp( filter[i], "HBVFWSource" ) )
             opt->bit_depth = 16;
     }
-    FAIL_IF_ERROR( !avs_is_clip( res ), "`%s' didn't return a video clip\n", psz_filename );
+#ifdef _WIN32
+    free( ansi_filename );
+    ansi_filename = NULL;
+#endif
+    FAIL_IF_ERROR_CLEANUP( !avs_is_clip( res ), "`%s' didn't return a video clip\n", psz_filename );
     h->clip = h->func.avs_take_clip( res, h->env );
+    FAIL_IF_ERROR_CLEANUP( !h->clip, "failed to take video clip\n" );
     const AVS_VideoInfo *vi = h->func.avs_get_video_info( h->clip );
-    FAIL_IF_ERROR( !avs_has_video( vi ), "`%s' has no video data\n", psz_filename );
+    FAIL_IF_ERROR_CLEANUP( !vi, "failed to read video info\n" );
+    FAIL_IF_ERROR_CLEANUP( !avs_has_video( vi ), "`%s' has no video data\n", psz_filename );
+    FAIL_IF_ERROR_CLEANUP( invalid_avs_dimensions( vi->width, vi->height, opt->bit_depth > 8 ),
+                           "invalid video dimensions (%dx%d)\n", vi->width, vi->height );
+    FAIL_IF_ERROR_CLEANUP( vi->num_frames <= 0, "invalid frame count %d\n", vi->num_frames );
+    FAIL_IF_ERROR_CLEANUP( !vi->fps_numerator || !vi->fps_denominator,
+                           "invalid framerate/timebase %u/%u\n", vi->fps_numerator, vi->fps_denominator );
 	
 #if HAVE_AUDIO
     h->filename = strdup( psz_filename );
+    FAIL_IF_ERROR_CLEANUP( !h->filename, "malloc failed\n" );
     h->has_audio = !!avs_has_audio( vi );
 #endif
 
@@ -398,15 +482,24 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     {
         x264_cli_log( "avs", X264_LOG_WARNING, "detected fieldbased (separated) input, weaving to frames\n" );
         AVS_Value tmp = h->func.avs_invoke( h->env, "Weave", res, NULL );
-        FAIL_IF_ERROR( avs_is_error( tmp ), "couldn't weave fields into frames: %s\n", avs_as_error( tmp ) );
+        if( avs_is_error( tmp ) )
+        {
+            x264_cli_log( "avs", X264_LOG_ERROR, "couldn't weave fields into frames: %s\n", avs_as_error( tmp ) );
+            avs_release_value_if_defined( h, &tmp );
+            goto fail;
+        }
         res = update_clip( h, &vi, tmp, res );
+        FAIL_IF_ERROR_CLEANUP( !vi, "failed to read video info\n" );
+        FAIL_IF_ERROR_CLEANUP( invalid_avs_dimensions( vi->width, vi->height, opt->bit_depth > 8 ),
+                               "invalid video dimensions (%dx%d)\n", vi->width, vi->height );
+        FAIL_IF_ERROR_CLEANUP( vi->num_frames <= 0, "invalid frame count %d\n", vi->num_frames );
         info->interlaced = 1;
         info->tff = avs_is_tff( vi );
     }
 #if !HAVE_SWSCALE
     /* if swscale is not available, convert the CSP if necessary */
-    FAIL_IF_ERROR( avs_version < 2.6f && (opt->output_csp == X264_CSP_I400 || opt->output_csp == X264_CSP_I422 || opt->output_csp == X264_CSP_I444),
-                   "avisynth >= 2.6 is required for i400/i422/i444 output\n" );
+    FAIL_IF_ERROR_CLEANUP( avs_version < 2.6f && (opt->output_csp == X264_CSP_I400 || opt->output_csp == X264_CSP_I422 || opt->output_csp == X264_CSP_I444),
+                           "avisynth >= 2.6 is required for i400/i422/i444 output\n" );
     if( (opt->output_csp == X264_CSP_I400 && !AVS_IS_Y( vi )) ||
         (opt->output_csp == X264_CSP_I420 && !AVS_IS_420( vi )) ||
         (opt->output_csp == X264_CSP_I422 && !AVS_IS_422( vi )) ||
@@ -433,15 +526,17 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         x264_cli_log( "avs", X264_LOG_WARNING, "converting input clip to %s\n", csp );
         if( opt->output_csp != X264_CSP_I400 )
         {
-            FAIL_IF_ERROR( opt->output_csp < X264_CSP_I444 && (vi->width&1),
-                           "input clip width not divisible by 2 (%dx%d)\n", vi->width, vi->height );
-            FAIL_IF_ERROR( opt->output_csp == X264_CSP_I420 && info->interlaced && (vi->height&3),
-                           "input clip height not divisible by 4 (%dx%d)\n", vi->width, vi->height );
-            FAIL_IF_ERROR( (opt->output_csp == X264_CSP_I420 || info->interlaced) && (vi->height&1),
-                           "input clip height not divisible by 2 (%dx%d)\n", vi->width, vi->height );
+            FAIL_IF_ERROR_CLEANUP( opt->output_csp < X264_CSP_I444 && (vi->width&1),
+                                   "input clip width not divisible by 2 (%dx%d)\n", vi->width, vi->height );
+            FAIL_IF_ERROR_CLEANUP( opt->output_csp == X264_CSP_I420 && info->interlaced && (vi->height&3),
+                                   "input clip height not divisible by 4 (%dx%d)\n", vi->width, vi->height );
+            FAIL_IF_ERROR_CLEANUP( (opt->output_csp == X264_CSP_I420 || info->interlaced) && (vi->height&1),
+                                   "input clip height not divisible by 2 (%dx%d)\n", vi->width, vi->height );
         }
         char conv_func[16];
-        snprintf( conv_func, sizeof(conv_func), "ConvertTo%s", csp );
+        int conv_func_len = snprintf( conv_func, sizeof(conv_func), "ConvertTo%s", csp );
+        FAIL_IF_ERROR_CLEANUP( conv_func_len < 0 || conv_func_len >= (int)sizeof(conv_func),
+                               "conversion function name too long\n" );
         AVS_Value arg_arr[3];
         const char *arg_name[3];
         int arg_count = 1;
@@ -459,8 +554,10 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         {
             // if converting from yuv, then we specify the matrix for the input, otherwise use the output's.
             int use_pc_matrix = avs_is_yuv( vi ) ? opt->input_range == RANGE_PC : opt->output_range == RANGE_PC;
-            strcpy( matrix, use_pc_matrix ? "PC." : "Rec" );
-            strcat( matrix, ( vi->width > 1024 || vi->height > 576 ) ? "709" : "601" );
+            int matrix_len = snprintf( matrix, sizeof(matrix), "%s%s", use_pc_matrix ? "PC." : "Rec",
+                                       ( vi->width > 1024 || vi->height > 576 ) ? "709" : "601" );
+            FAIL_IF_ERROR_CLEANUP( matrix_len < 0 || matrix_len >= (int)sizeof(matrix),
+                                   "matrix name too long\n" );
             arg_arr[arg_count] = avs_new_value_string( matrix );
             arg_name[arg_count] = "matrix";
             arg_count++;
@@ -468,8 +565,17 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
             opt->input_range = opt->output_range;
         }
         AVS_Value res2 = h->func.avs_invoke( h->env, conv_func, avs_new_value_array( arg_arr, arg_count ), arg_name );
-        FAIL_IF_ERROR( avs_is_error( res2 ), "couldn't convert input clip to %s: %s\n", csp, avs_as_error( res2 ) );
+        if( avs_is_error( res2 ) )
+        {
+            x264_cli_log( "avs", X264_LOG_ERROR, "couldn't convert input clip to %s: %s\n", csp, avs_as_error( res2 ) );
+            avs_release_value_if_defined( h, &res2 );
+            goto fail;
+        }
         res = update_clip( h, &vi, res2, res );
+        FAIL_IF_ERROR_CLEANUP( !vi, "failed to read video info\n" );
+        FAIL_IF_ERROR_CLEANUP( invalid_avs_dimensions( vi->width, vi->height, opt->bit_depth > 8 ),
+                               "invalid video dimensions (%dx%d)\n", vi->width, vi->height );
+        FAIL_IF_ERROR_CLEANUP( vi->num_frames <= 0, "invalid frame count %d\n", vi->num_frames );
     }
     /* if swscale is not available, change the range if necessary. This only applies to YUV-based CSPs however */
     if( avs_is_yuv( vi ) && opt->output_range != RANGE_AUTO && ((opt->input_range == RANGE_PC) != opt->output_range) )
@@ -481,8 +587,17 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         arg_arr[1] = avs_new_value_string( levels );
         const char *arg_name[] = { NULL, "levels" };
         AVS_Value res2 = h->func.avs_invoke( h->env, "ColorYUV", avs_new_value_array( arg_arr, 2 ), arg_name );
-        FAIL_IF_ERROR( avs_is_error( res2 ), "couldn't convert range: %s\n", avs_as_error( res2 ) );
+        if( avs_is_error( res2 ) )
+        {
+            x264_cli_log( "avs", X264_LOG_ERROR, "couldn't convert range: %s\n", avs_as_error( res2 ) );
+            avs_release_value_if_defined( h, &res2 );
+            goto fail;
+        }
         res = update_clip( h, &vi, res2, res );
+        FAIL_IF_ERROR_CLEANUP( !vi, "failed to read video info\n" );
+        FAIL_IF_ERROR_CLEANUP( invalid_avs_dimensions( vi->width, vi->height, opt->bit_depth > 8 ),
+                               "invalid video dimensions (%dx%d)\n", vi->width, vi->height );
+        FAIL_IF_ERROR_CLEANUP( vi->num_frames <= 0, "invalid frame count %d\n", vi->num_frames );
         // notification that the input range has changed to the desired one
         opt->input_range = opt->output_range;
     }
@@ -499,13 +614,23 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
                                           "output_depth", "output_mode" };
         AVS_Value res2 = h->func.avs_invoke( h->env, "f3kdb", avs_new_value_array( arg_arr, 10 ), arg_name );
         x264_cli_log( "avs", X264_LOG_WARNING, "performing bit depth conversion using f3kdb: %d->%d\n", opt->bit_depth, opt->x264_bit_depth );
-        FAIL_IF_ERROR( avs_is_error( res2 ), "couldn't convert bit depth: %s\n", avs_as_error( res2 ) );
+        if( avs_is_error( res2 ) )
+        {
+            x264_cli_log( "avs", X264_LOG_ERROR, "couldn't convert bit depth: %s\n", avs_as_error( res2 ) );
+            avs_release_value_if_defined( h, &res2 );
+            goto fail;
+        }
         res = update_clip( h, &vi, res2, res );
+        FAIL_IF_ERROR_CLEANUP( !vi, "failed to read video info\n" );
+        FAIL_IF_ERROR_CLEANUP( invalid_avs_dimensions( vi->width, vi->height, opt->bit_depth > 8 ),
+                               "invalid video dimensions (%dx%d)\n", vi->width, vi->height );
+        FAIL_IF_ERROR_CLEANUP( vi->num_frames <= 0, "invalid frame count %d\n", vi->num_frames );
         // notification that the input bit depth has changed to the desired one
         opt->bit_depth = opt->x264_bit_depth;
     }
 
-    h->func.avs_release_value( res );
+    FAIL_IF_ERROR_CLEANUP( !vi->fps_numerator || !vi->fps_denominator,
+                           "invalid framerate/timebase %u/%u\n", vi->fps_numerator, vi->fps_denominator );
 
     info->width   = vi->width;
     info->height  = vi->height;
@@ -547,15 +672,18 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     {
         AVS_Value pixel_type = h->func.avs_invoke( h->env, "PixelType", res, NULL );
         const char *pixel_type_name = avs_is_string( pixel_type ) ? avs_as_string( pixel_type ) : "unknown";
-        FAIL_IF_ERROR( 1, "not supported pixel type: %s\n", pixel_type_name );
+        x264_cli_log( "avs", X264_LOG_ERROR, "not supported pixel type: %s\n", pixel_type_name );
+        avs_release_value_if_defined( h, &pixel_type );
+        goto fail;
     }
+    avs_release_value_if_defined( h, &res );
     info->vfr = 0;
     if( !opt->b_accurate_fps )
         x264_ntsc_fps( &info->fps_num, &info->fps_den );
 
     if( opt->bit_depth > 8  && !(info->csp & X264_CSP_HIGH_DEPTH) )
     {
-        FAIL_IF_ERROR( info->width & 3, "avisynth 16bit hack requires that width is at least mod4\n" );
+        FAIL_IF_ERROR_CLEANUP( info->width & 3, "avisynth 16bit hack requires that width is at least mod4\n" );
         x264_cli_log( "avs", X264_LOG_INFO, "avisynth 16bit hack enabled\n" );
         info->csp |= X264_CSP_HIGH_DEPTH;
         info->width >>= 1;
@@ -565,9 +693,19 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
             info->csp |= X264_CSP_SKIP_DEPTH_FILTER;
         }
     }
+    FAIL_IF_ERROR_CLEANUP( invalid_dimensions( info->width, info->height ),
+                           "invalid video dimensions (%dx%d)\n", info->width, info->height );
 
     *p_handle = h;
     return 0;
+
+fail:
+#ifdef _WIN32
+    free( ansi_filename );
+#endif
+    avs_release_value_if_defined( h, &res );
+    avs_cleanup_handle( h );
+    return -1;
 }
 
 static int picture_alloc( cli_pic_t *pic, hnd_t handle, int csp, int width, int height )
@@ -592,11 +730,23 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
     static const int plane[] = { AVS_PLANAR_Y, AVS_PLANAR_U, AVS_PLANAR_V };
     X264_STATIC_ASSERT( ARRAY_ELEMS(plane) == X264_AVS_PLANES, "Avisynth plane table size must match YUV plane domain" );
     avs_hnd_t *h = handle;
-    if( i_frame >= h->num_frames )
+    if( i_frame < 0 || i_frame >= h->num_frames )
         return -1;
-    AVS_VideoFrame *frm = pic->opaque = h->func.avs_get_frame( h->clip, i_frame );
+    AVS_VideoFrame *frm = h->func.avs_get_frame( h->clip, i_frame );
     const char *err = h->func.avs_clip_get_error( h->clip );
-    FAIL_IF_ERROR( err, "%s occurred while reading frame %d\n", err, i_frame );
+    if( err )
+    {
+        if( frm )
+            h->func.avs_release_video_frame( frm );
+        x264_cli_log( "avs", X264_LOG_ERROR, "%s occurred while reading frame %d\n", err, i_frame );
+        return -1;
+    }
+    if( !frm )
+    {
+        x264_cli_log( "avs", X264_LOG_ERROR, "failed to read frame %d\n", i_frame );
+        return -1;
+    }
+    pic->opaque = frm;
     for( int i = 0; i < pic->img.planes; i++ )
     {
         /* explicitly cast away the const attribute to avoid a warning */
@@ -621,16 +771,7 @@ static void picture_clean( cli_pic_t *pic, hnd_t handle )
 static int close_file( hnd_t handle )
 {
     avs_hnd_t *h = handle;
-    if( h->func.avs_release_clip && h->clip )
-        h->func.avs_release_clip( h->clip );
-    if( h->func.avs_delete_script_environment && h->env )
-        h->func.avs_delete_script_environment( h->env );
-    if( h->library )
-        avs_close( h->library );
-#if HAVE_AUDIO
-    free( h->filename );
-#endif
-    free( h );
+    avs_cleanup_handle( h );
     return 0;
 }
 

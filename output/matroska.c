@@ -53,6 +53,32 @@ typedef struct
 #endif
 } mkv_hnd_t;
 
+#define MKV_NANOSECONDS 1000000000LL
+#define MKV_TIMECODE_SCALE 50000LL
+
+static int mkv_timebase_to_ns( int64_t *dst, int64_t timestamp, uint32_t timebase_num, uint32_t timebase_den )
+{
+    if( timestamp < 0 || !timebase_num || !timebase_den )
+        return -1;
+    long double value = (long double)timestamp * (long double)MKV_NANOSECONDS *
+                        (long double)timebase_num / (long double)timebase_den + 0.5L;
+    if( value != value || value < 0.0L || value > (long double)INT64_MAX )
+        return -1;
+    *dst = (int64_t)value;
+    return 0;
+}
+
+static int mkv_default_duration_from_fps( int64_t *dst, uint32_t fps_num, uint32_t fps_den )
+{
+    if( !fps_num )
+        return -1;
+    uint64_t duration = (uint64_t)fps_den * (uint64_t)MKV_NANOSECONDS / fps_num;
+    if( !duration || duration > INT64_MAX )
+        return -1;
+    *dst = (int64_t)duration;
+    return 0;
+}
+
 #if HAVE_AUDIO
 static int audio_init( hnd_t handle, hnd_t filters, char *audio_enc, char *audio_parameters )
 {
@@ -144,13 +170,24 @@ static int set_video_track( mkv_hnd_t *p_mkv, x264_param_t *p_param )
     vtrack->codec_id = "V_MPEG4/ISO/AVC";
     vtrack->id = p_mkv->i_video_track = p_mkv->i_track_count = 1;
 
+    if( !p_param->i_timebase_num || !p_param->i_timebase_den )
+        return -1;
+
     if( p_param->i_fps_num > 0 && !p_param->b_vfr_input )
-        vtrack->default_frame_duration = (int64_t)p_param->i_fps_den * 1e9 / p_param->i_fps_num;
+    {
+        if( mkv_default_duration_from_fps( &vtrack->default_frame_duration,
+                                           p_param->i_fps_num, p_param->i_fps_den ) )
+            return -1;
+    }
     else
         vtrack->default_frame_duration = 0;
 
-    dw=v->width = p_param->i_width;
-    dh=v->height = p_param->i_height;
+    if( p_param->i_width <= 0 || p_param->i_height <= 0 )
+        return -1;
+    dw = p_param->i_width;
+    dh = p_param->i_height;
+    v->width = (unsigned)p_param->i_width;
+    v->height = (unsigned)p_param->i_height;
     v->display_size_units = DS_PIXELS;
     v->stereo_mode = -1;
     if( p_param->i_frame_packing >= 0 && p_param->i_frame_packing < STEREO_COUNT )
@@ -171,12 +208,10 @@ static int set_video_track( mkv_hnd_t *p_mkv, x264_param_t *p_param )
             dh = dh * p_param->vui.i_sar_height / p_param->vui.i_sar_width;
         }
     }
-    v->display_width = (int)dw;
-    v->display_height = (int)dh;
-
-    if( !v->width || !v->height ||
-        !v->display_width || !v->display_height )
+    if( dw <= 0 || dh <= 0 || dw > UINT_MAX || dh > UINT_MAX )
         return -1;
+    v->display_width = (unsigned)dw;
+    v->display_height = (unsigned)dh;
 
     p_mkv->i_timebase_num = p_param->i_timebase_num;
     p_mkv->i_timebase_den = p_param->i_timebase_den;
@@ -193,6 +228,29 @@ static int codec_private_required( const char *codec )
         !strcmp( codec, MK_AUDIO_TAG_AAC ) )
         return 1;
 
+    return 0;
+}
+
+static int set_pcm_audio_framelen( audio_info_t *info, x264_param_t *p_param )
+{
+    double framelen;
+    if( info->samplerate <= 0 )
+        return -1;
+    if( !p_param->b_vfr_input )
+    {
+        if( p_param->i_fps_num <= 0 )
+            return -1;
+        framelen = (double)info->samplerate * p_param->i_fps_den / p_param->i_fps_num + 0.5;
+    }
+    else
+    {
+        if( p_param->i_timebase_den <= 0 )
+            return -1;
+        framelen = (double)info->samplerate * p_param->i_timebase_num / p_param->i_timebase_den + 0.5;
+    }
+    if( framelen != framelen || framelen <= 0.0 || framelen > INT_MAX )
+        return -1;
+    info->framelen = (int)framelen;
     return 0;
 }
 
@@ -237,6 +295,10 @@ static int set_audio_track( mkv_hnd_t *p_mkv, x264_param_t *p_param )
         return -1;
     }
 
+    if( info->samplerate <= 0 || info->channels <= 0 || info->chansize < 0 ||
+        info->framelen < 0 || info->extradata_size < 0 ||
+        info->timebase.num <= 0 || info->timebase.den <= 0 )
+        return -1;
     a->samplerate            = info->samplerate;
     a->channels              = info->channels;
 
@@ -252,29 +314,32 @@ static int set_audio_track( mkv_hnd_t *p_mkv, x264_param_t *p_param )
 
     if( !strcmp( atrack->codec_id, MK_AUDIO_TAG_PCM_LE ) )
     {
+        if( info->chansize > INT_MAX / 8 )
+            return -1;
         a->bit_depth         = info->chansize * 8;
 
         // this is slightly inaccurate for some fps and samplerate conbinations
-        if( !p_param->b_vfr_input )
-            info->framelen = (double)a_mkv->info->samplerate * p_param->i_fps_den / p_param->i_fps_num + 0.5;
-        else
-            info->framelen = (double)a_mkv->info->samplerate * p_param->i_timebase_num / p_param->i_timebase_den + 0.5;
+        if( set_pcm_audio_framelen( info, p_param ) )
+            return -1;
     }
 
-    atrack->default_frame_duration = x264_from_timebase( info->framelen, info->timebase, 1000000000 );
+    atrack->default_frame_duration = x264_from_timebase( info->framelen, info->timebase, MKV_NANOSECONDS );
+    if( info->framelen > 0 &&
+        (atrack->default_frame_duration <= 0 || atrack->default_frame_duration == INT64_MAX) )
+        return -1;
 
     if( codec_private_required( atrack->codec_id ) )
     {
-        if( !info->extradata_size || !info->extradata )
+        if( info->extradata_size <= 0 || !info->extradata )
         {
             x264_cli_log( "mkv", X264_LOG_ERROR, "no extradata found!\n" );
             return -1;
         }
-        atrack->codec_private_size = info->extradata_size;
-        atrack->codec_private = malloc( info->extradata_size );
+        atrack->codec_private_size = (unsigned)info->extradata_size;
+        atrack->codec_private = malloc( (size_t)info->extradata_size );
         if( !atrack->codec_private )
             return -1;
-        memcpy( atrack->codec_private, info->extradata, info->extradata_size );
+        memcpy( atrack->codec_private, info->extradata, (size_t)info->extradata_size );
     }
 
     return 0;
@@ -306,7 +371,9 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     int pps_size = p_nal[1].i_payload - 4;
     int sei_size = p_nal[2].i_payload;
 
-    if( sps_size > UINT16_MAX || pps_size > UINT16_MAX )
+    if( sei_size < 0 || sei_size > INT_MAX - sps_size - pps_size ||
+        sps_size > UINT16_MAX || pps_size > UINT16_MAX ||
+        !p_nal[0].p_payload || !p_nal[1].p_payload || (sei_size && !p_nal[2].p_payload) )
         return -1;
 
     uint8_t *sps = p_nal[0].p_payload + 4;
@@ -316,7 +383,7 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     int ret;
     uint8_t *avcC;
 
-    vtrack->codec_private_size = 5 + 1 + 2 + sps_size + 1 + 2 + pps_size;
+    vtrack->codec_private_size = 5 + 1 + 2 + (unsigned)sps_size + 1 + 2 + (unsigned)pps_size;
     vtrack->codec_private = malloc( vtrack->codec_private_size );
     if( !vtrack->codec_private )
         return -1;
@@ -329,19 +396,19 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     avcC[4] = 0xff; // nalu size length is four bytes
     avcC[5] = 0xe1; // one sps
 
-    avcC[6] = sps_size >> 8;
-    avcC[7] = sps_size;
+    avcC[6] = (uint8_t)(sps_size >> 8);
+    avcC[7] = (uint8_t)sps_size;
 
-    memcpy( avcC+8, sps, sps_size );
+    memcpy( avcC+8, sps, (size_t)sps_size );
 
     avcC[8+sps_size] = 1; // one pps
-    avcC[9+sps_size] = pps_size >> 8;
-    avcC[10+sps_size] = pps_size;
+    avcC[9+sps_size] = (uint8_t)(pps_size >> 8);
+    avcC[10+sps_size] = (uint8_t)pps_size;
 
-    memcpy( avcC+11+sps_size, pps, pps_size );
+    memcpy( avcC+11+sps_size, pps, (size_t)pps_size );
 
-    ret = mk_write_header( p_mkv->w, "x264 "X264_COREVER, 50000,
-                           p_mkv->tracks, p_mkv->i_track_count );
+    ret = mk_write_header( p_mkv->w, "x264 "X264_COREVER, MKV_TIMECODE_SCALE,
+                           p_mkv->tracks, (int)p_mkv->i_track_count );
 
 
     if( ret < 0 )
@@ -353,7 +420,7 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
             return -1;
     p_mkv->b_writing_frame = 1;
 
-    if( mk_add_frame_data( p_mkv->w, sei, sei_size ) < 0 )
+    if( mk_add_frame_data( p_mkv->w, sei, (unsigned)sei_size ) < 0 )
         return -1;
 
     return sei_size + sps_size + pps_size;
@@ -369,7 +436,7 @@ static int write_audio( mkv_hnd_t *p_mkv, int64_t video_dts, int finish )
     if( a_mkv->lastdts == INVALID_DTS )
     {
         if( video_dts > 0 )
-            x264_audio_encoder_skip_samples( a_mkv->encoder, video_dts * a_mkv->info->samplerate / 1000000000.0 );
+            x264_audio_encoder_skip_samples( a_mkv->encoder, (double)video_dts * a_mkv->info->samplerate / (double)MKV_NANOSECONDS );
         a_mkv->lastdts = video_dts; // first frame (nonzero if --seek is used)
     }
 
@@ -388,20 +455,41 @@ static int write_audio( mkv_hnd_t *p_mkv, int64_t video_dts, int finish )
         if( !frame )
             break;
 
-        assert( frame->dts >= 0 ); // Guard against encoders that don't give proper DTS
-        a_mkv->lastdts = x264_from_timebase( frame->dts, frame->info.timebase, 1000000000 );
+        if( frame->dts < 0 || frame->size < 0 || (frame->size && !frame->data) )
+        {
+            x264_audio_free_frame( a_mkv->encoder, frame );
+            return -1;
+        }
+        a_mkv->lastdts = x264_from_timebase( frame->dts, frame->info.timebase, MKV_NANOSECONDS );
+        if( a_mkv->lastdts < 0 || a_mkv->lastdts == INT64_MAX )
+        {
+            x264_audio_free_frame( a_mkv->encoder, frame );
+            return -1;
+        }
 
         if( mk_start_frame( p_mkv->w ) < 0 )
+        {
+            x264_audio_free_frame( a_mkv->encoder, frame );
             return -1;
+        }
 
-        if( mk_add_frame_data( p_mkv->w, frame->data, frame->size ) < 0 )
+        if( mk_add_frame_data( p_mkv->w, frame->data, (unsigned)frame->size ) < 0 )
+        {
+            x264_audio_free_frame( a_mkv->encoder, frame );
             return -1;
+        }
 
         if( mk_set_frame_flags( p_mkv->w, a_mkv->lastdts, 1, 0, p_mkv->i_audio_track ) < 0 )
+        {
+            x264_audio_free_frame( a_mkv->encoder, frame );
             return -1;
+        }
 
         if( mk_end_frame( p_mkv->w, p_mkv->i_audio_track ) < 0 )
+        {
+            x264_audio_free_frame( a_mkv->encoder, frame );
             return -1;
+        }
 
         x264_audio_free_frame( a_mkv->encoder, frame );
 
@@ -416,12 +504,15 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
 {
     mkv_hnd_t *p_mkv = handle;
     int skip = 0;
+    int64_t i_stamp;
 
-    int64_t i_stamp = (int64_t)((p_picture->i_pts * 1e9 * p_mkv->i_timebase_num / p_mkv->i_timebase_den) + 0.5);
+    if( i_size < 0 || (i_size && !p_nalu) ||
+        mkv_timebase_to_ns( &i_stamp, p_picture->i_pts, p_mkv->i_timebase_num, p_mkv->i_timebase_den ) )
+        return -1;
 
     if( p_mkv->b_writing_frame )
     {
-        if( mk_add_frame_data( p_mkv->w, p_nalu, i_size ) < 0 ||
+        if( mk_add_frame_data( p_mkv->w, p_nalu, (unsigned)i_size ) < 0 ||
             mk_set_frame_flags( p_mkv->w, i_stamp, p_picture->b_keyframe, p_picture->i_type == X264_TYPE_B, p_mkv->i_video_track ) < 0 ||
             mk_end_frame( p_mkv->w, p_mkv->i_video_track ) < 0 )
             return -1;
@@ -436,7 +527,7 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
     if( !skip )
     {
         if( mk_start_frame( p_mkv->w ) < 0 ||
-            mk_add_frame_data( p_mkv->w, p_nalu, i_size ) < 0 ||
+            mk_add_frame_data( p_mkv->w, p_nalu, (unsigned)i_size ) < 0 ||
             mk_set_frame_flags( p_mkv->w, i_stamp, p_picture->b_keyframe, p_picture->i_type == X264_TYPE_B, p_mkv->i_video_track ) < 0 ||
             mk_end_frame( p_mkv->w, p_mkv->i_video_track ) < 0 )
                 return -1;
@@ -448,22 +539,30 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
 static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest_pts )
 {
     mkv_hnd_t *p_mkv = handle;
-    int ret;
-    int64_t i_last_delta[MK_MAX_TRACKS];
+    int ret = 0;
+    int64_t i_last_delta[MK_MAX_TRACKS] = { 0 };
 
-    i_last_delta[p_mkv->i_video_track] = p_mkv->i_timebase_den ? (int64_t)(((largest_pts - second_largest_pts) * 1e9 * p_mkv->i_timebase_num / p_mkv->i_timebase_den) + 0.5) : 0;
+    if( largest_pts >= second_largest_pts && second_largest_pts >= 0 )
+    {
+        if( mkv_timebase_to_ns( &i_last_delta[p_mkv->i_video_track], largest_pts - second_largest_pts,
+                                p_mkv->i_timebase_num, p_mkv->i_timebase_den ) )
+            ret = -1;
+    }
 
 #if HAVE_AUDIO
     if( p_mkv->a_mkv )
     {
         mkv_audio_hnd_t *a_mkv = p_mkv->a_mkv;
         FAIL_IF_ERR( a_mkv && write_audio( p_mkv, -1, 1 ) < 0, "mkv", "error flushing audio\n" );
-        i_last_delta[p_mkv->i_audio_track] = x264_from_timebase( a_mkv->info->last_delta, a_mkv->info->timebase, 1000000000 );
+        i_last_delta[p_mkv->i_audio_track] = x264_from_timebase( a_mkv->info->last_delta, a_mkv->info->timebase, MKV_NANOSECONDS );
+        if( i_last_delta[p_mkv->i_audio_track] < 0 || i_last_delta[p_mkv->i_audio_track] == INT64_MAX )
+            ret = -1;
         x264_audio_encoder_close( p_mkv->a_mkv->encoder );
     }
 #endif
 
-    ret = mk_close( p_mkv->w, i_last_delta );
+    if( mk_close( p_mkv->w, i_last_delta ) < 0 )
+        ret = -1;
 
 #if HAVE_AUDIO
     if( p_mkv->a_mkv )
@@ -483,3 +582,6 @@ static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest
 }
 
 const cli_output_t mkv_output = { open_file, set_param, write_headers, write_frame, close_file };
+
+#undef MKV_TIMECODE_SCALE
+#undef MKV_NANOSECONDS

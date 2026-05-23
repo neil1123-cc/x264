@@ -31,6 +31,7 @@
 
 #include "internal.h"
 #include "video.h"
+#include <limits.h>
 #define NAME "pad"
 #define FAIL_IF_ERROR( cond, ... ) FAIL_IF_ERR( cond, NAME, __VA_ARGS__ )
 
@@ -250,12 +251,30 @@ static int handle_opts(int *arg, const x264_cli_csp_t *csp, video_info_t *info, 
     {
         int mod = i&1 ? (csp->mod_height << info->interlaced) : csp->mod_width;
         opt = x264_get_option( optlist[i], opts );
-        arg[i] = x264_otoi( opt, 0 );
+        if( opt )
+            FAIL_IF_ERROR( x264_otoi_checked( opt, &arg[i] ),
+                           "%s pad value '%s' is invalid\n", optlist[i], opt );
+        else
+            arg[i] = 0;
+        FAIL_IF_ERROR( i < 6 && arg[i] < 0,
+                       "%s pad value '%s' is less than 0\n",
+                       optlist[i], x264_otos( opt, "<unset>" ) );
+        FAIL_IF_ERROR( i >= 6 && (arg[i] < 0 || arg[i] > 255),
+                       "%s pad color '%s' is outside the 0..255 range\n",
+                       optlist[i], x264_otos( opt, "<unset>" ) );
         FAIL_IF_ERROR( i < 6 && arg[i] % mod,
                        "%s pad value '%s' is not a multiple of %d\n",
-                       optlist[i], opt, mod );
+                       optlist[i], x264_otos( opt, "<unset>" ), mod );
     }
 	return 0;	
+}
+
+static int pad_add3_int( int a, int b, int c, int *out )
+{
+    if( a < 0 || b < 0 || c < 0 || a > INT_MAX - b || a + b > INT_MAX - c )
+        return -1;
+    *out = a + b + c;
+    return 0;
 }
 
 static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info,
@@ -263,18 +282,28 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info,
 {
     int arg[9];
     const x264_cli_csp_t *csp = x264_cli_get_csp( info->csp );
+    FAIL_IF_ERROR( !csp || info->width <= 0 || info->height <= 0,
+                   "invalid input properties\n" );
     static const char * const optlist[] = { "left", "top", "right", "bottom", "width",
                                      "height", "red", "green", "blue", NULL };
     char **opts = x264_split_options( opt_string, optlist );
+    if( !opts )
+        return -1;
 
     pad_handle_t *h = calloc( 1, sizeof(pad_handle_t) );
     if( !h )
+    {
+        free( opts );
         return -1;
+    }
 	
     int err = handle_opts( arg, csp, info, opts, optlist );
     free( opts );
     if( err )
+    {
+        free( h );
         return -1;
+    }
 
 /* For sanity! */
 #define round_a_to_b(a,b) (((a)+(b)/2)/(b))*(b)
@@ -284,16 +313,35 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info,
 #define bottom arg[3]
 #define WIDTH  arg[4]
 #define HEIGHT arg[5]
-    FAIL_IF_ERROR( WIDTH && WIDTH < info->width + left + right,
+    int padded_width;
+    int padded_height;
+    if( pad_add3_int( info->width, left, right, &padded_width ) ||
+        pad_add3_int( info->height, top, bottom, &padded_height ) )
+    {
+        x264_cli_log( NAME, X264_LOG_ERROR, "requested padding is too large\n" );
+        free( h );
+        return -1;
+    }
+    if( WIDTH && WIDTH < padded_width )
+    {
+        x264_cli_log( NAME, X264_LOG_ERROR,
                    "requested width (%d) is less than requested padding (%d + %d + %d)\n",
                    WIDTH, info->width, left, right );
+        free( h );
+        return -1;
+    }
 
-    FAIL_IF_ERROR( HEIGHT && HEIGHT < info->height + top + bottom,
+    if( HEIGHT && HEIGHT < padded_height )
+    {
+        x264_cli_log( NAME, X264_LOG_ERROR,
                    "requested height (%d) is less than requested padding (%d + %d + %d)\n",
                    HEIGHT, info->height, top, bottom );
+        free( h );
+        return -1;
+    }
 
-    h->width = (WIDTH) ? WIDTH : info->width + left + right;
-    h->height = (HEIGHT) ? HEIGHT : info->height + top + bottom;
+    h->width = (WIDTH) ? WIDTH : padded_width;
+    h->height = (HEIGHT) ? HEIGHT : padded_height;
 
     h->cols = (left) ? left
             : (right) ? h->width - right - info->width
@@ -312,6 +360,13 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info,
 #undef HEIGHT
 #undef round_a_to_b
 
+    if( h->width <= 0 || h->height <= 0 || h->width > MAX_RESOLUTION || h->height > MAX_RESOLUTION )
+    {
+        x264_cli_log( NAME, X264_LOG_ERROR, "invalid output resolution %dx%d\n", h->width, h->height );
+        free( h );
+        return -1;
+    }
+
     if( h->width == info->width && h->height == info->height )
     {
         free(h);
@@ -319,10 +374,18 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info,
     }
 
     if( x264_cli_pic_alloc( &h->buffer, info->csp, h->width, h->height ) )
+    {
+        free( h );
         return -1;
+    }
 
-    FAIL_IF_ERROR( get_colors( arg+6, h, param ),
-                   "unsupported colorspace\n" );
+    if( get_colors( arg+6, h, param ) )
+    {
+        x264_cli_log( NAME, X264_LOG_ERROR, "unsupported colorspace\n" );
+        x264_cli_pic_clean( &h->buffer );
+        free( h );
+        return -1;
+    }
 
     set_frame_colors( &h->buffer, h->color );
 

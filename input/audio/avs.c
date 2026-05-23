@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <inttypes.h>
+#include <limits.h>
 
 #if USE_AVXSYNTH
 #include <dlfcn.h>
@@ -296,7 +297,7 @@ static int init( hnd_t *handle, const char *opt_str )
 
     char *filename = x264_get_option( "filename", opts );
 #if !USE_AVXSYNTH
-    const char *filename_ext = get_filename_extension( filename );
+    const char *filename_ext = NULL;
 #endif
     int track = x264_otoi( x264_get_option( "track", opts ), TRACK_ANY );
 
@@ -306,11 +307,15 @@ static int init( hnd_t *handle, const char *opt_str )
 #endif
     GOTO_IF( !filename, fail2, "no filename given\n" )
     GOTO_IF( !x264_is_regular_file_path( filename ), fail2, "reading audio from non-regular files is not supported\n" )
+#if !USE_AVXSYNTH
+    filename_ext = get_filename_extension( filename );
+#endif
 
     INIT_FILTER_STRUCT( audio_filter_avs, avs_source_t );
 
     GOTO_IF( x264_audio_avs_load_library( h ), error, "failed to load avisynth\n" )
     h->env = h->func.avs_create_script_environment( AVS_INTERFACE_25 );
+    GOTO_IF( !h->env, error, "failed to create avisynth script environment\n" )
     if( h->func.avs_get_error )
     {
         const char *error = h->func.avs_get_error( h->env );
@@ -390,11 +395,18 @@ static int init( hnd_t *handle, const char *opt_str )
 
     h->func.avs_release_value( res );
 
-    h->info.samplerate     = avs_samples_per_second( vi );
-    h->info.channels       = avs_audio_channels( vi );
+    int samplerate         = avs_samples_per_second( vi );
+    int channels           = avs_audio_channels( vi );
+    int chansize           = avs_bytes_per_channel_sample( vi );
+    GOTO_IF( samplerate <= 0 || channels <= 0 || chansize <= 0 ||
+             channels > INT_MAX / chansize || vi->num_audio_samples < 0,
+             error, "invalid audio parameters\n" )
+
+    h->info.samplerate     = samplerate;
+    h->info.channels       = channels;
     h->info.framelen       = 1;
-    h->info.chansize       = avs_bytes_per_channel_sample( vi );
-    h->info.samplesize     = h->info.chansize * h->info.channels;
+    h->info.chansize       = chansize;
+    h->info.samplesize     = chansize * channels;
     h->info.framesize      = h->info.samplesize;
     h->info.depth          = h->info.chansize;
     h->info.timebase       = (timebase_t){ 1, h->info.samplerate };
@@ -402,6 +414,7 @@ static int init( hnd_t *handle, const char *opt_str )
     h->num_samples = vi->num_audio_samples;
     h->bufsize = DEFAULT_BUFSIZE;
     h->buffer = malloc( h->bufsize );
+    GOTO_IF( !h->buffer, error, "malloc failed\n" )
 
     free( opts );
     return 0;
@@ -410,7 +423,16 @@ error:
     AF_LOG_ERR( h, "error opening audio\n" );
 fail:
     if( h )
+    {
+        if( h->clip && h->func.avs_release_clip )
+            h->func.avs_release_clip( h->clip );
+        if( h->env && h->func.avs_delete_script_environment )
+            h->func.avs_delete_script_environment( h->env );
+        if( h->library )
+            avs_close( h->library );
+        free( h->buffer );
         free( h );
+    }
     *handle = NULL;
 fail2:
     free( opts );
@@ -427,28 +449,47 @@ static struct audio_packet_t *get_samples( hnd_t handle, int64_t first_sample, i
 {
     avs_source_t *h = handle;
     assert( first_sample >= 0 && last_sample > first_sample );
-    int64_t nsamples = last_sample - first_sample;
+    if( !h || !h->clip || !h->buffer || first_sample < 0 || last_sample <= first_sample ||
+        h->info.channels <= 0 || h->info.samplesize <= 0 || h->num_samples < 0 )
+        return NULL;
 
     if( h->eof )
         return NULL;
 
+    if( first_sample >= h->num_samples )
+    {
+        h->eof = 1;
+        return NULL;
+    }
+
+    int64_t nsamples = last_sample - first_sample;
     if( h->num_samples <= last_sample )
     {
         nsamples = h->num_samples - first_sample;
         h->eof = 1;
     }
+    if( nsamples <= 0 || nsamples > UINT_MAX ||
+        nsamples > INT_MAX / h->info.samplesize )
+        return NULL;
+    int size = (int)nsamples * h->info.samplesize;
+    if( size > h->bufsize )
+        return NULL;
 
     audio_packet_t *pkt = calloc( 1, sizeof( audio_packet_t ) );
+    if( !pkt )
+        return NULL;
     pkt->info           = h->info;
     pkt->dts            = first_sample;
-    pkt->channels       = h->info.channels;
-    pkt->samplecount    = nsamples;
-    pkt->size           = pkt->samplecount * h->info.samplesize;
+    pkt->channels       = (unsigned)h->info.channels;
+    pkt->samplecount    = (unsigned)nsamples;
+    pkt->size           = size;
 
     if( h->func.avs_get_audio( h->clip, h->buffer, first_sample, nsamples ) )
         goto fail;
 
     pkt->samples = x264_af_deinterleave2( h->buffer, h->sample_fmt, pkt->channels, pkt->samplecount );
+    if( !pkt->samples )
+        goto fail;
 
     if( h->eof )
         pkt->flags |= AUDIO_FLAG_EOF;

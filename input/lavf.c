@@ -34,12 +34,18 @@
 #include <libavutil/mem.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/version.h>
+#include <math.h>
 
 #if HAVE_AUDIO
 #include "audio/audio.h"
 #endif
 
 #define FAIL_IF_ERROR( cond, ... ) FAIL_IF_ERR( cond, "lavf", __VA_ARGS__ )
+
+static inline int invalid_dimensions( int width, int height )
+{
+    return width <= 0 || height <= 0 || width > MAX_RESOLUTION || height > MAX_RESOLUTION;
+}
 
 typedef struct
 {
@@ -143,6 +149,8 @@ static int read_frame_internal( cli_pic_t *p_pic, lavf_hnd_t *h, int i_frame, vi
     memcpy( p_pic->img.stride, h->frame->linesize, sizeof(p_pic->img.stride) );
     memcpy( p_pic->img.plane, h->frame->data, sizeof(p_pic->img.plane) );
     int is_fullrange   = 0;
+    FAIL_IF_ERROR( invalid_dimensions( h->lavc->width, h->lavc->height ),
+                   "invalid video dimensions\n" );
     p_pic->img.width   = h->lavc->width;
     p_pic->img.height  = h->lavc->height;
     p_pic->img.csp     = handle_jpeg( h->lavc->pix_fmt, &is_fullrange ) | X264_CSP_OTHER;
@@ -228,10 +236,16 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         return -1;
 
     AVStream *s        = h->lavf->streams[i];
-    info->fps_num      = s->avg_frame_rate.num;
-    info->fps_den      = s->avg_frame_rate.den;
-    info->timebase_num = s->time_base.num;
-    info->timebase_den = s->time_base.den;
+    FAIL_IF_ERROR( s->avg_frame_rate.num < 0 || s->avg_frame_rate.den < 0 ||
+                   s->avg_frame_rate.num > UINT32_MAX || s->avg_frame_rate.den > UINT32_MAX,
+                   "invalid framerate\n" );
+    FAIL_IF_ERROR( s->time_base.num <= 0 || s->time_base.den <= 0 ||
+                   s->time_base.num > UINT32_MAX || s->time_base.den > UINT32_MAX,
+                   "invalid timebase\n" );
+    info->fps_num      = (uint32_t)s->avg_frame_rate.num;
+    info->fps_den      = (uint32_t)s->avg_frame_rate.den;
+    info->timebase_num = (uint32_t)s->time_base.num;
+    info->timebase_den = (uint32_t)s->time_base.den;
     /* lavf is thread unsafe as calling av_read_frame invalidates previously read AVPackets */
     info->thread_safe  = 0;
     h->vfr_input       = info->vfr;
@@ -261,27 +275,36 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     if( read_frame_internal( h->first_pic, h, 0, info ) )
         return -1;
 
+    FAIL_IF_ERROR( invalid_dimensions( h->lavc->width, h->lavc->height ),
+                   "invalid video dimensions\n" );
     info->width      = h->lavc->width;
     info->height     = h->lavc->height;
     info->csp        = h->first_pic->img.csp;
-    FAIL_IF_ERROR( s->nb_frames > INT_MAX, "too many frames\n" );
+    FAIL_IF_ERROR( s->nb_frames < 0 || s->nb_frames > INT_MAX, "invalid frame count\n" );
     info->num_frames = s->nb_frames > 0 ? (int)s->nb_frames : 0;
     if( info->num_frames == 0 && s->duration > 0 && s->avg_frame_rate.den )
     {
         double fps = (double)s->avg_frame_rate.num / s->avg_frame_rate.den;
-        double duration_est = s->duration * av_q2d(s->time_base);
-        double frame_est = duration_est * fps + 0.5;
-        FAIL_IF_ERROR( frame_est > INT_MAX, "too many estimated frames\n" );
-        if( fps > 0 && duration_est > 0 && frame_est > 0 )
+        double duration_est = (double)s->duration * av_q2d(s->time_base);
+        if( isfinite( fps ) && isfinite( duration_est ) && fps > 0 && duration_est > 0 )
+        {
+            double frame_est = duration_est * fps + 0.5;
+            FAIL_IF_ERROR( !isfinite( frame_est ) || frame_est > INT_MAX,
+                           "too many estimated frames\n" );
             info->num_frames = (int)frame_est;
+        }
     }
-    info->sar_height = h->lavc->sample_aspect_ratio.den;
-    info->sar_width  = h->lavc->sample_aspect_ratio.num;
+    FAIL_IF_ERROR( h->lavc->sample_aspect_ratio.num < 0 || h->lavc->sample_aspect_ratio.den < 0 ||
+                   h->lavc->sample_aspect_ratio.num > UINT32_MAX ||
+                   h->lavc->sample_aspect_ratio.den > UINT32_MAX,
+                   "invalid sample aspect ratio\n" );
+    info->sar_height = (uint32_t)h->lavc->sample_aspect_ratio.den;
+    info->sar_width  = (uint32_t)h->lavc->sample_aspect_ratio.num;
     info->fullrange |= h->lavc->color_range == AVCOL_RANGE_JPEG;
 	
     /* -1 = 'unset' (internal) , 2 from lavf|ffms = 'unset' */
     if( h->lavc->colorspace >= 0 && h->lavc->colorspace <= 8 && h->lavc->colorspace != 2 )
-        info->colormatrix = h->lavc->colorspace;
+        info->colormatrix = (int)h->lavc->colorspace;
     else
         info->colormatrix = -1;
 
@@ -291,7 +314,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         info->csp |= X264_CSP_VFLIP;
 
     /* show video info */
-    double duration = s->duration * av_q2d(s->time_base);
+    double duration = s->duration > 0 ? (double)s->duration * av_q2d(s->time_base) : 0;
+    int duration_log = duration > INT_MAX ? INT_MAX : (int)X264_MAX( duration, 0 );
     const AVPixFmtDescriptor *pix_desc = av_pix_fmt_desc_get(h->lavc->pix_fmt);
     x264_cli_log( "lavf", X264_LOG_INFO,
                   "\n Format    : %s"
@@ -302,10 +326,10 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
                   "\n Duration  : %d:%02d:%02d\n",
                   format ? format->name : h->lavf->iformat->name,
                   p->name, p->long_name,
-                  pix_desc->name,
+                  pix_desc ? pix_desc->name : "unknown",
                   s->avg_frame_rate.num, s->avg_frame_rate.den,
                   s->time_base.num, s->time_base.den,
-                  (int)duration / 60 / 60, (int)duration / 60 % 60, (int)duration - (int)duration / 60 * 60 );
+                  duration_log / 60 / 60, duration_log / 60 % 60, duration_log - duration_log / 60 * 60 );
 
     *p_handle = h;
 

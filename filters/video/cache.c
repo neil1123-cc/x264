@@ -26,6 +26,8 @@
 #include "video.h"
 #include "internal.h"
 #include "common/common.h"
+#include <limits.h>
+#include <stdint.h>
 
 #define cache_filter x264_glue3(cache, BIT_DEPTH, filter)
 #if BIT_DEPTH == 8
@@ -33,8 +35,6 @@
 #else
 #define NAME "cache_10"
 #endif
-
-#define LAST_FRAME (h->first_frame + h->cur_size - 1)
 
 typedef struct
 {
@@ -50,28 +50,59 @@ typedef struct
 
 cli_vid_filter_t cache_filter;
 
+static int64_t cache_last_frame( cache_hnd_t *h )
+{
+    return (int64_t)h->first_frame + h->cur_size - 1;
+}
+
+static void cache_free_partial( cache_hnd_t *h )
+{
+    if( !h )
+        return;
+    if( h->cache )
+    {
+        for( int i = 0; i < h->max_size; i++ )
+        {
+            if( h->cache[i] )
+            {
+                x264_cli_pic_clean( h->cache[i] );
+                free( h->cache[i] );
+            }
+        }
+        free( h->cache );
+    }
+    free( h );
+}
+
 static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x264_param_t *param, char *opt_string )
 {
     intptr_t size = (intptr_t)opt_string;
     /* upon a <= 0 cache request, do nothing */
     if( size <= 0 )
         return 0;
+    if( size > INT_MAX || (uintmax_t)size + 1 > SIZE_MAX / sizeof(cli_pic_t*) )
+        return -1;
     cache_hnd_t *h = calloc( 1, sizeof(cache_hnd_t) );
     if( !h )
         return -1;
 
-    h->max_size = size;
-    h->cache = malloc( (h->max_size+1) * sizeof(cli_pic_t*) );
+    h->max_size = (int)size;
+    h->cache = calloc( (size_t)h->max_size + 1, sizeof(cli_pic_t*) );
     if( !h->cache )
+    {
+        free( h );
         return -1;
+    }
 
     for( int i = 0; i < h->max_size; i++ )
     {
-        h->cache[i] = malloc( sizeof(cli_pic_t) );
+        h->cache[i] = calloc( 1, sizeof(cli_pic_t) );
         if( !h->cache[i] || x264_cli_pic_alloc( h->cache[i], info->csp, info->width, info->height ) )
+        {
+            cache_free_partial( h );
             return -1;
+        }
     }
-    h->cache[h->max_size] = NULL; /* require null terminator for list methods */
 
     h->prev_filter = *filter;
     h->prev_hnd = *handle;
@@ -84,20 +115,38 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
 static void fill_cache( cache_hnd_t *h, int frame )
 {
     /* shift frames out of the cache as the frame request is beyond the filled cache */
-    int shift = frame - LAST_FRAME;
+    int64_t shift = (int64_t)frame - cache_last_frame( h );
     /* no frames to shift or no frames left to read */
     if( shift <= 0 || h->eof )
         return;
+    if( shift > INT_MAX )
+    {
+        h->eof = frame;
+        return;
+    }
     /* the next frames to read are either
      * A) starting at the end of the current cache, or
      * B) starting at a new frame that has the end of the cache at the desired frame
      * and proceeding to fill the entire cache */
-    int cur_frame = X264_MAX( h->first_frame + h->cur_size, frame - h->max_size + 1 );
+    int64_t next_frame = (int64_t)h->first_frame + h->cur_size;
+    int64_t refill_start = (int64_t)frame - h->max_size + 1;
+    if( next_frame > INT_MAX || refill_start > INT_MAX )
+    {
+        h->eof = frame;
+        return;
+    }
+    int cur_frame = (int)X264_MAX( next_frame, refill_start );
     /* the new starting point is either
      * A) the current one shifted the number of frames entering/leaving the cache, or
      * B) at a new frame that has the end of the cache at the desired frame. */
-    h->first_frame = X264_MIN( h->first_frame + shift, cur_frame );
-    h->cur_size = X264_MAX( h->cur_size - shift, 0 );
+    int64_t shifted_first = (int64_t)h->first_frame + shift;
+    if( shifted_first > INT_MAX )
+    {
+        h->eof = frame;
+        return;
+    }
+    h->first_frame = (int)X264_MIN( shifted_first, (int64_t)cur_frame );
+    h->cur_size = (int)X264_MAX( (int64_t)h->cur_size - shift, 0 );
     while( h->cur_size < h->max_size )
     {
         cli_pic_t temp;
@@ -112,6 +161,11 @@ static void fill_cache( cache_hnd_t *h, int frame )
         }
         /* the read was successful, shift the frame off the front to the end */
         x264_frame_push( (void*)h->cache, x264_frame_shift( (void*)h->cache ) );
+        if( cur_frame == INT_MAX )
+        {
+            h->eof = cur_frame;
+            return;
+        }
         cur_frame++;
         h->cur_size++;
     }
@@ -122,9 +176,11 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
     cache_hnd_t *h = handle;
     FAIL_IF_ERR( frame < h->first_frame, NAME, "frame %d is before first cached frame %d \n", frame, h->first_frame );
     fill_cache( h, frame );
-    if( frame > LAST_FRAME ) /* eof */
+    if( (int64_t)frame > cache_last_frame( h ) ) /* eof */
         return -1;
     int idx = frame - (h->eof ? h->eof - h->max_size : h->first_frame);
+    if( idx < 0 || idx >= h->max_size )
+        return -1;
     *output = *h->cache[idx];
     return 0;
 }
@@ -139,13 +195,7 @@ static void free_filter( hnd_t handle )
 {
     cache_hnd_t *h = handle;
     h->prev_filter.free( h->prev_hnd );
-    for( int i = 0; i < h->max_size; i++ )
-    {
-        x264_cli_pic_clean( h->cache[i] );
-        free( h->cache[i] );
-    }
-    free( h->cache );
-    free( h );
+    cache_free_partial( h );
 }
 
 cli_vid_filter_t cache_filter = { NAME, NULL, init, get_frame, release_frame, free_filter, NULL };

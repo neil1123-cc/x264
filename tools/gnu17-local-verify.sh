@@ -12,6 +12,8 @@ config_8b=${CONFIG_8B:-$build_8b}
 config_10b=${CONFIG_10B:-$build_10b}
 config_all=${CONFIG_ALL:-$build_all}
 tmpdir=${TMPDIR:-$root/build/tmp}
+tmpdir_posix=$(cygpath -u "$tmpdir" 2>/dev/null || printf '%s\n' "$tmpdir")
+tmpdir_win=$(cygpath -m "$tmpdir_posix" 2>/dev/null || printf '%s\n' "$tmpdir_posix")
 make_jobs=${MAKE_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '%s\n' 1)}
 CONFIG_ARGS=${CONFIG_ARGS:---disable-cli}
 msys2_root=${MSYS2_ROOT:-/d/msys64}
@@ -22,12 +24,68 @@ msys2_clang64_diag=$(cygpath -m "$msys2_clang64" 2>/dev/null || printf '%s\n' "$
 msys2_usr_local_diag=$(cygpath -m "$msys2_usr_local" 2>/dev/null || printf '%s\n' "$msys2_usr_local")
 msys2_pkg_config_path=${MSYS2_PKG_CONFIG_PATH:-$msys2_usr_local/lib/pkgconfig:$msys2_usr_local/share/pkgconfig:$msys2_clang64/lib/pkgconfig:$msys2_clang64/share/pkgconfig}
 
-export TMP=${TMP:-$tmpdir}
-export TEMP=${TEMP:-$tmpdir}
-export TMPDIR=${TMPDIR:-$tmpdir}
+export TMP=$tmpdir_win
+export TEMP=$tmpdir_win
+export TMPDIR=$tmpdir_posix
 export PATH=${MSYS2_PATH:-$msys2_clang64/bin:$msys2_root/usr/bin}:$PATH
 
 mkdir -p "$build_root" "$TMPDIR"
+
+source_root_config_backup_dir=
+source_root_config_files="config.h config.mak x264_config.h"
+
+path_exists()
+{
+    [ -e "$1" ] || [ -L "$1" ]
+}
+
+restore_source_root_configs()
+{
+    [ -n "$source_root_config_backup_dir" ] || return 0
+
+    for source_root_config_file in $source_root_config_files; do
+        source_root_config_backup=$source_root_config_backup_dir/$source_root_config_file
+        source_root_config_path=$root/$source_root_config_file
+        path_exists "$source_root_config_backup" || continue
+        if path_exists "$source_root_config_path"; then
+            printf '%s\n' "leaving isolated source-root config at $source_root_config_backup because $source_root_config_path was recreated" >&2
+        else
+            mv "$source_root_config_backup" "$source_root_config_path"
+        fi
+    done
+
+    rmdir "$source_root_config_backup_dir" 2>/dev/null || true
+    source_root_config_backup_dir=
+}
+
+cleanup()
+{
+    restore_source_root_configs
+}
+
+trap cleanup EXIT
+trap 'status=$?; cleanup; trap - HUP INT TERM; exit "$status"' HUP INT TERM
+
+isolate_source_root_configs_for_smoke()
+{
+    source_root_config_found=
+    for source_root_config_file in $source_root_config_files; do
+        if path_exists "$root/$source_root_config_file"; then
+            source_root_config_found=yes
+        fi
+    done
+    [ -n "$source_root_config_found" ] || return 0
+
+    if [ -z "$source_root_config_backup_dir" ]; then
+        source_root_config_backup_dir=$(mktemp -d "$build_root/source-root-config-backup.XXXXXX")
+    fi
+
+    for source_root_config_file in $source_root_config_files; do
+        source_root_config_path=$root/$source_root_config_file
+        path_exists "$source_root_config_path" || continue
+        mv "$source_root_config_path" "$source_root_config_backup_dir/$source_root_config_file"
+    done
+}
 
 run_whitespace()
 {
@@ -738,6 +796,7 @@ configure_smoke_cli()
     extra_args=$2
     smoke_dir=$build_root/$label
     mkdir -p "$smoke_dir"
+    isolate_source_root_configs_for_smoke
     (
         cd "$smoke_dir"
         PKG_CONFIG_PATH=${PKG_CONFIG_PATH:-$msys2_pkg_config_path} \
@@ -760,12 +819,227 @@ configure_smoke_cli()
 
 write_smoke_y4m()
 {
-    y4m=$1
+    write_smoke_y4m_frames "$1" 1 25:1
+}
+
+write_smoke_y4m_frames()
+{
+    smoke_y4m_fps=$3
+    write_smoke_y4m_with_header "$1" "$2" "YUV4MPEG2 W16 H16 F$smoke_y4m_fps Ip A1:1 C420"
+}
+
+write_smoke_y4m_with_header()
+{
+    smoke_y4m_path=$1
+    smoke_y4m_frames=$2
+    smoke_y4m_header=$3
     {
-        printf '%s\n' 'YUV4MPEG2 W16 H16 F25:1 Ip A1:1 C420'
-        printf '%s\n' 'FRAME'
-        dd if=/dev/zero bs=384 count=1 2>/dev/null
-    } > "$y4m"
+        printf '%s\n' "$smoke_y4m_header"
+        smoke_y4m_i=0
+        while [ "$smoke_y4m_i" -lt "$smoke_y4m_frames" ]; do
+            printf '%s\n' 'FRAME'
+            dd if=/dev/zero bs=384 count=1 2>/dev/null
+            smoke_y4m_i=$((smoke_y4m_i + 1))
+        done
+    } > "$smoke_y4m_path"
+}
+
+require_ffprobe()
+{
+    ffprobe_label=$1
+    command -v ffprobe >/dev/null 2>&1 || { printf '%s\n' "ffprobe is required for $ffprobe_label external dependency smoke; this is not a core GNU17 failure. Install ffprobe or adjust PATH." >&2; exit 1; }
+}
+
+require_pkg_config_package()
+{
+    pkg_label=$1
+    pkg_name=$2
+    pkg_path=${PKG_CONFIG_PATH:-$msys2_pkg_config_path}
+
+    command -v pkg-config >/dev/null 2>&1 ||
+    {
+        printf '%s\n' "pkg-config is required for $pkg_label external dependency smoke; this is not a core GNU17 failure. Install pkg-config or adjust PATH." >&2
+        exit 1
+    }
+    PKG_CONFIG_PATH=$pkg_path pkg-config --exists "$pkg_name" 2>/dev/null &&
+    PKG_CONFIG_PATH=$pkg_path pkg-config --libs --static "$pkg_name" >/dev/null 2>&1 ||
+    {
+        printf '%s\n' "$pkg_name pkg-config metadata is required for $pkg_label external dependency smoke; this is not a core GNU17 failure." >&2
+        printf '%s\n' "PKG_CONFIG_PATH=$pkg_path" >&2
+        exit 1
+    }
+}
+
+assert_duration_between()
+{
+    duration_label=$1
+    duration_value=$2
+    duration_min=$3
+    duration_max=$4
+    awk -v label="$duration_label" -v value="$duration_value" -v min="$duration_min" -v max="$duration_max" '
+        BEGIN {
+            duration = value + 0.0
+            if( value == "" || duration < min || duration > max )
+            {
+                printf("unexpected %s duration: %s (expected %.6f..%.6f)\n", label, value, min, max) > "/dev/stderr"
+                exit 1
+            }
+        }
+    '
+}
+
+run_param_list_guard_smoke()
+{
+    guard_source=$smoke_dir/param-list-guard.c
+    guard_binary=$smoke_dir/param-list-guard$exe
+    guard_log=$smoke_dir/param-list-guard.log
+    guard_ldflags=$(awk -F= '/^LDFLAGS=/ { print $2 }' "$smoke_dir/config.mak")
+    guard_ldflagscli=$(awk -F= '/^LDFLAGSCLI=/ { print $2 }' "$smoke_dir/config.mak")
+
+    cat > "$guard_source" <<'GUARD_C'
+#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "x264.h"
+
+struct guard_allocation
+{
+    char *base;
+    size_t size;
+};
+
+#if defined(_WIN32)
+#include <windows.h>
+
+static char *make_guarded_string( const char *text, struct guard_allocation *allocation )
+{
+    SYSTEM_INFO info;
+    DWORD old_protect;
+    size_t len = strlen( text ) + 1;
+
+    GetSystemInfo( &info );
+    size_t page_size = info.dwPageSize;
+    if( len > page_size )
+        return NULL;
+    char *mem = VirtualAlloc( NULL, page_size * 2, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE );
+    if( !mem )
+        return NULL;
+    if( !VirtualProtect( mem + page_size, page_size, PAGE_NOACCESS, &old_protect ) )
+    {
+        VirtualFree( mem, 0, MEM_RELEASE );
+        return NULL;
+    }
+
+    allocation->base = mem;
+    allocation->size = page_size * 2;
+    char *value = mem + page_size - len;
+    memcpy( value, text, len );
+    return value;
+}
+
+static void free_guarded_string( struct guard_allocation *allocation )
+{
+    VirtualFree( allocation->base, 0, MEM_RELEASE );
+}
+
+#else
+#include <sys/mman.h>
+#include <unistd.h>
+
+#if !defined(MAP_ANONYMOUS) && defined(MAP_ANON)
+#define MAP_ANONYMOUS MAP_ANON
+#endif
+
+static char *make_guarded_string( const char *text, struct guard_allocation *allocation )
+{
+    long page_size_long = sysconf( _SC_PAGESIZE );
+    if( page_size_long <= 0 )
+        return NULL;
+    size_t page_size = (size_t)page_size_long;
+    size_t len = strlen( text ) + 1;
+    if( len > page_size )
+        return NULL;
+    char *mem = mmap( NULL, page_size * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0 );
+    if( mem == MAP_FAILED )
+        return NULL;
+    if( mprotect( mem + page_size, page_size, PROT_NONE ) )
+    {
+        munmap( mem, page_size * 2 );
+        return NULL;
+    }
+
+    allocation->base = mem;
+    allocation->size = page_size * 2;
+    char *value = mem + page_size - len;
+    memcpy( value, text, len );
+    return value;
+}
+
+static void free_guarded_string( struct guard_allocation *allocation )
+{
+    munmap( allocation->base, allocation->size );
+}
+#endif
+
+static int parse_guarded_value( const char *name, const char *text )
+{
+    x264_param_t param;
+    struct guard_allocation allocation = { 0 };
+    char *value = make_guarded_string( text, &allocation );
+    if( !value )
+        return -2;
+
+    x264_param_default( &param );
+    int ret = x264_param_parse( &param, name, value );
+    free_guarded_string( &allocation );
+    return ret;
+}
+
+int main( void )
+{
+    static const struct
+    {
+        const char *name;
+        const char *value;
+    } cases[] = {
+        { "psy-rd", "1.0" },
+        { "aq3-strength", "0.7" },
+        { "aq3-ifactor", "1.1" },
+        { "aq3-pfactor", "1.2" },
+        { "aq3-bfactor", "1.3" },
+        { "deblock", "1" },
+        { "qpmin", "3" },
+        { "qpmax", "42" },
+        { "partitions", "p8x8,p4x4,b8x8,i8x8,i4x4" },
+        { "analyse", "none" },
+    };
+
+    for( size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++ )
+    {
+        int ret = parse_guarded_value( cases[i].name, cases[i].value );
+        if( ret )
+        {
+            fprintf( stderr, "guarded parse failed for %s=%s: %d\n", cases[i].name, cases[i].value, ret );
+            return 1;
+        }
+    }
+
+    return 0;
+}
+GUARD_C
+
+    if ! ${CC:-cc} -std=gnu17 -D_GNU_SOURCE -Wall -Wextra -Werror -I"$smoke_dir" -I"$root" \
+        "$guard_source" "$smoke_dir/libx264.a" $guard_ldflagscli $guard_ldflags -o "$guard_binary" >"$guard_log" 2>&1; then
+        printf '%s\n' "failed to build param-list guard smoke: $guard_log" >&2
+        exit 1
+    fi
+    if ! "$guard_binary" >>"$guard_log" 2>&1; then
+        printf '%s\n' "param-list guard smoke failed: $guard_log" >&2
+        exit 1
+    fi
 }
 
 run_smoke_cli()
@@ -773,15 +1047,581 @@ run_smoke_cli()
     configure_smoke_cli smoke-cli "--disable-lavf --disable-ffms --disable-lsmash --disable-audio"
     y4m=$smoke_dir/smoke.y4m
     out=$smoke_dir/smoke.264
+    qp_none=$smoke_dir/qp-none.qp
+    qp_none_out=$smoke_dir/qp-none.264
+    qp_trailing=$smoke_dir/qp-none-trailing.qp
+    qp_trailing_out=$smoke_dir/qp-none-trailing.264
+    qp_trailing_log=$smoke_dir/qp-none-trailing.log
+    opts_custom_out=$smoke_dir/opts-custom.264
+    float_params_out=$smoke_dir/float-params.264
+    float_single_params_out=$smoke_dir/float-single-params.264
+    y4m_unknown=$smoke_dir/smoke-unknown-ratio.y4m
+    y4m_unknown_out=$smoke_dir/smoke-unknown-ratio.264
+    y4m_420jpeg=$smoke_dir/smoke-420jpeg.y4m
+    y4m_420jpeg_out=$smoke_dir/smoke-420jpeg.264
+    y4m_bad_fps=$smoke_dir/smoke-bad-fps.y4m
+    y4m_bad_fps_out=$smoke_dir/smoke-bad-fps.264
+    y4m_bad_fps_log=$smoke_dir/smoke-bad-fps.log
+    y4m_bad_csp_suffix=$smoke_dir/smoke-bad-csp-suffix.y4m
+    y4m_bad_csp_suffix_out=$smoke_dir/smoke-bad-csp-suffix.264
+    y4m_bad_csp_suffix_log=$smoke_dir/smoke-bad-csp-suffix.log
+    y4m_bad_width=$smoke_dir/smoke-bad-width.y4m
+    y4m_bad_width_out=$smoke_dir/smoke-bad-width.264
+    y4m_bad_width_log=$smoke_dir/smoke-bad-width.log
+    y4m_bad_height=$smoke_dir/smoke-bad-height.y4m
+    y4m_bad_height_out=$smoke_dir/smoke-bad-height.264
+    y4m_bad_height_log=$smoke_dir/smoke-bad-height.log
+    y4m_bad_length=$smoke_dir/smoke-bad-length.y4m
+    y4m_bad_length_out=$smoke_dir/smoke-bad-length.264
+    y4m_bad_length_log=$smoke_dir/smoke-bad-length.log
+    y4m_bad_color_range=$smoke_dir/smoke-bad-color-range.y4m
+    y4m_bad_color_range_out=$smoke_dir/smoke-bad-color-range.264
+    y4m_bad_color_range_log=$smoke_dir/smoke-bad-color-range.log
+    raw=$smoke_dir/smoke.raw
+    raw_out=$smoke_dir/smoke-raw.264
+    raw_bad_res_out=$smoke_dir/smoke-raw-bad-res.264
+    raw_bad_res_log=$smoke_dir/smoke-raw-bad-res.log
+    param_bad_fps_out=$smoke_dir/smoke-param-bad-fps.264
+    param_bad_fps_log=$smoke_dir/smoke-param-bad-fps.log
+    param_partitions_out=$smoke_dir/smoke-param-partitions.264
+    param_bad_partitions_out=$smoke_dir/smoke-param-bad-partitions.264
+    param_bad_partitions_log=$smoke_dir/smoke-param-bad-partitions.log
+    param_bad_analyse_out=$smoke_dir/smoke-param-bad-analyse.264
+    param_bad_analyse_log=$smoke_dir/smoke-param-bad-analyse.log
+    param_bad_deblock_out=$smoke_dir/smoke-param-bad-deblock.264
+    param_bad_deblock_log=$smoke_dir/smoke-param-bad-deblock.log
+    param_bad_qpmin_out=$smoke_dir/smoke-param-bad-qpmin.264
+    param_bad_qpmin_log=$smoke_dir/smoke-param-bad-qpmin.log
+    param_ratetol_inf_out=$smoke_dir/smoke-param-ratetol-inf.264
+    param_bad_ratetol_out=$smoke_dir/smoke-param-bad-ratetol.264
+    param_bad_ratetol_log=$smoke_dir/smoke-param-bad-ratetol.log
+    param_keyint_inf_out=$smoke_dir/smoke-param-keyint-infinite.264
+    param_bad_keyint_out=$smoke_dir/smoke-param-bad-keyint.264
+    param_bad_keyint_log=$smoke_dir/smoke-param-bad-keyint.log
+    param_bad_mastering_out=$smoke_dir/smoke-param-bad-mastering.264
+    param_bad_mastering_log=$smoke_dir/smoke-param-bad-mastering.log
+    param_bad_aq3_boundary_out=$smoke_dir/smoke-param-bad-aq3-boundary.264
+    param_bad_aq3_boundary_log=$smoke_dir/smoke-param-bad-aq3-boundary.log
+    param_bad_psyrd_out=$smoke_dir/smoke-param-bad-psy-rd.264
+    param_bad_psyrd_log=$smoke_dir/smoke-param-bad-psy-rd.log
+    param_bad_aq3_strength_out=$smoke_dir/smoke-param-bad-aq3-strength.264
+    param_bad_aq3_strength_log=$smoke_dir/smoke-param-bad-aq3-strength.log
+    param_bad_aq3_ifactor_out=$smoke_dir/smoke-param-bad-aq3-ifactor.264
+    param_bad_aq3_ifactor_log=$smoke_dir/smoke-param-bad-aq3-ifactor.log
+    param_bad_cqm4_out=$smoke_dir/smoke-param-bad-cqm4.264
+    param_bad_cqm4_log=$smoke_dir/smoke-param-bad-cqm4.log
+    filter_bad_pad_out=$smoke_dir/smoke-filter-bad-pad.264
+    filter_bad_pad_log=$smoke_dir/smoke-filter-bad-pad.log
+    cqm_flat_out=$smoke_dir/smoke-cqm-flat.264
+    cqm_jvt_out=$smoke_dir/smoke-cqm-jvt.264
+    cqm_missing_flat=$smoke_dir/smoke-flat-cqm-missing.cfg
+    cqm_missing_flat_out=$smoke_dir/smoke-flat-cqm-missing.264
+    cqm_missing_flat_log=$smoke_dir/smoke-flat-cqm-missing.log
+    cqmfile_anchored=$smoke_dir/smoke-cqmfile-anchored.cfg
+    cqmfile_anchored_out=$smoke_dir/smoke-cqmfile-anchored.264
+    cqmfile_bad=$smoke_dir/smoke-bad-cqmfile.cfg
+    cqmfile_bad_out=$smoke_dir/smoke-bad-cqmfile.264
+    cqmfile_bad_log=$smoke_dir/smoke-bad-cqmfile.log
+    tc_bad_header=$smoke_dir/smoke-bad-header.tc
+    tc_bad_header_out=$smoke_dir/smoke-bad-header.264
+    tc_bad_header_log=$smoke_dir/smoke-bad-header.log
+    tc_bad_tdecimate=$smoke_dir/smoke-bad-tdecimate.tc
+    tc_bad_tdecimate_out=$smoke_dir/smoke-bad-tdecimate.264
+    tc_bad_tdecimate_log=$smoke_dir/smoke-bad-tdecimate.log
+    stats_y4m=$smoke_dir/twopass.y4m
+    stats_valid=$smoke_dir/twopass.stats
+    stats_pass1_out=$smoke_dir/twopass-pass1.264
+    stats_bad_timebase=$smoke_dir/twopass-bad-timebase.stats
+    stats_bad_timebase_out=$smoke_dir/twopass-bad-timebase.264
+    stats_bad_timebase_log=$smoke_dir/twopass-bad-timebase.log
+    stats_bad_main=$smoke_dir/twopass-bad-main.stats
+    stats_bad_main_out=$smoke_dir/twopass-bad-main.264
+    stats_bad_main_log=$smoke_dir/twopass-bad-main.log
+    stats_bad_main_ref=$smoke_dir/twopass-bad-main-ref.stats
+    stats_bad_main_ref_out=$smoke_dir/twopass-bad-main-ref.264
+    stats_bad_main_ref_log=$smoke_dir/twopass-bad-main-ref.log
+    stats_bad_ref=$smoke_dir/twopass-bad-ref.stats
+    stats_bad_ref_out=$smoke_dir/twopass-bad-ref.264
+    stats_bad_ref_log=$smoke_dir/twopass-bad-ref.log
+    stats_weight=$smoke_dir/twopass-weight.stats
+    stats_weight_out=$smoke_dir/twopass-weight.264
+    stats_weight_spaces=$smoke_dir/twopass-weight-spaces.stats
+    stats_weight_spaces_out=$smoke_dir/twopass-weight-spaces.264
+    stats_weight_chroma_spaces=$smoke_dir/twopass-weight-chroma-spaces.stats
+    stats_weight_chroma_spaces_out=$smoke_dir/twopass-weight-chroma-spaces.264
+    stats_bad_weight=$smoke_dir/twopass-bad-weight.stats
+    stats_bad_weight_out=$smoke_dir/twopass-bad-weight.264
+    stats_bad_weight_log=$smoke_dir/twopass-bad-weight.log
+    stats_bad_bframes=$smoke_dir/twopass-bad-bframes.stats
+    stats_bad_bframes_out=$smoke_dir/twopass-bad-bframes.264
+    stats_bad_bframes_log=$smoke_dir/twopass-bad-bframes.log
+    stats_bad_bframes_ws=$smoke_dir/twopass-bad-bframes-ws.stats
+    stats_bad_bframes_ws_out=$smoke_dir/twopass-bad-bframes-ws.264
+    stats_bad_bframes_ws_log=$smoke_dir/twopass-bad-bframes-ws.log
+    stats_bad_lookahead_ws=$smoke_dir/twopass-bad-lookahead-ws.stats
+    stats_bad_lookahead_ws_out=$smoke_dir/twopass-bad-lookahead-ws.264
+    stats_bad_lookahead_ws_log=$smoke_dir/twopass-bad-lookahead-ws.log
+    zone_nan_out=$smoke_dir/zone-nan.264
+    zone_nan_log=$smoke_dir/zone-nan.log
     write_smoke_y4m "$y4m"
     "$smoke_bin" --demuxer y4m --frames 1 --crf 30 -o "$out" "$y4m" >/dev/null
     [ -s "$out" ] || { printf '%s\n' "missing CLI smoke output: $out (input: $y4m)" >&2; exit 1; }
-    printf '%s\n' "smoke-cli output: $out ($(wc -c < "$out") bytes)"
+    "$smoke_bin" --demuxer y4m --frames 1 --opts preinfo:gnu17-pre --opts postinfo:gnu17-post --opts preopt:gnu17-preopt --opts postopt:gnu17-postopt --crf 30 -o "$opts_custom_out" "$y4m" >/dev/null
+    [ -s "$opts_custom_out" ] || { printf '%s\n' "missing custom opts SEI smoke output: $opts_custom_out (input: $y4m)" >&2; exit 1; }
+    "$smoke_bin" --demuxer y4m --frames 1 --psy-rd '1.0|0.2' --aq3-mode 1 \
+        --aq3-strength 0.1:0.2:0.3:0.4:0.5:0.6:0.7:0.8 \
+        --aq3-ifactor 1.1,1.2 --aq3-pfactor 1.3 --aq3-bfactor 1.4:1.5 \
+        --crf 30 -o "$float_params_out" "$y4m" >/dev/null
+    [ -s "$float_params_out" ] || { printf '%s\n' "missing strict float parameter smoke output: $float_params_out (input: $y4m)" >&2; exit 1; }
+    "$smoke_bin" --demuxer y4m --frames 1 --psy-rd 1.0 --aq3-mode 1 \
+        --aq3-strength 0.7 --aq3-ifactor 1.1 --aq3-pfactor 1.2 --aq3-bfactor 1.3 \
+        --crf 30 -o "$float_single_params_out" "$y4m" >/dev/null
+    [ -s "$float_single_params_out" ] || { printf '%s\n' "missing single-value float parameter smoke output: $float_single_params_out (input: $y4m)" >&2; exit 1; }
+    run_param_list_guard_smoke
+    dd if=/dev/zero of="$raw" bs=384 count=1 2>/dev/null
+    "$smoke_bin" --demuxer raw --input-res 16x16 --fps 25 --frames 1 --crf 30 -o "$raw_out" "$raw" >/dev/null
+    [ -s "$raw_out" ] || { printf '%s\n' "missing raw smoke output: $raw_out (input: $raw)" >&2; exit 1; }
+    rm -f "$raw_bad_res_log" "$raw_bad_res_out"
+    if "$smoke_bin" --demuxer raw --input-res 16x16x --fps 25 --frames 1 --crf 30 -o "$raw_bad_res_out" "$raw" >"$raw_bad_res_log" 2>&1; then
+        printf '%s\n' "accepted raw input resolution trailing junk: $raw_bad_res_out" >&2
+        exit 1
+    fi
+    grep -q "invalid resolution" "$raw_bad_res_log" ||
+    {
+        printf '%s\n' "missing raw resolution parse error in $raw_bad_res_log" >&2
+        exit 1
+    }
+    rm -f "$param_bad_fps_log" "$param_bad_fps_out"
+    if "$smoke_bin" --demuxer raw --input-res 16x16 --fps 25/1x --frames 1 --crf 30 -o "$param_bad_fps_out" "$raw" >"$param_bad_fps_log" 2>&1; then
+        printf '%s\n' "accepted parameter fps trailing junk: $param_bad_fps_out" >&2
+        exit 1
+    fi
+    grep -q "invalid argument: fps" "$param_bad_fps_log" ||
+    {
+        printf '%s\n' "missing parameter fps parse error in $param_bad_fps_log" >&2
+        exit 1
+    }
+    "$smoke_bin" --demuxer y4m --frames 1 --partitions p8x8,p4x4,b8x8,i8x8,i4x4 --crf 30 -o "$param_partitions_out" "$y4m" >/dev/null
+    [ -s "$param_partitions_out" ] || { printf '%s\n' "missing partitions smoke output: $param_partitions_out (input: $y4m)" >&2; exit 1; }
+    rm -f "$param_bad_partitions_log" "$param_bad_partitions_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --partitions p8x8junk --crf 30 -o "$param_bad_partitions_out" "$y4m" >"$param_bad_partitions_log" 2>&1; then
+        printf '%s\n' "accepted partitions trailing junk: $param_bad_partitions_out" >&2
+        exit 1
+    fi
+    grep -q "invalid argument: partitions" "$param_bad_partitions_log" ||
+    {
+        printf '%s\n' "missing parameter partitions parse error in $param_bad_partitions_log" >&2
+        exit 1
+    }
+    rm -f "$param_bad_analyse_log" "$param_bad_analyse_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --analyse alljunk --crf 30 -o "$param_bad_analyse_out" "$y4m" >"$param_bad_analyse_log" 2>&1; then
+        printf '%s\n' "accepted analyse trailing junk: $param_bad_analyse_out" >&2
+        exit 1
+    fi
+    grep -q "invalid argument: analyse" "$param_bad_analyse_log" ||
+    {
+        printf '%s\n' "missing parameter analyse parse error in $param_bad_analyse_log" >&2
+        exit 1
+    }
+    rm -f "$param_bad_deblock_log" "$param_bad_deblock_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --deblock 1:1x --crf 30 -o "$param_bad_deblock_out" "$y4m" >"$param_bad_deblock_log" 2>&1; then
+        printf '%s\n' "accepted parameter deblock trailing junk: $param_bad_deblock_out" >&2
+        exit 1
+    fi
+    grep -q "invalid argument: deblock" "$param_bad_deblock_log" ||
+    {
+        printf '%s\n' "missing parameter deblock parse error in $param_bad_deblock_log" >&2
+        exit 1
+    }
+    rm -f "$param_bad_qpmin_log" "$param_bad_qpmin_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --qpmin 1:2,3 --crf 30 -o "$param_bad_qpmin_out" "$y4m" >"$param_bad_qpmin_log" 2>&1; then
+        printf '%s\n' "accepted mixed-separator qpmin: $param_bad_qpmin_out" >&2
+        exit 1
+    fi
+    grep -q "invalid argument: qpmin" "$param_bad_qpmin_log" ||
+    {
+        printf '%s\n' "missing parameter qpmin parse error in $param_bad_qpmin_log" >&2
+        exit 1
+    }
+    "$smoke_bin" --demuxer y4m --frames 1 --ratetol inf --crf 30 -o "$param_ratetol_inf_out" "$y4m" >/dev/null
+    [ -s "$param_ratetol_inf_out" ] || { printf '%s\n' "missing ratetol inf smoke output: $param_ratetol_inf_out (input: $y4m)" >&2; exit 1; }
+    rm -f "$param_bad_ratetol_log" "$param_bad_ratetol_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --ratetol infjunk --crf 30 -o "$param_bad_ratetol_out" "$y4m" >"$param_bad_ratetol_log" 2>&1; then
+        printf '%s\n' "accepted ratetol inf prefix junk: $param_bad_ratetol_out" >&2
+        exit 1
+    fi
+    grep -q "invalid argument: ratetol" "$param_bad_ratetol_log" ||
+    {
+        printf '%s\n' "missing parameter ratetol parse error in $param_bad_ratetol_log" >&2
+        exit 1
+    }
+    "$smoke_bin" --demuxer y4m --frames 1 --keyint infinite --crf 30 -o "$param_keyint_inf_out" "$y4m" >/dev/null
+    [ -s "$param_keyint_inf_out" ] || { printf '%s\n' "missing keyint infinite smoke output: $param_keyint_inf_out (input: $y4m)" >&2; exit 1; }
+    rm -f "$param_bad_keyint_log" "$param_bad_keyint_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --keyint infinitejunk --crf 30 -o "$param_bad_keyint_out" "$y4m" >"$param_bad_keyint_log" 2>&1; then
+        printf '%s\n' "accepted keyint infinite prefix junk: $param_bad_keyint_out" >&2
+        exit 1
+    fi
+    grep -q "invalid argument: keyint" "$param_bad_keyint_log" ||
+    {
+        printf '%s\n' "missing parameter keyint parse error in $param_bad_keyint_log" >&2
+        exit 1
+    }
+    rm -f "$param_bad_mastering_log" "$param_bad_mastering_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --mastering-display 'G(1,2)B(3,4)R(5,6)WP(7,8)L(9,10)junk' --crf 30 -o "$param_bad_mastering_out" "$y4m" >"$param_bad_mastering_log" 2>&1; then
+        printf '%s\n' "accepted mastering-display trailing junk: $param_bad_mastering_out" >&2
+        exit 1
+    fi
+    grep -q "invalid argument: mastering-display" "$param_bad_mastering_log" ||
+    {
+        printf '%s\n' "missing parameter mastering-display parse error in $param_bad_mastering_log" >&2
+        exit 1
+    }
+    rm -f "$param_bad_aq3_boundary_log" "$param_bad_aq3_boundary_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --aq3-boundary 192:64x24 --crf 30 -o "$param_bad_aq3_boundary_out" "$y4m" >"$param_bad_aq3_boundary_log" 2>&1; then
+        printf '%s\n' "accepted malformed aq3-boundary: $param_bad_aq3_boundary_out" >&2
+        exit 1
+    fi
+    grep -q "invalid argument: aq3-boundary" "$param_bad_aq3_boundary_log" ||
+    {
+        printf '%s\n' "missing parameter aq3-boundary parse error in $param_bad_aq3_boundary_log" >&2
+        exit 1
+    }
+    rm -f "$param_bad_aq3_boundary_log" "$param_bad_aq3_boundary_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --aq3-boundary 192:64 --crf 30 -o "$param_bad_aq3_boundary_out" "$y4m" >"$param_bad_aq3_boundary_log" 2>&1; then
+        printf '%s\n' "accepted short aq3-boundary list: $param_bad_aq3_boundary_out" >&2
+        exit 1
+    fi
+    grep -q "invalid argument: aq3-boundary" "$param_bad_aq3_boundary_log" ||
+    {
+        printf '%s\n' "missing short aq3-boundary parse error in $param_bad_aq3_boundary_log" >&2
+        exit 1
+    }
+    rm -f "$param_bad_psyrd_log" "$param_bad_psyrd_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --psy-rd 1.0:0.2junk --crf 30 -o "$param_bad_psyrd_out" "$y4m" >"$param_bad_psyrd_log" 2>&1; then
+        printf '%s\n' "accepted psy-rd trailing junk: $param_bad_psyrd_out" >&2
+        exit 1
+    fi
+    grep -q "invalid argument: psy-rd" "$param_bad_psyrd_log" ||
+    {
+        printf '%s\n' "missing parameter psy-rd parse error in $param_bad_psyrd_log" >&2
+        exit 1
+    }
+    rm -f "$param_bad_aq3_strength_log" "$param_bad_aq3_strength_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --aq3-strength 0.1:0.2,0.3:0.4:0.5:0.6:0.7:0.8 --crf 30 -o "$param_bad_aq3_strength_out" "$y4m" >"$param_bad_aq3_strength_log" 2>&1; then
+        printf '%s\n' "accepted mixed-separator aq3-strength: $param_bad_aq3_strength_out" >&2
+        exit 1
+    fi
+    grep -q "invalid argument: aq3-strength" "$param_bad_aq3_strength_log" ||
+    {
+        printf '%s\n' "missing parameter aq3-strength parse error in $param_bad_aq3_strength_log" >&2
+        exit 1
+    }
+    rm -f "$param_bad_aq3_ifactor_log" "$param_bad_aq3_ifactor_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --aq3-ifactor 1.0:inf --crf 30 -o "$param_bad_aq3_ifactor_out" "$y4m" >"$param_bad_aq3_ifactor_log" 2>&1; then
+        printf '%s\n' "accepted aq3-ifactor inf: $param_bad_aq3_ifactor_out" >&2
+        exit 1
+    fi
+    grep -q "invalid argument: aq3-ifactor" "$param_bad_aq3_ifactor_log" ||
+    {
+        printf '%s\n' "missing parameter aq3-ifactor parse error in $param_bad_aq3_ifactor_log" >&2
+        exit 1
+    }
+    rm -f "$param_bad_cqm4_log" "$param_bad_cqm4_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --cqm4 "1x,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1" --crf 30 -o "$param_bad_cqm4_out" "$y4m" >"$param_bad_cqm4_log" 2>&1; then
+        printf '%s\n' "accepted parameter cqm4 trailing junk: $param_bad_cqm4_out" >&2
+        exit 1
+    fi
+    grep -q "invalid argument: cqm4" "$param_bad_cqm4_log" ||
+    {
+        printf '%s\n' "missing parameter cqm4 parse error in $param_bad_cqm4_log" >&2
+        exit 1
+    }
+    rm -f "$filter_bad_pad_log" "$filter_bad_pad_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --vf pad:abc,0,0,0,0,0,0,0,0 --crf 30 -o "$filter_bad_pad_out" "$y4m" >"$filter_bad_pad_log" 2>&1; then
+        printf '%s\n' "accepted malformed pad filter value: $filter_bad_pad_out" >&2
+        exit 1
+    fi
+    grep -q "left pad value 'abc' is invalid" "$filter_bad_pad_log" ||
+    {
+        printf '%s\n' "missing pad filter parse error in $filter_bad_pad_log" >&2
+        exit 1
+    }
+    "$smoke_bin" --demuxer y4m --frames 1 --cqm flat --crf 30 -o "$cqm_flat_out" "$y4m" >/dev/null
+    [ -s "$cqm_flat_out" ] || { printf '%s\n' "missing CQM flat preset smoke output: $cqm_flat_out (input: $y4m)" >&2; exit 1; }
+    "$smoke_bin" --demuxer y4m --frames 1 --cqm jvt --crf 30 -o "$cqm_jvt_out" "$y4m" >/dev/null
+    [ -s "$cqm_jvt_out" ] || { printf '%s\n' "missing CQM JVT preset smoke output: $cqm_jvt_out (input: $y4m)" >&2; exit 1; }
+    rm -f "$cqm_missing_flat" "$cqm_missing_flat_log" "$cqm_missing_flat_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --cqm "$cqm_missing_flat" --crf 30 -o "$cqm_missing_flat_out" "$y4m" >"$cqm_missing_flat_log" 2>&1; then
+        printf '%s\n' "accepted missing CQM file path as preset substring: $cqm_missing_flat_out" >&2
+        exit 1
+    fi
+    grep -q "can't open file" "$cqm_missing_flat_log" ||
+    {
+        printf '%s\n' "missing CQM file-open parse error in $cqm_missing_flat_log" >&2
+        exit 1
+    }
+    {
+        printf '%s\n' "XINTRA4X4_LUMA = -1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1"
+        printf '%s\n' "INTRA4X4_LUMAX = -1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1"
+    } > "$cqmfile_anchored"
+    "$smoke_bin" --demuxer y4m --frames 1 --cqmfile "$cqmfile_anchored" --crf 30 -o "$cqmfile_anchored_out" "$y4m" >/dev/null
+    [ -s "$cqmfile_anchored_out" ] || { printf '%s\n' "missing anchored CQM file smoke output: $cqmfile_anchored_out (input: $cqmfile_anchored)" >&2; exit 1; }
+    printf '%s\n' "INTRA4X4_LUMA = -1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1" > "$cqmfile_bad"
+    rm -f "$cqmfile_bad_log" "$cqmfile_bad_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --cqmfile "$cqmfile_bad" --crf 30 -o "$cqmfile_bad_out" "$y4m" >"$cqmfile_bad_log" 2>&1; then
+        printf '%s\n' "accepted malformed CQM file coefficient: $cqmfile_bad" >&2
+        exit 1
+    fi
+    grep -q "bad coefficient in list 'INTRA4X4_LUMA'" "$cqmfile_bad_log" ||
+    {
+        printf '%s\n' "missing CQM file coefficient parse error in $cqmfile_bad_log" >&2
+        exit 1
+    }
+    printf '%s\n' '# timecode format v2junk' > "$tc_bad_header"
+    rm -f "$tc_bad_header_log" "$tc_bad_header_out"
+    if "$smoke_bin" --demuxer y4m --tcfile-in "$tc_bad_header" --frames 1 --crf 30 -o "$tc_bad_header_out" "$y4m" >"$tc_bad_header_log" 2>&1; then
+        printf '%s\n' "accepted malformed timecode header: $tc_bad_header" >&2
+        exit 1
+    fi
+    grep -q "unsupported timecode format" "$tc_bad_header_log" ||
+    {
+        printf '%s\n' "missing malformed timecode header parse error in $tc_bad_header_log" >&2
+        exit 1
+    }
+    {
+        printf '%s\n' '# timecode format v1'
+        printf '%s\n' 'assume 25'
+        printf '%s\n' '# TDecimate Mode 3: Last Frame = -1'
+    } > "$tc_bad_tdecimate"
+    rm -f "$tc_bad_tdecimate_log" "$tc_bad_tdecimate_out"
+    if "$smoke_bin" --demuxer y4m --tcfile-in "$tc_bad_tdecimate" --frames 1 --crf 30 -o "$tc_bad_tdecimate_out" "$y4m" >"$tc_bad_tdecimate_log" 2>&1; then
+        printf '%s\n' "accepted malformed TDecimate last-frame count: $tc_bad_tdecimate" >&2
+        exit 1
+    fi
+    grep -q "invalid tcfile frame count" "$tc_bad_tdecimate_log" ||
+    {
+        printf '%s\n' "missing malformed TDecimate parse error in $tc_bad_tdecimate_log" >&2
+        exit 1
+    }
+    rm -f "$stats_y4m" "$stats_valid" "$stats_pass1_out" \
+          "$stats_bad_timebase" "$stats_bad_timebase_out" "$stats_bad_timebase_log" \
+          "$stats_bad_main" "$stats_bad_main_out" "$stats_bad_main_log" \
+          "$stats_bad_main_ref" "$stats_bad_main_ref_out" "$stats_bad_main_ref_log" \
+          "$stats_bad_ref" "$stats_bad_ref_out" "$stats_bad_ref_log" \
+          "$stats_weight" "$stats_weight_out" "$stats_weight_spaces" "$stats_weight_spaces_out" \
+          "$stats_weight_chroma_spaces" "$stats_weight_chroma_spaces_out" \
+          "$stats_bad_weight" "$stats_bad_weight_out" "$stats_bad_weight_log" \
+          "$stats_bad_bframes" "$stats_bad_bframes_out" "$stats_bad_bframes_log" \
+          "$stats_bad_bframes_ws" "$stats_bad_bframes_ws_out" "$stats_bad_bframes_ws_log" \
+          "$stats_bad_lookahead_ws" "$stats_bad_lookahead_ws_out" "$stats_bad_lookahead_ws_log"
+    write_smoke_y4m_frames "$stats_y4m" 2 25:1
+    "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 1 --no-mbtree --bframes 0 --ref 1 --stats "$stats_valid" -o "$stats_pass1_out" "$stats_y4m" >/dev/null
+    [ -s "$stats_valid" ] || { printf '%s\n' "missing two-pass stats smoke output: $stats_valid" >&2; exit 1; }
+    sed '1s|timebase=[^ ]*|timebase=-1/1|' "$stats_valid" > "$stats_bad_timebase"
+    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_timebase" -o "$stats_bad_timebase_out" "$stats_y4m" >"$stats_bad_timebase_log" 2>&1; then
+        printf '%s\n' "accepted malformed stats timebase: $stats_bad_timebase" >&2
+        exit 1
+    fi
+    grep -q "timebase specified in stats file not valid" "$stats_bad_timebase_log" ||
+    {
+        printf '%s\n' "missing malformed stats timebase parse error in $stats_bad_timebase_log" >&2
+        exit 1
+    }
+    sed '2s|q:[^ ]*|q:nan|' "$stats_valid" > "$stats_bad_main"
+    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_main" -o "$stats_bad_main_out" "$stats_y4m" >"$stats_bad_main_log" 2>&1; then
+        printf '%s\n' "accepted malformed stats main fields: $stats_bad_main" >&2
+        exit 1
+    fi
+    grep -q "statistics are damaged at line 0" "$stats_bad_main_log" ||
+    {
+        printf '%s\n' "missing malformed stats main-field parse error in $stats_bad_main_log" >&2
+        exit 1
+    }
+    sed '3s| d:- ref:| d:- junk:1 ref:|' "$stats_valid" > "$stats_bad_main_ref"
+    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_main_ref" -o "$stats_bad_main_ref_out" "$stats_y4m" >"$stats_bad_main_ref_log" 2>&1; then
+        printf '%s\n' "accepted malformed stats token before ref list: $stats_bad_main_ref" >&2
+        exit 1
+    fi
+    grep -q "statistics are damaged at line 1" "$stats_bad_main_ref_log" ||
+    {
+        printf '%s\n' "missing malformed stats token-before-ref parse error in $stats_bad_main_ref_log" >&2
+        exit 1
+    }
+    sed '3s|ref:[^ ]*|ref:0x|' "$stats_valid" > "$stats_bad_ref"
+    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_ref" -o "$stats_bad_ref_out" "$stats_y4m" >"$stats_bad_ref_log" 2>&1; then
+        printf '%s\n' "accepted malformed stats ref list: $stats_bad_ref" >&2
+        exit 1
+    fi
+    grep -q "statistics are damaged at line 1" "$stats_bad_ref_log" ||
+    {
+        printf '%s\n' "missing malformed stats ref-list parse error in $stats_bad_ref_log" >&2
+        exit 1
+    }
+    sed '3s|ref:0 ;|ref:0 w:0,1,0 ;|' "$stats_valid" > "$stats_weight"
+    "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_weight" -o "$stats_weight_out" "$stats_y4m" >/dev/null
+    [ -s "$stats_weight_out" ] || { printf '%s\n' "missing stats weight smoke output: $stats_weight_out" >&2; exit 1; }
+    sed '3s|ref:0 ;|ref:0 w:0, 1, 0 ;|' "$stats_valid" > "$stats_weight_spaces"
+    "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_weight_spaces" -o "$stats_weight_spaces_out" "$stats_y4m" >/dev/null
+    [ -s "$stats_weight_spaces_out" ] || { printf '%s\n' "missing stats weight-spaces smoke output: $stats_weight_spaces_out" >&2; exit 1; }
+    sed '3s|ref:0 ;|ref:0 w:0, 1, 0, 0, 1, 0, 1, 0 ;|' "$stats_valid" > "$stats_weight_chroma_spaces"
+    "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_weight_chroma_spaces" -o "$stats_weight_chroma_spaces_out" "$stats_y4m" >/dev/null
+    [ -s "$stats_weight_chroma_spaces_out" ] || { printf '%s\n' "missing stats weight chroma-spaces smoke output: $stats_weight_chroma_spaces_out" >&2; exit 1; }
+    sed '3s|ref:0 ;|ref:0 w:0,1,0x ;|' "$stats_valid" > "$stats_bad_weight"
+    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_weight" -o "$stats_bad_weight_out" "$stats_y4m" >"$stats_bad_weight_log" 2>&1; then
+        printf '%s\n' "accepted malformed stats weight list: $stats_bad_weight" >&2
+        exit 1
+    fi
+    grep -q "statistics are damaged at line 1" "$stats_bad_weight_log" ||
+    {
+        printf '%s\n' "missing malformed stats weight-list parse error in $stats_bad_weight_log" >&2
+        exit 1
+    }
+    sed '1s|bframes=[^ ]*|bframes=3x|' "$stats_valid" > "$stats_bad_bframes"
+    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_bframes" -o "$stats_bad_bframes_out" "$stats_y4m" >"$stats_bad_bframes_log" 2>&1; then
+        printf '%s\n' "accepted malformed stats bframes token: $stats_bad_bframes" >&2
+        exit 1
+    fi
+    grep -q "bframes specified in stats file not valid" "$stats_bad_bframes_log" ||
+    {
+        printf '%s\n' "missing malformed stats bframes parse error in $stats_bad_bframes_log" >&2
+        exit 1
+    }
+    sed '1s|bframes=[^ ]*|bframes= 3|' "$stats_valid" > "$stats_bad_bframes_ws"
+    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_bframes_ws" -o "$stats_bad_bframes_ws_out" "$stats_y4m" >"$stats_bad_bframes_ws_log" 2>&1; then
+        printf '%s\n' "accepted whitespace-prefixed stats bframes token: $stats_bad_bframes_ws" >&2
+        exit 1
+    fi
+    grep -q "bframes specified in stats file not valid" "$stats_bad_bframes_ws_log" ||
+    {
+        printf '%s\n' "missing whitespace-prefixed stats bframes parse error in $stats_bad_bframes_ws_log" >&2
+        exit 1
+    }
+    sed '1s|$| rc_lookahead= 1|' "$stats_valid" > "$stats_bad_lookahead_ws"
+    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --vbv-bufsize 100 --vbv-maxrate 100 --stats "$stats_bad_lookahead_ws" -o "$stats_bad_lookahead_ws_out" "$stats_y4m" >"$stats_bad_lookahead_ws_log" 2>&1; then
+        printf '%s\n' "accepted whitespace-prefixed stats rc_lookahead token: $stats_bad_lookahead_ws" >&2
+        exit 1
+    fi
+    grep -q "rc_lookahead specified in stats file not valid" "$stats_bad_lookahead_ws_log" ||
+    {
+        printf '%s\n' "missing whitespace-prefixed stats rc_lookahead parse error in $stats_bad_lookahead_ws_log" >&2
+        exit 1
+    }
+    write_smoke_y4m_with_header "$y4m_unknown" 1 "YUV4MPEG2 W16 H16 F0:0 Ip A0:0 C420"
+    "$smoke_bin" --demuxer y4m --fps 25 --frames 1 --crf 30 -o "$y4m_unknown_out" "$y4m_unknown" >/dev/null
+    [ -s "$y4m_unknown_out" ] || { printf '%s\n' "missing Y4M unknown-ratio smoke output: $y4m_unknown_out (input: $y4m_unknown)" >&2; exit 1; }
+    write_smoke_y4m_with_header "$y4m_420jpeg" 1 "YUV4MPEG2 W16 H16 F25:1 Ip A1:1 C420jpeg"
+    "$smoke_bin" --demuxer y4m --frames 1 --crf 30 -o "$y4m_420jpeg_out" "$y4m_420jpeg" >/dev/null
+    [ -s "$y4m_420jpeg_out" ] || { printf '%s\n' "missing Y4M 420jpeg smoke output: $y4m_420jpeg_out (input: $y4m_420jpeg)" >&2; exit 1; }
+    write_smoke_y4m_with_header "$y4m_bad_fps" 1 "YUV4MPEG2 W16 H16 F25:1x Ip A1:1 C420"
+    rm -f "$y4m_bad_fps_log" "$y4m_bad_fps_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --crf 30 -o "$y4m_bad_fps_out" "$y4m_bad_fps" >"$y4m_bad_fps_log" 2>&1; then
+        printf '%s\n' "accepted Y4M frame-rate trailing junk: $y4m_bad_fps (output: $y4m_bad_fps_out)" >&2
+        exit 1
+    fi
+    grep -q "invalid frame rate" "$y4m_bad_fps_log" ||
+    {
+        printf '%s\n' "missing Y4M frame-rate parse error in $y4m_bad_fps_log" >&2
+        exit 1
+    }
+    write_smoke_y4m_with_header "$y4m_bad_csp_suffix" 1 "YUV4MPEG2 W16 H16 F25:1 Ip A1:1 C420junk"
+    rm -f "$y4m_bad_csp_suffix_log" "$y4m_bad_csp_suffix_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --crf 30 -o "$y4m_bad_csp_suffix_out" "$y4m_bad_csp_suffix" >"$y4m_bad_csp_suffix_log" 2>&1; then
+        printf '%s\n' "accepted Y4M colorspace suffix junk: $y4m_bad_csp_suffix (output: $y4m_bad_csp_suffix_out)" >&2
+        exit 1
+    fi
+    grep -q "colorspace unhandled" "$y4m_bad_csp_suffix_log" ||
+    {
+        printf '%s\n' "missing Y4M colorspace suffix parse error in $y4m_bad_csp_suffix_log" >&2
+        exit 1
+    }
+    write_smoke_y4m_with_header "$y4m_bad_width" 1 "YUV4MPEG2 W16x H16 F25:1 Ip A1:1 C420"
+    rm -f "$y4m_bad_width_log" "$y4m_bad_width_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --crf 30 -o "$y4m_bad_width_out" "$y4m_bad_width" >"$y4m_bad_width_log" 2>&1; then
+        printf '%s\n' "accepted Y4M width trailing junk: $y4m_bad_width (output: $y4m_bad_width_out)" >&2
+        exit 1
+    fi
+    grep -q "invalid width" "$y4m_bad_width_log" ||
+    {
+        printf '%s\n' "missing Y4M width parse error in $y4m_bad_width_log" >&2
+        exit 1
+    }
+    write_smoke_y4m_with_header "$y4m_bad_height" 1 "YUV4MPEG2 W16 H16x F25:1 Ip A1:1 C420"
+    rm -f "$y4m_bad_height_log" "$y4m_bad_height_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --crf 30 -o "$y4m_bad_height_out" "$y4m_bad_height" >"$y4m_bad_height_log" 2>&1; then
+        printf '%s\n' "accepted Y4M height trailing junk: $y4m_bad_height (output: $y4m_bad_height_out)" >&2
+        exit 1
+    fi
+    grep -q "invalid height" "$y4m_bad_height_log" ||
+    {
+        printf '%s\n' "missing Y4M height parse error in $y4m_bad_height_log" >&2
+        exit 1
+    }
+    write_smoke_y4m_with_header "$y4m_bad_length" 1 "YUV4MPEG2 W16 H16 F25:1 Ip A1:1 C420 XLENGTH=1x"
+    rm -f "$y4m_bad_length_log" "$y4m_bad_length_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --crf 30 -o "$y4m_bad_length_out" "$y4m_bad_length" >"$y4m_bad_length_log" 2>&1; then
+        printf '%s\n' "accepted Y4M XLENGTH trailing junk: $y4m_bad_length (output: $y4m_bad_length_out)" >&2
+        exit 1
+    fi
+    grep -q "invalid frame count" "$y4m_bad_length_log" ||
+    {
+        printf '%s\n' "missing Y4M XLENGTH parse error in $y4m_bad_length_log" >&2
+        exit 1
+    }
+    write_smoke_y4m_with_header "$y4m_bad_color_range" 1 "YUV4MPEG2 W16 H16 F25:1 Ip A1:1 C420 XCOLORRANGE=FULLjunk"
+    rm -f "$y4m_bad_color_range_log" "$y4m_bad_color_range_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --crf 30 -o "$y4m_bad_color_range_out" "$y4m_bad_color_range" >"$y4m_bad_color_range_log" 2>&1; then
+        printf '%s\n' "accepted Y4M color range trailing junk: $y4m_bad_color_range (output: $y4m_bad_color_range_out)" >&2
+        exit 1
+    fi
+    grep -q "invalid color range" "$y4m_bad_color_range_log" ||
+    {
+        printf '%s\n' "missing Y4M color range parse error in $y4m_bad_color_range_log" >&2
+        exit 1
+    }
+    rm -f "$zone_nan_log" "$zone_nan_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --zones "0,0,b=nan" --crf 30 -o "$zone_nan_out" "$y4m" >"$zone_nan_log" 2>&1; then
+        printf '%s\n' "accepted zone NaN bitrate factor: $zone_nan_out" >&2
+        exit 1
+    fi
+    grep -q "invalid zone bitrate factor" "$zone_nan_log" ||
+    {
+        printf '%s\n' "missing zone NaN parse error in $zone_nan_log" >&2
+        exit 1
+    }
+    printf '%s\n' '0 I none' > "$qp_none"
+    "$smoke_bin" --quiet --demuxer y4m --frames 1 --qpfile "$qp_none" -o "$qp_none_out" "$y4m" >/dev/null
+    [ -s "$qp_none_out" ] || { printf '%s\n' "missing qpfile none smoke output: $qp_none_out (input: $y4m)" >&2; exit 1; }
+    {
+        printf '%s' '0 I '
+        printf '%120s\n' '' | tr ' ' '1'
+    } > "$qp_trailing"
+    rm -f "$qp_trailing_log" "$qp_trailing_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --qpfile "$qp_trailing" -o "$qp_trailing_out" "$y4m" >"$qp_trailing_log" 2>&1; then
+        :
+    fi
+    grep -q "can't parse qpfile for frame 0" "$qp_trailing_log" ||
+    {
+        printf '%s\n' "missing qpfile long-line parse error in $qp_trailing_log" >&2
+        exit 1
+    }
+    printf '%s\n' '0 I none trailing' > "$qp_trailing"
+    rm -f "$qp_trailing_log" "$qp_trailing_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --qpfile "$qp_trailing" -o "$qp_trailing_out" "$y4m" >"$qp_trailing_log" 2>&1; then
+        :
+    fi
+    grep -q "can't parse qpfile for frame 0" "$qp_trailing_log" ||
+    {
+        printf '%s\n' "missing qpfile trailing-junk parse error in $qp_trailing_log" >&2
+        exit 1
+    }
+    printf '%s\n' "smoke-cli output: $out ($(wc -c < "$out") bytes), qpfile none: $qp_none_out ($(wc -c < "$qp_none_out") bytes)"
 }
 
 run_smoke_output_mp4()
 {
-    command -v ffprobe >/dev/null 2>&1 || { printf '%s\n' 'ffprobe is required for smoke-output:mp4 external dependency smoke; this is not a core GNU17 failure. Install ffprobe or adjust PATH.' >&2; exit 1; }
+    require_ffprobe smoke-output:mp4
+    require_pkg_config_package smoke-output:mp4 liblsmash
     configure_smoke_cli smoke-output-mp4 "--enable-lsmash --disable-lavf --disable-ffms --disable-audio"
     y4m=$smoke_dir/smoke.y4m
     out=$smoke_dir/smoke.mp4
@@ -810,10 +1650,52 @@ run_smoke_output_gop()
     printf '%s\n' "smoke-output:gop outputs: $out $base.options $base.headers $base-000000.264-gop-data"
 }
 
+run_smoke_output_mkv()
+{
+    require_ffprobe smoke-output:mkv
+    configure_smoke_cli smoke-output-mkv "--disable-lavf --disable-ffms --disable-lsmash --disable-audio"
+    y4m=$smoke_dir/smoke.y4m
+    out=$smoke_dir/smoke.mkv
+    write_smoke_y4m "$y4m"
+    "$smoke_bin" --demuxer y4m --frames 1 --crf 30 -o "$out" "$y4m" >/dev/null
+    [ -s "$out" ] || { printf '%s\n' "missing Matroska smoke output: $out (input: $y4m)" >&2; exit 1; }
+    frames=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$out")
+    duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$out")
+    [ "$frames" = 1 ] || { printf '%s\n' "unexpected mkv frame count: $frames" >&2; exit 1; }
+    assert_duration_between smoke-output:mkv "$duration" 0.030000 0.060000
+    printf '%s\n' "smoke-output:mkv output: $out frames=$frames duration=$duration"
+}
+
+run_smoke_output_flv()
+{
+    require_ffprobe smoke-output:flv
+    configure_smoke_cli smoke-output-flv "--disable-lavf --disable-ffms --disable-lsmash --disable-audio"
+    y4m=$smoke_dir/smoke-vfr.y4m
+    tcfile=$smoke_dir/smoke-vfr.tc
+    out=$smoke_dir/smoke.flv
+    write_smoke_y4m_frames "$y4m" 3 25:1
+    {
+        printf '%s\n' '# timecode format v2'
+        printf '%s\n' '0'
+        printf '%s\n' '40'
+        printf '%s\n' '120'
+    } > "$tcfile"
+    "$smoke_bin" --demuxer y4m --tcfile-in "$tcfile" --timebase 1/1000 --seek 1 --frames 2 \
+        --bframes 0 --sync-lookahead 0 --rc-lookahead 0 --crf 30 -o "$out" "$y4m" >/dev/null
+    [ -s "$out" ] || { printf '%s\n' "missing FLV smoke output: $out (input: $y4m tcfile: $tcfile)" >&2; exit 1; }
+    frames=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$out")
+    duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$out")
+    [ "$frames" = 2 ] || { printf '%s\n' "unexpected flv frame count: $frames" >&2; exit 1; }
+    assert_duration_between smoke-output:flv "$duration" 0.001000 1.000000
+    printf '%s\n' "smoke-output:flv output: $out frames=$frames duration=$duration"
+}
+
 run_smoke_output()
 {
     run_smoke_output_mp4
     run_smoke_output_gop
+    run_smoke_output_mkv
+    run_smoke_output_flv
 }
 
 run_shared_consumer_depth()
@@ -951,6 +1833,8 @@ case "$cmd" in
     smoke-output|smoke-output:all) run_smoke_output ;;
     smoke-output:mp4) run_smoke_output_mp4 ;;
     smoke-output:gop) run_smoke_output_gop ;;
+    smoke-output:mkv) run_smoke_output_mkv ;;
+    smoke-output:flv) run_smoke_output_flv ;;
     shared|shared-consumer) run_shared_consumer_depth 10b 10 ;;
     shared-8b) run_shared_consumer_depth 8b 8 ;;
     shared-consumers) run_shared_consumers ;;
@@ -966,7 +1850,7 @@ case "$cmd" in
         run_feature_probe
         ;;
     *)
-        printf '%s\n' "usage: $0 [whitespace|builds|consumers|warnings|warnings-extra|warnings-extra:double|warnings-extra:conversion|warnings-extra:external|warnings-extra:compare|warnings-extra:baseline-save|warnings-extra:delta|feature-probe|avi-legacy-probe|smoke-cli|smoke-output|smoke-output:mp4|smoke-output:gop|shared|shared-consumer|shared-8b|shared-consumers|checkasm-smoke|checkasm-smoke-8b|checkasm-smoke-10b|all]" >&2
+        printf '%s\n' "usage: $0 [whitespace|builds|consumers|warnings|warnings-extra|warnings-extra:double|warnings-extra:conversion|warnings-extra:external|warnings-extra:compare|warnings-extra:baseline-save|warnings-extra:delta|feature-probe|avi-legacy-probe|smoke-cli|smoke-output|smoke-output:mp4|smoke-output:gop|smoke-output:mkv|smoke-output:flv|shared|shared-consumer|shared-8b|shared-consumers|checkasm-smoke|checkasm-smoke-8b|checkasm-smoke-10b|all]" >&2
         exit 2
         ;;
 esac

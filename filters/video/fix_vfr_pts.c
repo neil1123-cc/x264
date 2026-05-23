@@ -25,6 +25,7 @@
 
 #include "video.h"
 #include "internal.h"
+#include <limits.h>
 
 /* This filter calculates and store the frame's duration to the frame data
  * (if it is not already calculated when the frame arrives to this point)
@@ -95,14 +96,22 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
                 return -1;
             h->buffer_allocated = 1;
         }
+        if( frame == INT_MAX )
+            return -1;
         h->holder_frame = frame+1;
         /* copy the current frame to the buffer, release it, and then read in the next frame to the placeholder */
         if( x264_cli_pic_copy( &h->buffer, &h->holder ) || h->prev_filter.release_frame( h->prev_hnd, &h->holder, frame ) )
             return -1;
         h->holder_ret = h->prev_filter.get_frame( h->prev_hnd, &h->holder, h->holder_frame );
         /* suppress non-monotonic pts warnings by setting the duration to be at least 1 */
-        if( !h->holder_ret )
-            h->last_duration = X264_MAX( h->holder.pts - h->buffer.pts, 1 );
+        if( !h->holder_ret && h->holder.pts > h->buffer.pts )
+        {
+            if( h->buffer.pts < 0 && h->holder.pts > INT64_MAX + h->buffer.pts )
+                return -1;
+            h->last_duration = h->holder.pts - h->buffer.pts;
+        }
+        else if( h->last_duration <= 0 )
+            h->last_duration = 1;
         h->buffer.duration = h->last_duration;
         *output = h->buffer;
     }
@@ -110,6 +119,8 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
         *output = h->holder;
 
     output->pts = h->pts;
+    if( output->duration < 0 || h->pts > INT64_MAX - output->duration )
+        return -1;
     h->pts += output->duration;
 
     return 0;

@@ -63,6 +63,35 @@ const audio_encoder_entry_t registered_audio_encoders[] = {
     { NULL, },
 };
 
+static int x264_audio_encoder_entry_valid( const audio_encoder_entry_t *entry )
+{
+    return entry->codec && entry->name && entry->encoder;
+}
+
+static int x264_audio_encoder_entry_is_lavc( const audio_encoder_entry_t UNUSED *entry )
+{
+#if HAVE_AUDIO && HAVE_LAVF
+    return entry->encoder == &audio_encoder_lavc;
+#else
+    return 0;
+#endif
+}
+
+static int x264_audio_encoder_name_matches( const audio_encoder_entry_t *entry, const char *name, int mode )
+{
+    if( !strcmp( name, mode == QUERY_CODEC ? entry->codec : entry->name ) )
+        return 1;
+    if( mode == QUERY_ENCODER && x264_audio_encoder_entry_is_lavc( entry ) &&
+        !strncmp( name, "ff", 2 ) && !strcmp( name + 2, entry->name ) )
+        return 1;
+    return 0;
+}
+
+static size_t x264_audio_saturating_add( size_t a, size_t b )
+{
+    return a > SIZE_MAX - b ? SIZE_MAX : a + b;
+}
+
 struct aenc_t
 {
     const audio_encoder_t *enc;
@@ -73,12 +102,21 @@ struct aenc_t
 hnd_t x264_audio_encoder_open( const audio_encoder_t *encoder, hnd_t filter_chain, const char *opts )
 {
     assert( encoder && filter_chain );
+    if( !encoder || !filter_chain || !encoder->init )
+        return NULL;
     struct aenc_t *enc = calloc( 1, sizeof( struct aenc_t ) );
+    if( !enc )
+        return NULL;
     enc->enc           = encoder;
     enc->handle        = encoder->init( filter_chain, opts );
     enc->filters       = filter_chain;
 
-    return !enc->handle ? NULL : enc;
+    if( !enc->handle )
+    {
+        free( enc );
+        return NULL;
+    }
+    return enc;
 }
 
 audio_info_t *x264_audio_encoder_info( hnd_t encoder )
@@ -101,6 +139,8 @@ void x264_audio_encoder_skip_samples( hnd_t encoder, uint64_t samplecount )
 {
     assert( encoder );
     struct aenc_t *enc = encoder;
+    if( !enc || !enc->enc || !enc->enc->skip_samples )
+        return;
 
     return enc->enc->skip_samples( enc->handle, samplecount );
 }
@@ -134,26 +174,22 @@ void x264_audio_encoder_close( hnd_t encoder )
 
 const audio_encoder_t *x264_audio_encoder_by_name( const char *name, int mode, const char **used_enc )
 {
+    if( used_enc )
+        *used_enc = NULL;
+    if( !name || (mode != QUERY_CODEC && mode != QUERY_ENCODER) )
+        return NULL;
+
     const audio_encoder_entry_t *cur = NULL;
     const audio_encoder_t *ret = NULL;
 
-    for( int i=0; registered_audio_encoders[i].codec; i++ )
+    for( const audio_encoder_entry_t *entry = registered_audio_encoders; entry->codec; entry++ )
     {
-        char ffprefixed_name[32] = { 0 };
-        int is_lavc = 0;
+        if( !x264_audio_encoder_entry_valid( entry ) ||
+            !x264_audio_encoder_name_matches( entry, name, mode ) )
+            continue;
 
-        cur = &registered_audio_encoders[i];
-#if HAVE_AUDIO && HAVE_LAVF
-        is_lavc = !!( cur->encoder == &audio_encoder_lavc );
-#endif
-        if( !strcmp( name, mode == QUERY_CODEC ? cur->codec : cur->name ) )
-            ret = cur->encoder;
-        else if( ( mode == QUERY_ENCODER ) && is_lavc )
-        {
-            snprintf( ffprefixed_name, sizeof(ffprefixed_name), "ff%s", cur->name );
-            if( !strcmp( name, ffprefixed_name ) )
-                ret = cur->encoder;
-        }
+        cur = entry;
+        ret = cur->encoder;
 
         if( ret )
         {
@@ -166,7 +202,7 @@ const audio_encoder_t *x264_audio_encoder_by_name( const char *name, int mode, c
         }
     }
 
-    if( used_enc )
+    if( used_enc && ret && cur )
         *used_enc = cur->name;
 
     return ret;
@@ -174,6 +210,8 @@ const audio_encoder_t *x264_audio_encoder_by_name( const char *name, int mode, c
 
 const audio_encoder_t *x264_select_audio_encoder( const char *encoder, char* allowed_list[], const char **used_enc )
 {
+    if( used_enc )
+        *used_enc = NULL;
     if( !encoder )
         return NULL;
     if( allowed_list )
@@ -208,6 +246,25 @@ const audio_encoder_t *x264_select_audio_encoder( const char *encoder, char* all
 
 #define INDENT "                              "
 
+static int x264_audio_encoder_has_later_codec( const audio_encoder_entry_t *entry, const char *prev_name )
+{
+    for( entry++; entry->codec; entry++ )
+        if( x264_audio_encoder_entry_valid( entry ) &&
+            strcmp( prev_name, entry->codec ) &&
+            x264_audio_encoder_by_name( entry->codec, QUERY_CODEC, NULL ) )
+            return 1;
+    return 0;
+}
+
+static int x264_audio_encoder_has_later_encoder( const audio_encoder_entry_t *entry )
+{
+    for( entry++; entry->codec; entry++ )
+        if( x264_audio_encoder_entry_valid( entry ) &&
+            x264_audio_encoder_by_name( entry->name, QUERY_ENCODER, NULL ) )
+            return 1;
+    return 0;
+}
+
 void x264_audio_encoder_list_codecs( int longhelp )
 {
     if( longhelp < 1 )
@@ -217,18 +274,21 @@ void x264_audio_encoder_list_codecs( int longhelp )
     size_t len = strlen( INDENT ) + 6;
 
     printf( INDENT "    - " );
-    for( int i=0; registered_audio_encoders[i].codec; i++ )
+    for( const audio_encoder_entry_t *cur = registered_audio_encoders; cur->codec; cur++ )
     {
-        const char *codec_name = registered_audio_encoders[i].codec;
+        if( !x264_audio_encoder_entry_valid( cur ) )
+            continue;
+
+        const char *codec_name = cur->codec;
 
         if( x264_audio_encoder_by_name( codec_name, QUERY_CODEC, NULL ) &&
             strcmp( prev_name, codec_name ) )
         {
             printf( "%s", codec_name );
-            len += strlen( codec_name );
+            len = x264_audio_saturating_add( len, strlen( codec_name ) );
             prev_name = codec_name;
 
-            if( registered_audio_encoders[i+1].codec )
+            if( x264_audio_encoder_has_later_codec( cur, prev_name ) )
             {
                 if( len >= 80 - strlen( ", " ) )
                 {
@@ -252,22 +312,21 @@ void x264_audio_encoder_list_encoders( int longhelp )
     size_t len = strlen( INDENT ) + 6;
 
     printf( INDENT "    - " );
-    for( int i=0; registered_audio_encoders[i].codec; i++ )
+    for( const audio_encoder_entry_t *cur = registered_audio_encoders; cur->codec; cur++ )
     {
-        const char *encoder_name = registered_audio_encoders[i].name;
-        const audio_encoder_t UNUSED *enc = registered_audio_encoders[i].encoder;
-        int is_lavc = 0;
+        if( !x264_audio_encoder_entry_valid( cur ) )
+            continue;
 
-#if HAVE_AUDIO && HAVE_LAVF
-        is_lavc = !!( enc == &audio_encoder_lavc );
-#endif
+        const char *encoder_name = cur->name;
+        int is_lavc = x264_audio_encoder_entry_is_lavc( cur );
 
         if( x264_audio_encoder_by_name( encoder_name, QUERY_ENCODER, NULL ) )
         {
             printf( "%s%s", (is_lavc ? "(ff)" : "" ), encoder_name );
-            len += strlen( encoder_name ) + ( is_lavc ? 4 : 0 );
+            len = x264_audio_saturating_add( len, strlen( encoder_name ) );
+            len = x264_audio_saturating_add( len, is_lavc ? 4 : 0 );
 
-            if( registered_audio_encoders[i+1].codec )
+            if( x264_audio_encoder_has_later_encoder( cur ) )
             {
                 if( len >= 80 - strlen( ", " ) )
                 {
@@ -298,10 +357,12 @@ void x264_audio_encoder_show_help( int longhelp )
     printf( "            There is no available audio encoder in this x264 build.\n" );
     return;
 #endif
-    for( int i=0; registered_audio_encoders[i].codec; i++ )
+    for( const audio_encoder_entry_t *cur = registered_audio_encoders; cur->codec; cur++ )
     {
-        const audio_encoder_entry_t *cur = &registered_audio_encoders[i];
         const audio_encoder_t *enc = NULL;
+
+        if( !x264_audio_encoder_entry_valid( cur ) )
+            continue;
 
         enc = x264_audio_encoder_by_name( cur->name, QUERY_ENCODER, NULL );
 

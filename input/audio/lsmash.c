@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <inttypes.h>
+#include <limits.h>
 
 #include <lsmash.h>
 #include <lsmash_importer.h>
@@ -20,6 +21,24 @@ typedef struct lsmash_source_t
 } lsmash_source_t;
 
 const audio_filter_t audio_filter_lsmash;
+
+static void lsmash_free_extradata( audio_info_t *info )
+{
+    if( !info || !info->extradata )
+        return;
+    if( info->extradata_type == EXTRADATA_TYPE_LSMASH && info->extradata_size > 0 &&
+        (size_t)info->extradata_size % sizeof(lsmash_codec_specific_t *) == 0 )
+    {
+        lsmash_codec_specific_t **extradata = (lsmash_codec_specific_t **)info->extradata;
+        size_t num_extensions = (size_t)info->extradata_size / sizeof(lsmash_codec_specific_t *);
+        for( size_t i = 0; i < num_extensions; i++ )
+            if( extradata[i] )
+                lsmash_destroy_codec_specific_data( extradata[i] );
+    }
+    free( info->extradata );
+    info->extradata = NULL;
+    info->extradata_size = 0;
+}
 
 static int lsmash_init( hnd_t *handle, const char *opt_str )
 {
@@ -56,6 +75,8 @@ static int lsmash_init( hnd_t *handle, const char *opt_str )
         goto error;
 
     h->summary = (lsmash_audio_summary_t *)lsmash_duplicate_summary( h->importer, 1 );
+    if( !h->summary )
+        goto error;
 
     if( h->summary->summary_type != LSMASH_SUMMARY_TYPE_AUDIO )
     {
@@ -118,30 +139,67 @@ static int lsmash_init( hnd_t *handle, const char *opt_str )
         goto error;
     }
 
-    h->info.samplerate     = h->summary->frequency;
-    h->info.channels       = h->summary->channels;
-    h->info.framelen       = h->summary->samples_in_frame;
-    h->info.chansize       = h->summary->sample_size >> 3;
-    h->info.samplesize     = h->info.chansize * h->info.channels;
-    h->info.framesize      = h->info.framelen * h->info.samplesize;
-    h->info.depth          = h->summary->sample_size;
+    uint32_t chansize = h->summary->sample_size >> 3;
+    if( !h->summary->frequency || !h->summary->channels || !h->summary->samples_in_frame ||
+        h->summary->frequency > (uint32_t)INT_MAX ||
+        h->summary->channels > (uint32_t)INT_MAX ||
+        h->summary->samples_in_frame > (uint32_t)INT_MAX ||
+        h->summary->sample_size > (uint32_t)INT_MAX ||
+        (chansize && h->summary->channels > (uint32_t)INT_MAX / chansize) )
+    {
+        AF_LOG_ERR( h, "audio stream parameters are too large.\n" );
+        goto error;
+    }
+    uint32_t samplesize = chansize * h->summary->channels;
+    if( h->summary->samples_in_frame && samplesize > SIZE_MAX / h->summary->samples_in_frame )
+    {
+        AF_LOG_ERR( h, "audio stream parameters are too large.\n" );
+        goto error;
+    }
+
+    h->info.samplerate     = (int)h->summary->frequency;
+    h->info.channels       = (int)h->summary->channels;
+    h->info.framelen       = (int)h->summary->samples_in_frame;
+    h->info.chansize       = (int)chansize;
+    h->info.samplesize     = (int)samplesize;
+    h->info.framesize      = (size_t)h->summary->samples_in_frame * samplesize;
+    h->info.depth          = (int)h->summary->sample_size;
     h->info.timebase       = (timebase_t){ 1, h->summary->frequency };
-    h->info.last_delta     = h->info.framelen;
+    h->info.last_delta     = h->summary->samples_in_frame;
     h->info.priming        = 0;     /* No one can detect this. */
 
     uint32_t num_extensions = lsmash_count_codec_specific_data( (lsmash_summary_t *)h->summary );
     if( num_extensions )
     {
+        if( num_extensions > (uint32_t)((size_t)INT_MAX / sizeof(lsmash_codec_specific_t *)) )
+        {
+            AF_LOG_ERR( h, "too much audio extradata.\n" );
+            goto error;
+        }
+        size_t extradata_size = (size_t)num_extensions * sizeof(lsmash_codec_specific_t *);
         h->info.extradata_type = EXTRADATA_TYPE_LSMASH;
-        h->info.extradata = malloc( num_extensions * sizeof(lsmash_codec_specific_t *) );
+        h->info.extradata = calloc( num_extensions, sizeof(lsmash_codec_specific_t *) );
         if( !h->info.extradata )
+        {
             AF_LOG_ERR( h, "malloc failed!\n" );
-        h->info.extradata_size = num_extensions * sizeof(lsmash_codec_specific_t *);
+            goto error;
+        }
+        h->info.extradata_size = (int)extradata_size;
         for( uint32_t i = 0; i < num_extensions; i++ )
         {
             lsmash_codec_specific_t **extradata = (lsmash_codec_specific_t **)h->info.extradata;
             lsmash_codec_specific_t *src = lsmash_get_codec_specific_data( (lsmash_summary_t *)h->summary, i + 1 );
+            if( !src )
+            {
+                AF_LOG_ERR( h, "invalid audio extradata.\n" );
+                goto error;
+            }
             lsmash_codec_specific_t *dst = lsmash_convert_codec_specific_format( src, LSMASH_CODEC_SPECIFIC_FORMAT_UNSTRUCTURED );
+            if( !dst )
+            {
+                AF_LOG_ERR( h, "invalid audio extradata.\n" );
+                goto error;
+            }
             extradata[i] = dst;
         }
     }
@@ -158,23 +216,26 @@ static int lsmash_init( hnd_t *handle, const char *opt_str )
 error:
     AF_LOG_ERR( h, "error opening the L-SMASH importer.\n" );
 fail:
-    if( h->summary )
-    {
-        lsmash_cleanup_summary( (lsmash_summary_t *)h->summary );
-        h->summary = NULL;
-    }
-    if( h->importer )
-    {
-        lsmash_importer_close( h->importer );
-        h->importer = NULL;
-    }
-	if ( h->root )
-	{
-	    lsmash_destroy_root( h->root );
-		h->root = NULL;
-	}
     if( h )
+    {
+        lsmash_free_extradata( &h->info );
+        if( h->summary )
+        {
+            lsmash_cleanup_summary( (lsmash_summary_t *)h->summary );
+            h->summary = NULL;
+        }
+        if( h->importer )
+        {
+            lsmash_importer_close( h->importer );
+            h->importer = NULL;
+        }
+        if ( h->root )
+        {
+            lsmash_destroy_root( h->root );
+            h->root = NULL;
+        }
         free( h );
+    }
     *handle = NULL;
 fail2:
     free( opts );
@@ -183,6 +244,8 @@ fail2:
 
 static void free_packet( hnd_t handle, audio_packet_t *pkt )
 {
+    if( !pkt )
+        return;
     pkt->owner = NULL;
     x264_af_free_packet( pkt );
 }
@@ -196,6 +259,7 @@ static void lsmash_close( hnd_t handle )
         lsmash_cleanup_summary( (lsmash_summary_t *)h->summary );
     if( h->importer )
         lsmash_importer_close( h->importer );
+    lsmash_free_extradata( &h->info );
     if( h->info.opaque )
 		free( h->info.opaque );
 	if ( h->root )
@@ -212,27 +276,43 @@ static audio_packet_t *get_next_au( hnd_t handle )
     if( !out )
         return NULL;
     out->info        = h->info;
-    out->channels    = h->info.channels;
-    out->samplecount = h->info.framelen;
+    out->channels    = (unsigned)h->info.channels;
+    out->samplecount = (unsigned)h->info.framelen;
     out->dts         = h->last_dts;
 
     lsmash_sample_t sample = {0};
     lsmash_sample_t *psample = &sample;
     lsmash_sample_alloc( &sample, h->summary->max_au_length );
-
-    int ret = lsmash_importer_get_access_unit( h->importer, 1, &psample );
-
-    out->size = sample.length;
-    out->data = sample.data;
-
-    if( ret || !out->size )
+    if( h->summary->max_au_length && !sample.data )
     {
-        if( !out->size )
-            h->info.last_delta = lsmash_importer_get_last_delta( h->importer, 1 );
         x264_af_free_packet( out );
         return NULL;
     }
 
+    int ret = lsmash_importer_get_access_unit( h->importer, 1, &psample );
+
+    if( ret || !sample.length )
+    {
+        if( !sample.length )
+            h->info.last_delta = lsmash_importer_get_last_delta( h->importer, 1 );
+        free( sample.data );
+        x264_af_free_packet( out );
+        return NULL;
+    }
+    if( sample.length > (uint32_t)INT_MAX )
+    {
+        free( sample.data );
+        x264_af_free_packet( out );
+        return NULL;
+    }
+    out->size = (int)sample.length;
+    out->data = sample.data;
+
+    if( h->frame_count == INT64_MAX || h->info.framelen > INT64_MAX - h->last_dts )
+    {
+        x264_af_free_packet( out );
+        return NULL;
+    }
     h->last_dts += h->info.framelen;
     h->frame_count++;
 
@@ -243,12 +323,23 @@ static void skip_samples( hnd_t handle, uint64_t samplecount )
 {
     lsmash_source_t *h = handle;
 
-    if( samplecount < h->info.framelen )
+    if( h->info.framelen <= 0 )
+        return;
+    uint64_t framelen = (uint64_t)h->info.framelen;
+    if( samplecount < framelen )
         return; // Nothing to do due to low accuracy
-    audio_packet_t *pkt;
+    uint64_t skip_limit = samplecount - framelen;
     uint64_t samples_skipped = 0;
-    while( samples_skipped <= ( samplecount - h->info.framelen ) && ( pkt = get_next_au( h ) ) )
+    while( samples_skipped <= skip_limit )
     {
+        audio_packet_t *pkt = get_next_au( h );
+        if( !pkt )
+            break;
+        if( !pkt->samplecount || pkt->samplecount > UINT64_MAX - samples_skipped )
+        {
+            free_packet( h, pkt );
+            break;
+        }
         samples_skipped += pkt->samplecount;
         free_packet( h, pkt );
     }

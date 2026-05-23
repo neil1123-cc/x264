@@ -27,6 +27,8 @@
 #include "base.h"
 
 #include <ctype.h>
+#include <errno.h>
+#include <float.h>
 
 #if HAVE_MALLOC_H
 #include <malloc.h>
@@ -869,7 +871,7 @@ REALIGN_STACK int x264_param_restrict_device( x264_param_t *param, int i_profile
     char *tmp = x264_malloc( strlen( device ) + 1 );
     if( !tmp )
         return -1;
-    tmp = strcpy( tmp, device );
+    memcpy( tmp, device, strlen( device ) + 1 );
     char *s = strtok( tmp, ",./-+" );
     while( s )
     {
@@ -1104,16 +1106,272 @@ static int parse_enum( const char *arg, const char * const *names, int *dst )
     return -1;
 }
 
+static int parse_partitions( const char *arg, unsigned int *dst )
+{
+    unsigned int inter = 0;
+    int all = 0;
+
+    if( !*arg )
+        return -1;
+
+    while( *arg )
+    {
+        const char *end = strchr( arg, ',' );
+        size_t len = end ? (size_t)(end - arg) : strlen( arg );
+
+        if( len == 0 )
+            return -1;
+        if( len == 4 && !strncmp( arg, "none", 4 ) )
+        {
+            /* "none" contributes no flags; exact companion tokens still apply. */
+        }
+        else if( len == 3 && !strncmp( arg, "all", 3 ) )
+            all = 1;
+        else if( len == 4 && !strncmp( arg, "i4x4", 4 ) )
+            inter |= X264_ANALYSE_I4x4;
+        else if( len == 4 && !strncmp( arg, "i8x8", 4 ) )
+            inter |= X264_ANALYSE_I8x8;
+        else if( len == 4 && !strncmp( arg, "p8x8", 4 ) )
+            inter |= X264_ANALYSE_PSUB16x16;
+        else if( len == 4 && !strncmp( arg, "p4x4", 4 ) )
+            inter |= X264_ANALYSE_PSUB8x8;
+        else if( len == 4 && !strncmp( arg, "b8x8", 4 ) )
+            inter |= X264_ANALYSE_BSUB16x16;
+        else
+            return -1;
+
+        if( !end )
+            break;
+        arg = end + 1;
+    }
+
+    *dst = all ? ~0u : inter;
+    return 0;
+}
+
+static int parse_int_end_base( const char *str, char **end, int base, int *dst )
+{
+    long value;
+
+    errno = 0;
+    value = strtol( str, end, base );
+    if( *end == str || errno == ERANGE || value < INT_MIN || value > INT_MAX )
+        return -1;
+
+    *dst = (int)value;
+    return 0;
+}
+
+static int parse_int_token( const char *str, int base, int *dst )
+{
+    char *end;
+
+    if( parse_int_end_base( str, &end, base, dst ) )
+        return -1;
+    while( isspace( (unsigned char)*end ) )
+        end++;
+    return *end ? -1 : 0;
+}
+
+static int parse_param_int_list( const char *str, int *dst, int count, const char *separators )
+{
+    char *end;
+    char separator = 0;
+
+    for( int i = 0; i < count; i++ )
+    {
+        if( parse_int_end_base( str, &end, 10, &dst[i] ) )
+            return -1;
+        if( i == count - 1 )
+        {
+            while( isspace( (unsigned char)*end ) )
+                end++;
+            return *end ? -1 : 0;
+        }
+        if( !separator )
+        {
+            if( !*end || !strchr( separators, *end ) )
+                return -1;
+            separator = *end;
+        }
+        else if( *end != separator )
+            return -1;
+        str = end + 1;
+    }
+
+    return 0;
+}
+
+static int parse_float_end( const char *str, char **end, float *dst )
+{
+    double value;
+
+    errno = 0;
+    value = strtod( str, end );
+    if( *end == str || errno == ERANGE || !isfinite( value ) || value < -FLT_MAX || value > FLT_MAX )
+        return -1;
+
+    *dst = (float)value;
+    return 0;
+}
+
+static int parse_float_token( const char *str, float *dst )
+{
+    char *end;
+
+    if( parse_float_end( str, &end, dst ) )
+        return -1;
+    while( isspace( (unsigned char)*end ) )
+        end++;
+    return *end ? -1 : 0;
+}
+
+static int parse_param_float_list( const char *str, float *dst, int count, const char *separators )
+{
+    char *end;
+    char separator = 0;
+
+    for( int i = 0; i < count; i++ )
+    {
+        if( parse_float_end( str, &end, &dst[i] ) )
+            return -1;
+        if( i == count - 1 )
+        {
+            while( isspace( (unsigned char)*end ) )
+                end++;
+            return *end ? -1 : 0;
+        }
+        if( !separator )
+        {
+            if( !*end || !strchr( separators, *end ) )
+                return -1;
+            separator = *end;
+        }
+        else if( *end != separator )
+            return -1;
+        str = end + 1;
+    }
+
+    return 0;
+}
+
+static int parse_uint32_end_base( const char *str, char **end, int base, uint32_t *dst )
+{
+    uintmax_t value;
+
+    errno = 0;
+    value = strtoumax( str, end, base );
+    if( *end == str || errno == ERANGE || value > UINT32_MAX )
+        return -1;
+
+    *dst = (uint32_t)value;
+    return 0;
+}
+
+static int parse_uint32_token( const char *str, int base, uint32_t *dst )
+{
+    char *end;
+
+    if( parse_uint32_end_base( str, &end, base, dst ) )
+        return -1;
+    while( isspace( (unsigned char)*end ) )
+        end++;
+    return *end ? -1 : 0;
+}
+
+static int parse_int64_end_base( const char *str, char **end, int base, int64_t *dst )
+{
+    long long value;
+
+    errno = 0;
+    value = strtoll( str, end, base );
+    if( *end == str || errno == ERANGE || value < INT64_MIN || value > INT64_MAX )
+        return -1;
+
+    *dst = (int64_t)value;
+    return 0;
+}
+
+static int parse_uint32_pair_token( const char *str, char separator, uint32_t *num, uint32_t *den )
+{
+    char *end;
+
+    if( parse_uint32_end_base( str, &end, 10, num ) || *end++ != separator ||
+        parse_uint32_end_base( end, &end, 10, den ) )
+        return -1;
+    while( isspace( (unsigned char)*end ) )
+        end++;
+    return *end ? -1 : 0;
+}
+
+static int parse_mastering_display( const char *value, x264_param_t *p )
+{
+    const char *str = value;
+    char *end;
+
+    if( str[0] != 'G' || str[1] != '(' )
+        return -1;
+    str += 2;
+    if( parse_int_end_base( str, &end, 10, &p->mastering_display.i_green_x ) || *end++ != ',' ||
+        parse_int_end_base( end, &end, 10, &p->mastering_display.i_green_y ) || *end++ != ')' )
+        return -1;
+    str = end;
+
+    if( str[0] != 'B' || str[1] != '(' )
+        return -1;
+    str += 2;
+    if( parse_int_end_base( str, &end, 10, &p->mastering_display.i_blue_x ) || *end++ != ',' ||
+        parse_int_end_base( end, &end, 10, &p->mastering_display.i_blue_y ) || *end++ != ')' )
+        return -1;
+    str = end;
+
+    if( str[0] != 'R' || str[1] != '(' )
+        return -1;
+    str += 2;
+    if( parse_int_end_base( str, &end, 10, &p->mastering_display.i_red_x ) || *end++ != ',' ||
+        parse_int_end_base( end, &end, 10, &p->mastering_display.i_red_y ) || *end++ != ')' )
+        return -1;
+    str = end;
+
+    if( str[0] != 'W' || str[1] != 'P' || str[2] != '(' )
+        return -1;
+    str += 3;
+    if( parse_int_end_base( str, &end, 10, &p->mastering_display.i_white_x ) || *end++ != ',' ||
+        parse_int_end_base( end, &end, 10, &p->mastering_display.i_white_y ) || *end++ != ')' )
+        return -1;
+    str = end;
+
+    if( str[0] != 'L' || str[1] != '(' )
+        return -1;
+    str += 2;
+    if( parse_int64_end_base( str, &end, 10, &p->mastering_display.i_display_max ) || *end++ != ',' ||
+        parse_int64_end_base( end, &end, 10, &p->mastering_display.i_display_min ) || *end++ != ')' )
+        return -1;
+    while( isspace( (unsigned char)*end ) )
+        end++;
+    return *end ? -1 : 0;
+}
+
 static int parse_cqm( const char *str, uint8_t *cqm, int length )
 {
-    int i = 0;
-    do {
+    for( int i = 0; i < length; i++ )
+    {
+        char *end;
         int coef;
-        if( !sscanf( str, "%d", &coef ) || coef < 1 || coef > 255 )
+
+        if( parse_int_end_base( str, &end, 10, &coef ) || coef < 1 || coef > 255 )
             return -1;
-        cqm[i++] = coef;
-    } while( i < length && (str = strchr( str, ',' )) && str++ );
-    return (i == length) ? 0 : -1;
+        cqm[i] = coef;
+        while( isspace( (unsigned char)*end ) )
+            end++;
+        if( i == length - 1 )
+            return *end ? -1 : 0;
+        if( *end != ',' )
+            return -1;
+        str = end + 1;
+    }
+
+    return 0;
 }
 
 static int atobool_internal( const char *str, int *b_error )
@@ -1133,8 +1391,8 @@ static int atobool_internal( const char *str, int *b_error )
 static int atoi_internal( const char *str, int *b_error )
 {
     char *end;
-    int v = strtol( str, &end, 0 );
-    if( end == str || *end != '\0' )
+    int v = 0;
+    if( parse_int_end_base( str, &end, 0, &v ) || *end != '\0' )
         *b_error = 1;
     return v;
 }
@@ -1142,8 +1400,9 @@ static int atoi_internal( const char *str, int *b_error )
 static double atof_internal( const char *str, int *b_error )
 {
     char *end;
+    errno = 0;
     double v = strtod( str, &end );
-    if( end == str || *end != '\0' )
+    if( end == str || *end != '\0' || errno == ERANGE || !isfinite( v ) )
         *b_error = 1;
     return v;
 }
@@ -1204,8 +1463,10 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
     if( 0 );
     OPT("asm")
     {
-        p->cpu = X264_ISDIGIT(value[0]) ? (uint32_t)atoi(value) :
-                 !strcasecmp(value, "auto") || atobool(value) ? x264_cpu_detect() : 0;
+        if( X264_ISDIGIT(value[0]) )
+            b_error |= parse_uint32_token( value, 0, &p->cpu );
+        else
+            p->cpu = !strcasecmp(value, "auto") || atobool(value) ? x264_cpu_detect() : 0;
         if( b_error )
         {
             char *buf = strdup( value );
@@ -1279,8 +1540,13 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
         b_error |= parse_enum( value, x264_avcintra_flavor_names, &p->i_avcintra_flavor );
     OPT("sar")
     {
-        b_error |= ( 2 != sscanf( value, "%d:%d", &p->vui.i_sar_width, &p->vui.i_sar_height ) &&
-                     2 != sscanf( value, "%d/%d", &p->vui.i_sar_width, &p->vui.i_sar_height ) );
+        int sar[2];
+        b_error |= parse_param_int_list( value, sar, 2, ":/" );
+        if( !b_error )
+        {
+            p->vui.i_sar_width = sar[0];
+            p->vui.i_sar_height = sar[1];
+        }
     }
     OPT("overscan")
         b_error |= parse_enum( value, x264_overscan_names, &p->vui.i_overscan );
@@ -1303,12 +1569,7 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
     {
         if( strcasecmp( value, "undef" ) )
         {
-            b_error |= sscanf( value, "G(%d,%d)B(%d,%d)R(%d,%d)WP(%d,%d)L(%"SCNd64",%"SCNd64")",
-                               &p->mastering_display.i_green_x, &p->mastering_display.i_green_y,
-                               &p->mastering_display.i_blue_x, &p->mastering_display.i_blue_y,
-                               &p->mastering_display.i_red_x, &p->mastering_display.i_red_y,
-                               &p->mastering_display.i_white_x, &p->mastering_display.i_white_y,
-                               &p->mastering_display.i_display_max, &p->mastering_display.i_display_min ) != 10;
+            b_error |= parse_mastering_display( value, p );
             p->mastering_display.b_mastering_display = !b_error;
         }
         else
@@ -1318,8 +1579,13 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
     {
         if( strcasecmp( value, "undef" ) )
         {
-            b_error |= sscanf( value, "%d,%d",
-                               &p->content_light_level.i_max_cll, &p->content_light_level.i_max_fall ) != 2;
+            int cll[2];
+            b_error |= parse_param_int_list( value, cll, 2, "," );
+            if( !b_error )
+            {
+                p->content_light_level.i_max_cll = cll[0];
+                p->content_light_level.i_max_fall = cll[1];
+            }
             p->content_light_level.b_cll = !b_error;
         }
         else
@@ -1329,13 +1595,13 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
         b_error |= parse_enum( value, x264_transfer_names, &p->i_alternative_transfer );
     OPT("fps")
     {
-        int64_t i_fps_num;
-        int64_t i_fps_den;
-        if( sscanf( value, "%"SCNd64"/%"SCNd64, &i_fps_num, &i_fps_den ) == 2 )
+        uint32_t i_fps_num;
+        uint32_t i_fps_den;
+        if( !parse_uint32_pair_token( value, '/', &i_fps_num, &i_fps_den ) )
         {
             p->i_fps_num = i_fps_num;
             p->i_fps_den = i_fps_den;
-            b_error |= i_fps_num < 1 || i_fps_num > UINT32_MAX || i_fps_den < 1 || i_fps_den > UINT32_MAX;
+            b_error |= !i_fps_num || !i_fps_den;
         }
         else
         {
@@ -1360,7 +1626,7 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
         p->i_dpb_size = atoi(value);
     OPT("keyint")
     {
-        if( strstr( value, "infinite" ) )
+        if( !strcmp( value, "infinite" ) )
             p->i_keyint_max = X264_KEYINT_MAX_INFINITE;
         else
             p->i_keyint_max = atoi(value);
@@ -1410,12 +1676,14 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
         p->b_deblocking_filter = !atobool(value);
     OPT2("filter", "deblock")
     {
-        if( 2 == sscanf( value, "%d:%d", &p->i_deblocking_filter_alphac0, &p->i_deblocking_filter_beta ) ||
-            2 == sscanf( value, "%d,%d", &p->i_deblocking_filter_alphac0, &p->i_deblocking_filter_beta ) )
+        int deblock[2];
+        if( !parse_param_int_list( value, deblock, 2, ":," ) )
         {
+            p->i_deblocking_filter_alphac0 = deblock[0];
+            p->i_deblocking_filter_beta = deblock[1];
             p->b_deblocking_filter = 1;
         }
-        else if( sscanf( value, "%d", &p->i_deblocking_filter_alphac0 ) )
+        else if( !parse_int_token( value, 10, &p->i_deblocking_filter_alphac0 ) )
         {
             p->b_deblocking_filter = 1;
             p->i_deblocking_filter_beta = p->i_deblocking_filter_alphac0;
@@ -1450,9 +1718,9 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
         p->b_constrained_intra = atobool(value);
     OPT("cqm")
     {
-        if( strstr( value, "flat" ) )
+        if( !strcmp( value, "flat" ) )
             p->i_cqm_preset = X264_CQM_FLAT;
-        else if( strstr( value, "jvt" ) )
+        else if( !strcmp( value, "jvt" ) )
             p->i_cqm_preset = X264_CQM_JVT;
         else
             CHECKED_ERROR_PARAM_STRDUP( p->psz_cqm_file, p, value );
@@ -1532,15 +1800,7 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
         CHECKED_ERROR_PARAM_STRDUP( p->psz_dump_yuv, p, value );
     OPT2("analyse", "partitions")
     {
-        p->analyse.inter = 0;
-        if( strstr( value, "none" ) )  p->analyse.inter =  0;
-        if( strstr( value, "all" ) )   p->analyse.inter = ~0;
-
-        if( strstr( value, "i4x4" ) )  p->analyse.inter |= X264_ANALYSE_I4x4;
-        if( strstr( value, "i8x8" ) )  p->analyse.inter |= X264_ANALYSE_I8x8;
-        if( strstr( value, "p8x8" ) )  p->analyse.inter |= X264_ANALYSE_PSUB16x16;
-        if( strstr( value, "p4x4" ) )  p->analyse.inter |= X264_ANALYSE_PSUB8x8;
-        if( strstr( value, "b8x8" ) )  p->analyse.inter |= X264_ANALYSE_BSUB16x16;
+        b_error |= parse_partitions( value, &p->analyse.inter );
     }
     OPT("8x8dct")
         p->analyse.b_transform_8x8 = atobool(value);
@@ -1564,11 +1824,13 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
         p->analyse.i_subpel_refine = atoi(value);
     OPT("psy-rd")
     {
-        if( 2 == sscanf( value, "%f:%f", &p->analyse.f_psy_rd, &p->analyse.f_psy_trellis ) ||
-            2 == sscanf( value, "%f,%f", &p->analyse.f_psy_rd, &p->analyse.f_psy_trellis ) ||
-            2 == sscanf( value, "%f|%f", &p->analyse.f_psy_rd, &p->analyse.f_psy_trellis ))
-        { }
-        else if( sscanf( value, "%f", &p->analyse.f_psy_rd ) )
+        float psy_rd[2];
+        if( !parse_param_float_list( value, psy_rd, 2, ":,|" ) )
+        {
+            p->analyse.f_psy_rd = psy_rd[0];
+            p->analyse.f_psy_trellis = psy_rd[1];
+        }
+        else if( !parse_float_token( value, &p->analyse.f_psy_rd ) )
         {
             p->analyse.f_psy_trellis = 0;
         }
@@ -1576,6 +1838,7 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
         {
             p->analyse.f_psy_rd = 0;
             p->analyse.f_psy_trellis = 0;
+            b_error = 1;
         }
     }
     OPT("psy")
@@ -1617,24 +1880,38 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
         p->rc.i_lookahead = atoi(value);
     OPT2("qpmin", "qp-min")
     {
-        if( 3 == sscanf( value, "%d:%d:%d", &p->rc.i_qp_min[SLICE_TYPE_I], &p->rc.i_qp_min[SLICE_TYPE_P], &p->rc.i_qp_min[SLICE_TYPE_B] ) ||
-            3 == sscanf( value, "%d,%d,%d", &p->rc.i_qp_min[SLICE_TYPE_I], &p->rc.i_qp_min[SLICE_TYPE_P], &p->rc.i_qp_min[SLICE_TYPE_B] ) )
+        int qp[3];
+        if( !parse_param_int_list( value, qp, 3, ":," ) )
+        {
+            p->rc.i_qp_min[SLICE_TYPE_I] = qp[0];
+            p->rc.i_qp_min[SLICE_TYPE_P] = qp[1];
+            p->rc.i_qp_min[SLICE_TYPE_B] = qp[2];
             p->rc.i_qp_min_min = X264_MIN3( p->rc.i_qp_min[SLICE_TYPE_I], p->rc.i_qp_min[SLICE_TYPE_P], p->rc.i_qp_min[SLICE_TYPE_B] );
-        else if( sscanf( value, "%d", &p->rc.i_qp_min_min ) )
+        }
+        else if( !parse_int_token( value, 10, &p->rc.i_qp_min_min ) )
             p->rc.i_qp_min[SLICE_TYPE_I] = p->rc.i_qp_min[SLICE_TYPE_P] = p->rc.i_qp_min[SLICE_TYPE_B] = p->rc.i_qp_min_min;
+        else
+            b_error = 1;
     }
     OPT2("qpmax", "qp-max")
     {
-        if( 3 == sscanf( value, "%d:%d:%d", &p->rc.i_qp_max[SLICE_TYPE_I], &p->rc.i_qp_max[SLICE_TYPE_P], &p->rc.i_qp_max[SLICE_TYPE_B] ) ||
-            3 == sscanf( value, "%d,%d,%d", &p->rc.i_qp_max[SLICE_TYPE_I], &p->rc.i_qp_max[SLICE_TYPE_P], &p->rc.i_qp_max[SLICE_TYPE_B] ) )
+        int qp[3];
+        if( !parse_param_int_list( value, qp, 3, ":," ) )
+        {
+            p->rc.i_qp_max[SLICE_TYPE_I] = qp[0];
+            p->rc.i_qp_max[SLICE_TYPE_P] = qp[1];
+            p->rc.i_qp_max[SLICE_TYPE_B] = qp[2];
             p->rc.i_qp_max_max = X264_MAX3( p->rc.i_qp_max[SLICE_TYPE_I], p->rc.i_qp_max[SLICE_TYPE_P], p->rc.i_qp_max[SLICE_TYPE_B] );
-        else if( sscanf( value, "%d", &p->rc.i_qp_max_max ) )
+        }
+        else if( !parse_int_token( value, 10, &p->rc.i_qp_max_max ) )
             p->rc.i_qp_max[SLICE_TYPE_I] = p->rc.i_qp_max[SLICE_TYPE_P] = p->rc.i_qp_max[SLICE_TYPE_B] = p->rc.i_qp_max_max;
+        else
+            b_error = 1;
     }
     OPT2("qpstep", "qp-step")
         p->rc.i_qp_step = atoi(value);
     OPT("ratetol")
-        p->rc.f_rate_tolerance = !strncmp("inf", value, 3) ? 1e9 : atof(value);
+        p->rc.f_rate_tolerance = !strcmp( value, "inf" ) ? 1e9 : atof(value);
     OPT("vbv-maxrate")
         if( !strcmp(value, "auto_high444") )
             p->rc.i_vbv_max_bitrate = X264_VBV_MAXRATE_HIGH444;
@@ -1698,61 +1975,98 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
         p->rc.i_aq3_mode = atoi(value);
     OPT("aq3-strength")
     {
-		int i;
-		
-        if( 8 == sscanf( value, "%f:%f:%f:%f:%f:%f:%f:%f",
-                         &p->rc.f_aq3_strengths[0][0], &p->rc.f_aq3_strengths[1][0], &p->rc.f_aq3_strengths[0][1], &p->rc.f_aq3_strengths[1][1],
-                         &p->rc.f_aq3_strengths[0][2], &p->rc.f_aq3_strengths[1][2], &p->rc.f_aq3_strengths[0][3], &p->rc.f_aq3_strengths[1][3] ) ||
-            8 == sscanf( value, "%f,%f,%f,%f,%f,%f,%f,%f",
-                         &p->rc.f_aq3_strengths[0][0], &p->rc.f_aq3_strengths[1][0], &p->rc.f_aq3_strengths[0][1], &p->rc.f_aq3_strengths[1][1],
-                         &p->rc.f_aq3_strengths[0][2], &p->rc.f_aq3_strengths[1][2], &p->rc.f_aq3_strengths[0][3], &p->rc.f_aq3_strengths[1][3] ) )
-            p->rc.f_aq3_strength = 0.0;
-        else if( 2 == sscanf( value, "%f:%f", &p->rc.f_aq3_strengths[0][0], &p->rc.f_aq3_strengths[1][0] ) ||
-                 2 == sscanf( value, "%f,%f", &p->rc.f_aq3_strengths[0][0], &p->rc.f_aq3_strengths[1][0] ) )
+        float aq3_strengths[8];
+        if( !parse_param_float_list( value, aq3_strengths, 8, ":," ) )
         {
             p->rc.f_aq3_strength = 0.0;
-            for( i = 0; i < 2; i++ )
+            for( int j = 0; j < 4; j++ )
+            {
+                p->rc.f_aq3_strengths[0][j] = aq3_strengths[j*2+0];
+                p->rc.f_aq3_strengths[1][j] = aq3_strengths[j*2+1];
+            }
+        }
+        else if( !parse_param_float_list( value, aq3_strengths, 2, ":," ) )
+        {
+            p->rc.f_aq3_strength = 0.0;
+            p->rc.f_aq3_strengths[0][0] = aq3_strengths[0];
+            p->rc.f_aq3_strengths[1][0] = aq3_strengths[1];
+            for( int i = 0; i < 2; i++ )
                 for( int j = 1; j < 4; j++ )
                     p->rc.f_aq3_strengths[i][j] = p->rc.f_aq3_strengths[i][0];
         }
-        else if( sscanf( value, "%f", &p->rc.f_aq3_strength ) )
-            for( i = 0; i < 2; i++ )
+        else if( !parse_float_token( value, &p->rc.f_aq3_strength ) )
+            for( int i = 0; i < 2; i++ )
                 for( int j = 0; j < 4; j++ )
                     p->rc.f_aq3_strengths[i][j] = p->rc.f_aq3_strength;
+        else
+            b_error = 1;
     }
     OPT("aq3-sensitivity")
         p->rc.f_aq3_sensitivity = atof(value);
     OPT("aq3-ifactor")
-        if( 2 == sscanf( value, "%f:%f", &p->rc.f_aq3_ifactor[0], &p->rc.f_aq3_ifactor[1] ) ||
-            2 == sscanf( value, "%f,%f", &p->rc.f_aq3_ifactor[0], &p->rc.f_aq3_ifactor[1] ) )
-        { }
-        else if( sscanf( value, "%f", &p->rc.f_aq3_ifactor[0] ) )
+    {
+        float factor[2];
+        if( !parse_param_float_list( value, factor, 2, ":," ) )
+        {
+            p->rc.f_aq3_ifactor[0] = factor[0];
+            p->rc.f_aq3_ifactor[1] = factor[1];
+        }
+        else if( !parse_float_token( value, &p->rc.f_aq3_ifactor[0] ) )
             p->rc.f_aq3_ifactor[1] = p->rc.f_aq3_ifactor[0];
         else
+        {
             p->rc.f_aq3_ifactor[1] = p->rc.f_aq3_ifactor[0] = 1.0;
+            b_error = 1;
+        }
+    }
     OPT("aq3-pfactor")
-        if( 2 == sscanf( value, "%f:%f", &p->rc.f_aq3_pfactor[0], &p->rc.f_aq3_pfactor[1] ) ||
-            2 == sscanf( value, "%f,%f", &p->rc.f_aq3_pfactor[0], &p->rc.f_aq3_pfactor[1] ) )
-        { }
-        else if( sscanf( value, "%f", &p->rc.f_aq3_pfactor[0] ) )
+    {
+        float factor[2];
+        if( !parse_param_float_list( value, factor, 2, ":," ) )
+        {
+            p->rc.f_aq3_pfactor[0] = factor[0];
+            p->rc.f_aq3_pfactor[1] = factor[1];
+        }
+        else if( !parse_float_token( value, &p->rc.f_aq3_pfactor[0] ) )
             p->rc.f_aq3_pfactor[1] = p->rc.f_aq3_pfactor[0];
         else
+        {
             p->rc.f_aq3_pfactor[1] = p->rc.f_aq3_pfactor[0] = 1.0;
+            b_error = 1;
+        }
+    }
     OPT("aq3-bfactor")
-        if( 2 == sscanf( value, "%f:%f", &p->rc.f_aq3_bfactor[0], &p->rc.f_aq3_bfactor[1] ) ||
-            2 == sscanf( value, "%f,%f", &p->rc.f_aq3_bfactor[0], &p->rc.f_aq3_bfactor[1] ) )
-        { }
-        else if( sscanf( value, "%f", &p->rc.f_aq3_bfactor[0] ) )
+    {
+        float factor[2];
+        if( !parse_param_float_list( value, factor, 2, ":," ) )
+        {
+            p->rc.f_aq3_bfactor[0] = factor[0];
+            p->rc.f_aq3_bfactor[1] = factor[1];
+        }
+        else if( !parse_float_token( value, &p->rc.f_aq3_bfactor[0] ) )
             p->rc.f_aq3_bfactor[1] = p->rc.f_aq3_bfactor[0];
         else
+        {
             p->rc.f_aq3_bfactor[1] = p->rc.f_aq3_bfactor[0] = 1.0;
+            b_error = 1;
+        }
+    }
     OPT("aq3-boundary")
     {
-        if( 3 == sscanf( value, "%d:%d:%d", &p->rc.i_aq3_boundary[0], &p->rc.i_aq3_boundary[1], &p->rc.i_aq3_boundary[2] ) ||
-            3 == sscanf( value, "%d,%d,%d", &p->rc.i_aq3_boundary[0], &p->rc.i_aq3_boundary[1], &p->rc.i_aq3_boundary[2] ) )
+        int boundary[3];
+        if( !parse_param_int_list( value, boundary, 3, ":," ) )
+        {
+            p->rc.i_aq3_boundary[0] = boundary[0];
+            p->rc.i_aq3_boundary[1] = boundary[1];
+            p->rc.i_aq3_boundary[2] = boundary[2];
             p->rc.b_aq3_boundary = 1;
+        }
         else
+        {
+            p->rc.b_aq3_boundary = 0;
             p->rc.i_aq3_boundary[0] = p->rc.i_aq3_boundary[1] = p->rc.i_aq3_boundary[2] = 0;
+            b_error = 1;
+        }
     }
     OPT("fgo")
         p->analyse.i_fgo = atoi(value);
@@ -1780,8 +2094,17 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
     OPT("zones")
         CHECKED_ERROR_PARAM_STRDUP( p->rc.psz_zones, p, value );
     OPT("crop-rect")
-        b_error |= sscanf( value, "%d,%d,%d,%d", &p->crop_rect.i_left, &p->crop_rect.i_top,
-                                                 &p->crop_rect.i_right, &p->crop_rect.i_bottom ) != 4;
+    {
+        int crop[4];
+        b_error |= parse_param_int_list( value, crop, 4, "," );
+        if( !b_error )
+        {
+            p->crop_rect.i_left = crop[0];
+            p->crop_rect.i_top = crop[1];
+            p->crop_rect.i_right = crop[2];
+            p->crop_rect.i_bottom = crop[3];
+        }
+    }
     OPT("psnr")
         p->analyse.b_psnr = atobool(value);
     OPT("ssim")
@@ -1867,178 +2190,207 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
 /****************************************************************************
  * x264_param2string:
  ****************************************************************************/
+static int param2string_sprintf( char *dst, char *end, const char *fmt, ... )
+{
+    int written;
+    size_t size;
+    va_list args;
+
+    if( dst >= end )
+        return 0;
+
+    size = end - dst;
+    va_start( args, fmt );
+    written = vsnprintf( dst, size, fmt, args );
+    va_end( args );
+
+    if( written < 0 )
+    {
+        dst[0] = '\0';
+        return 0;
+    }
+
+    return (size_t)written >= size ? (int)size - 1 : written;
+}
+
 char *x264_param2string( x264_param_t *p, int b_res )
 {
     int len = 2000;
-    char *buf, *s;
+    char *buf, *s, *end;
     if( p->rc.psz_zones )
-        len += strlen(p->rc.psz_zones);
+    {
+        size_t zones_len = strlen( p->rc.psz_zones );
+        if( zones_len > (size_t)(INT_MAX - len) )
+            return NULL;
+        len += (int)zones_len;
+    }
     buf = s = x264_malloc( len );
     if( !buf )
         return NULL;
+    end = buf + len;
 
     if( b_res )
     {
-        s += sprintf( s, "%dx%d ", p->i_width, p->i_height );
-        s += sprintf( s, "fps=%u/%u ", p->i_fps_num, p->i_fps_den );
-        s += sprintf( s, "timebase=%u/%u ", p->i_timebase_num, p->i_timebase_den );
-        s += sprintf( s, "bitdepth=%d ", p->i_bitdepth );
+        s += param2string_sprintf( s, end, "%dx%d ", p->i_width, p->i_height );
+        s += param2string_sprintf( s, end, "fps=%u/%u ", p->i_fps_num, p->i_fps_den );
+        s += param2string_sprintf( s, end, "timebase=%u/%u ", p->i_timebase_num, p->i_timebase_den );
+        s += param2string_sprintf( s, end, "bitdepth=%d ", p->i_bitdepth );
     }
 
     if( p->b_opencl )
-        s += sprintf( s, "opencl=%d ", p->b_opencl );
-    s += sprintf( s, "cabac=%d", p->b_cabac );
-    s += sprintf( s, " ref=%d", p->i_frame_reference );
-    s += sprintf( s, " deblock=%d:%d:%d", p->b_deblocking_filter,
+        s += param2string_sprintf( s, end, "opencl=%d ", p->b_opencl );
+    s += param2string_sprintf( s, end, "cabac=%d", p->b_cabac );
+    s += param2string_sprintf( s, end, " ref=%d", p->i_frame_reference );
+    s += param2string_sprintf( s, end, " deblock=%d:%d:%d", p->b_deblocking_filter,
                   p->i_deblocking_filter_alphac0, p->i_deblocking_filter_beta );
-    s += sprintf( s, " analyse=%#x:%#x", p->analyse.intra, p->analyse.inter );
-    s += sprintf( s, " me=%s", x264_motion_est_names[ p->analyse.i_me_method ] );
-    s += sprintf( s, " subme=%d", p->analyse.i_subpel_refine );
-    s += sprintf( s, " psy=%d", p->analyse.b_psy );
+    s += param2string_sprintf( s, end, " analyse=%#x:%#x", p->analyse.intra, p->analyse.inter );
+    s += param2string_sprintf( s, end, " me=%s", x264_motion_est_names[ p->analyse.i_me_method ] );
+    s += param2string_sprintf( s, end, " subme=%d", p->analyse.i_subpel_refine );
+    s += param2string_sprintf( s, end, " psy=%d", p->analyse.b_psy );
     if( p->analyse.b_psy )
 	{
-		s += sprintf( s, " fade_compensate=%.2f", p->rc.f_fade_compensate );
-        s += sprintf( s, " psy_rd=%.2f:%.2f", p->analyse.f_psy_rd, p->analyse.f_psy_trellis );
+		s += param2string_sprintf( s, end, " fade_compensate=%.2f", p->rc.f_fade_compensate );
+        s += param2string_sprintf( s, end, " psy_rd=%.2f:%.2f", p->analyse.f_psy_rd, p->analyse.f_psy_trellis );
 	}
-    s += sprintf( s, " mixed_ref=%d", p->analyse.b_mixed_references );
-    s += sprintf( s, " me_range=%d", p->analyse.i_me_range );
-    s += sprintf( s, " chroma_me=%d", p->analyse.b_chroma_me );
-    s += sprintf( s, " trellis=%d", p->analyse.i_trellis );
-    s += sprintf( s, " 8x8dct=%d", p->analyse.b_transform_8x8 );
-    s += sprintf( s, " cqm=%d", p->i_cqm_preset );
-    s += sprintf( s, " deadzone=%d,%d", p->analyse.i_luma_deadzone[0], p->analyse.i_luma_deadzone[1] );
-    s += sprintf( s, " fast_pskip=%d", p->analyse.b_fast_pskip );
-    s += sprintf( s, " chroma_qp_offset=%d", p->analyse.i_chroma_qp_offset );
-    s += sprintf( s, " threads=%d", p->i_threads );
-    s += sprintf( s, " lookahead_threads=%d", p->i_lookahead_threads );
-    s += sprintf( s, " sliced_threads=%d", p->b_sliced_threads );
+    s += param2string_sprintf( s, end, " mixed_ref=%d", p->analyse.b_mixed_references );
+    s += param2string_sprintf( s, end, " me_range=%d", p->analyse.i_me_range );
+    s += param2string_sprintf( s, end, " chroma_me=%d", p->analyse.b_chroma_me );
+    s += param2string_sprintf( s, end, " trellis=%d", p->analyse.i_trellis );
+    s += param2string_sprintf( s, end, " 8x8dct=%d", p->analyse.b_transform_8x8 );
+    s += param2string_sprintf( s, end, " cqm=%d", p->i_cqm_preset );
+    s += param2string_sprintf( s, end, " deadzone=%d,%d", p->analyse.i_luma_deadzone[0], p->analyse.i_luma_deadzone[1] );
+    s += param2string_sprintf( s, end, " fast_pskip=%d", p->analyse.b_fast_pskip );
+    s += param2string_sprintf( s, end, " chroma_qp_offset=%d", p->analyse.i_chroma_qp_offset );
+    s += param2string_sprintf( s, end, " threads=%d", p->i_threads );
+    s += param2string_sprintf( s, end, " lookahead_threads=%d", p->i_lookahead_threads );
+    s += param2string_sprintf( s, end, " sliced_threads=%d", p->b_sliced_threads );
     if( p->i_slice_count )
-        s += sprintf( s, " slices=%d", p->i_slice_count );
+        s += param2string_sprintf( s, end, " slices=%d", p->i_slice_count );
     if( p->i_slice_count_max )
-        s += sprintf( s, " slices_max=%d", p->i_slice_count_max );
+        s += param2string_sprintf( s, end, " slices_max=%d", p->i_slice_count_max );
     if( p->i_slice_max_size )
-        s += sprintf( s, " slice_max_size=%d", p->i_slice_max_size );
+        s += param2string_sprintf( s, end, " slice_max_size=%d", p->i_slice_max_size );
     if( p->i_slice_max_mbs )
-        s += sprintf( s, " slice_max_mbs=%d", p->i_slice_max_mbs );
+        s += param2string_sprintf( s, end, " slice_max_mbs=%d", p->i_slice_max_mbs );
     if( p->i_slice_min_mbs )
-        s += sprintf( s, " slice_min_mbs=%d", p->i_slice_min_mbs );
-    s += sprintf( s, " nr=%d", p->analyse.i_noise_reduction );
-    s += sprintf( s, " decimate=%d", p->analyse.b_dct_decimate );
-    s += sprintf( s, " interlaced=%s", p->b_interlaced ? p->b_tff ? "tff" : "bff" : p->b_fake_interlaced ? "fake" : "0" );
-    s += sprintf( s, " bluray_compat=%d", p->b_bluray_compat );
+        s += param2string_sprintf( s, end, " slice_min_mbs=%d", p->i_slice_min_mbs );
+    s += param2string_sprintf( s, end, " nr=%d", p->analyse.i_noise_reduction );
+    s += param2string_sprintf( s, end, " decimate=%d", p->analyse.b_dct_decimate );
+    s += param2string_sprintf( s, end, " interlaced=%s", p->b_interlaced ? p->b_tff ? "tff" : "bff" : p->b_fake_interlaced ? "fake" : "0" );
+    s += param2string_sprintf( s, end, " bluray_compat=%d", p->b_bluray_compat );
     if( p->b_stitchable )
-        s += sprintf( s, " stitchable=%d", p->b_stitchable );
+        s += param2string_sprintf( s, end, " stitchable=%d", p->b_stitchable );
 
-    s += sprintf( s, " constrained_intra=%d", p->b_constrained_intra );
-    s += sprintf( s, " fgo=%d", p->analyse.i_fgo );
+    s += param2string_sprintf( s, end, " constrained_intra=%d", p->b_constrained_intra );
+    s += param2string_sprintf( s, end, " fgo=%d", p->analyse.i_fgo );
 
-    s += sprintf( s, " bframes=%d", p->i_bframe );
+    s += param2string_sprintf( s, end, " bframes=%d", p->i_bframe );
     if( p->i_bframe )
     {
-        s += sprintf( s, " b_pyramid=%d b_adapt=%d b_bias=%d direct=%d weightb=%d open_gop=%d",
+        s += param2string_sprintf( s, end, " b_pyramid=%d b_adapt=%d b_bias=%d direct=%d weightb=%d open_gop=%d",
                       p->i_bframe_pyramid, p->i_bframe_adaptive, p->i_bframe_bias,
                       p->analyse.i_direct_mv_pred, p->analyse.b_weighted_bipred, p->b_open_gop );
     }
-    s += sprintf( s, " weightp=%d", p->analyse.i_weighted_pred > 0 ? p->analyse.i_weighted_pred : 0 );
+    s += param2string_sprintf( s, end, " weightp=%d", p->analyse.i_weighted_pred > 0 ? p->analyse.i_weighted_pred : 0 );
 
     if( p->i_keyint_max == X264_KEYINT_MAX_INFINITE )
-        s += sprintf( s, " keyint=infinite" );
+        s += param2string_sprintf( s, end, " keyint=infinite" );
     else
-        s += sprintf( s, " keyint=%d", p->i_keyint_max );
-    s += sprintf( s, " keyint_min=%d scenecut=%d intra_refresh=%d",
+        s += param2string_sprintf( s, end, " keyint=%d", p->i_keyint_max );
+    s += param2string_sprintf( s, end, " keyint_min=%d scenecut=%d intra_refresh=%d",
                   p->i_keyint_min, p->i_scenecut_threshold, p->b_intra_refresh );
 
     if( p->rc.b_mb_tree || p->rc.i_vbv_buffer_size )
-        s += sprintf( s, " rc_lookahead=%d", p->rc.i_lookahead );
+        s += param2string_sprintf( s, end, " rc_lookahead=%d", p->rc.i_lookahead );
 
-    s += sprintf( s, " rc=%s mbtree=%d", p->rc.i_rc_method == X264_RC_ABR ?
+    s += param2string_sprintf( s, end, " rc=%s mbtree=%d", p->rc.i_rc_method == X264_RC_ABR ?
                                ( p->rc.b_stat_read ? "2pass" : p->rc.i_vbv_max_bitrate == p->rc.i_bitrate ? "cbr" : "abr" )
                                : p->rc.i_rc_method == X264_RC_CRF ? "crf" : "cqp", p->rc.b_mb_tree );
     if( p->rc.i_rc_method == X264_RC_ABR || p->rc.i_rc_method == X264_RC_CRF )
     {
         if( p->rc.i_rc_method == X264_RC_CRF )
-            s += sprintf( s, " crf=%.4f", p->rc.f_rf_constant );
+            s += param2string_sprintf( s, end, " crf=%.4f", p->rc.f_rf_constant );
         else
-            s += sprintf( s, " bitrate=%d ratetol=%.1f",
+            s += param2string_sprintf( s, end, " bitrate=%d ratetol=%.1f",
                           p->rc.i_bitrate, p->rc.f_rate_tolerance );
-        s += sprintf( s, " qcomp=%.2f qpmin=%d:%d:%d qpmax=%d:%d:%d qpstep=%d",
+        s += param2string_sprintf( s, end, " qcomp=%.2f qpmin=%d:%d:%d qpmax=%d:%d:%d qpstep=%d",
                       p->rc.f_qcompress,
                       p->rc.i_qp_min[SLICE_TYPE_I], p->rc.i_qp_min[SLICE_TYPE_P], p->rc.i_qp_min[SLICE_TYPE_B],
                       p->rc.i_qp_max[SLICE_TYPE_I], p->rc.i_qp_max[SLICE_TYPE_P], p->rc.i_qp_max[SLICE_TYPE_B],
                       p->rc.i_qp_step );
         if( p->rc.b_stat_read )
-            s += sprintf( s, " cplxblur=%.1f qblur=%.1f",
+            s += param2string_sprintf( s, end, " cplxblur=%.1f qblur=%.1f",
                           p->rc.f_complexity_blur, p->rc.f_qblur );
         if( p->rc.i_vbv_buffer_size )
         {
-            s += sprintf( s, " vbv_maxrate=%d vbv_bufsize=%d",
+            s += param2string_sprintf( s, end, " vbv_maxrate=%d vbv_bufsize=%d",
                           p->rc.i_vbv_max_bitrate, p->rc.i_vbv_buffer_size );
             if( p->rc.i_rc_method == X264_RC_CRF )
-                s += sprintf( s, " crf_max=%.1f", p->rc.f_rf_constant_max );
+                s += param2string_sprintf( s, end, " crf_max=%.1f", p->rc.f_rf_constant_max );
         }
     }
     else if( p->rc.i_rc_method == X264_RC_CQP )
-        s += sprintf( s, " qp=%d", p->rc.i_qp_constant );
+        s += param2string_sprintf( s, end, " qp=%d", p->rc.i_qp_constant );
 
     if( p->rc.i_vbv_buffer_size )
-        s += sprintf( s, " nal_hrd=%s filler=%d", x264_nal_hrd_names[p->i_nal_hrd], p->rc.b_filler );
+        s += param2string_sprintf( s, end, " nal_hrd=%s filler=%d", x264_nal_hrd_names[p->i_nal_hrd], p->rc.b_filler );
     if( p->crop_rect.i_left | p->crop_rect.i_top | p->crop_rect.i_right | p->crop_rect.i_bottom )
-        s += sprintf( s, " crop_rect=%d,%d,%d,%d", p->crop_rect.i_left, p->crop_rect.i_top,
+        s += param2string_sprintf( s, end, " crop_rect=%d,%d,%d,%d", p->crop_rect.i_left, p->crop_rect.i_top,
                                                    p->crop_rect.i_right, p->crop_rect.i_bottom );
     if( p->mastering_display.b_mastering_display )
-        s += sprintf( s, " mastering-display=G(%d,%d)B(%d,%d)R(%d,%d)WP(%d,%d)L(%"PRId64",%"PRId64")",
+        s += param2string_sprintf( s, end, " mastering-display=G(%d,%d)B(%d,%d)R(%d,%d)WP(%d,%d)L(%"PRId64",%"PRId64")",
                       p->mastering_display.i_green_x, p->mastering_display.i_green_y,
                       p->mastering_display.i_blue_x, p->mastering_display.i_blue_y,
                       p->mastering_display.i_red_x, p->mastering_display.i_red_y,
                       p->mastering_display.i_white_x, p->mastering_display.i_white_y,
                       p->mastering_display.i_display_max, p->mastering_display.i_display_min );
     if( p->content_light_level.b_cll )
-        s += sprintf( s, " cll=%d,%d",
+        s += param2string_sprintf( s, end, " cll=%d,%d",
                       p->content_light_level.i_max_cll, p->content_light_level.i_max_fall );
     if( p->i_frame_packing >= 0 )
-        s += sprintf( s, " frame-packing=%d", p->i_frame_packing );
+        s += param2string_sprintf( s, end, " frame-packing=%d", p->i_frame_packing );
 
     if( !(p->rc.i_rc_method == X264_RC_CQP && p->rc.i_qp_constant == 0) )
     {
-        s += sprintf( s, " ip_ratio=%.2f", p->rc.f_ip_factor );
+        s += param2string_sprintf( s, end, " ip_ratio=%.2f", p->rc.f_ip_factor );
         if( p->i_bframe && !p->rc.b_mb_tree )
-            s += sprintf( s, " pb_ratio=%.2f", p->rc.f_pb_factor );
-        s += sprintf( s, " aq=%d", p->rc.i_aq_mode );
+            s += param2string_sprintf( s, end, " pb_ratio=%.2f", p->rc.f_pb_factor );
+        s += param2string_sprintf( s, end, " aq=%d", p->rc.i_aq_mode );
         if( p->rc.i_aq_mode )
 		{
-            s += sprintf( s, ":%.2f", p->rc.f_aq_strength );
-            s += sprintf( s, " aq-sensitivity=%.2f", p->rc.f_aq_sensitivity );
-            s += sprintf( s, " aq-factor=%.2f:%.2f:%.2f", p->rc.f_aq_ifactor,
+            s += param2string_sprintf( s, end, ":%.2f", p->rc.f_aq_strength );
+            s += param2string_sprintf( s, end, " aq-sensitivity=%.2f", p->rc.f_aq_sensitivity );
+            s += param2string_sprintf( s, end, " aq-factor=%.2f:%.2f:%.2f", p->rc.f_aq_ifactor,
                                                           p->rc.f_aq_pfactor,
                                                           p->rc.f_aq_bfactor );
             if( p->rc.i_aq_mode == X264_AQ_AUTOVARIANCE_BIASED )
-                s += sprintf( s, ":%.2f", p->rc.f_aq_bias_strength );
+                s += param2string_sprintf( s, end, ":%.2f", p->rc.f_aq_bias_strength );
 		}
-        s += sprintf( s, " aq2=%d", p->rc.b_aq2 );
+        s += param2string_sprintf( s, end, " aq2=%d", p->rc.b_aq2 );
         if( p->rc.b_aq2 )
         {
-            s += sprintf( s, ":%.2f", p->rc.f_aq2_strength );
-            s += sprintf( s, " aq2-sensitivity=%.2f", p->rc.f_aq2_sensitivity );
-            s += sprintf( s, " aq2-factor=%.2f:%.2f:%.2f", p->rc.f_aq2_ifactor,
+            s += param2string_sprintf( s, end, ":%.2f", p->rc.f_aq2_strength );
+            s += param2string_sprintf( s, end, " aq2-sensitivity=%.2f", p->rc.f_aq2_sensitivity );
+            s += param2string_sprintf( s, end, " aq2-factor=%.2f:%.2f:%.2f", p->rc.f_aq2_ifactor,
                                                            p->rc.f_aq2_pfactor,
                                                            p->rc.f_aq2_bfactor );
         }
-        s += sprintf( s, " aq3=%d", p->rc.i_aq3_mode );
+        s += param2string_sprintf( s, end, " aq3=%d", p->rc.i_aq3_mode );
         if( p->rc.i_aq3_mode )
         {
-            s += sprintf( s, ":[%.2f:%.2f]:[%.2f:%.2f]:[%.2f:%.2f]:[%.2f:%.2f]",
+            s += param2string_sprintf( s, end, ":[%.2f:%.2f]:[%.2f:%.2f]:[%.2f:%.2f]:[%.2f:%.2f]",
                           p->rc.f_aq3_strengths[0][0], p->rc.f_aq3_strengths[1][0], p->rc.f_aq3_strengths[0][1], p->rc.f_aq3_strengths[1][1],
                           p->rc.f_aq3_strengths[0][2], p->rc.f_aq3_strengths[1][2], p->rc.f_aq3_strengths[0][3], p->rc.f_aq3_strengths[1][3] );
-            s += sprintf( s, " aq3-sensitivity=%.2f", p->rc.f_aq3_sensitivity );
-            s += sprintf( s, " aq3-factor=[%.2f:%.2f]:[%.2f:%.2f]:[%.2f:%.2f]", p->rc.f_aq3_ifactor[0], p->rc.f_aq3_ifactor[1],
+            s += param2string_sprintf( s, end, " aq3-sensitivity=%.2f", p->rc.f_aq3_sensitivity );
+            s += param2string_sprintf( s, end, " aq3-factor=[%.2f:%.2f]:[%.2f:%.2f]:[%.2f:%.2f]", p->rc.f_aq3_ifactor[0], p->rc.f_aq3_ifactor[1],
                                                                                 p->rc.f_aq3_pfactor[0], p->rc.f_aq3_pfactor[1],
                                                                                 p->rc.f_aq3_bfactor[0], p->rc.f_aq3_bfactor[1] );
-            s += sprintf( s, " aq3-boundary=%d:%d:%d", p->rc.i_aq3_boundary[0], p->rc.i_aq3_boundary[1], p->rc.i_aq3_boundary[2] );
+            s += param2string_sprintf( s, end, " aq3-boundary=%d:%d:%d", p->rc.i_aq3_boundary[0], p->rc.i_aq3_boundary[1], p->rc.i_aq3_boundary[2] );
         }
         if( p->rc.psz_zones )
-            s += sprintf( s, " zones=%s", p->rc.psz_zones );
+            s += param2string_sprintf( s, end, " zones=%s", p->rc.psz_zones );
         else if( p->rc.i_zones )
-            s += sprintf( s, " zones" );
+            s += param2string_sprintf( s, end, " zones" );
     }
 
     return buf;

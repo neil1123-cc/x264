@@ -37,6 +37,24 @@
 
 #define PROGRESS_LENGTH 36
 
+static inline int invalid_dimensions( int width, int height )
+{
+    return width <= 0 || height <= 0 || width > MAX_RESOLUTION || height > MAX_RESOLUTION;
+}
+
+static inline int64_t reduce_pts_floor( int64_t pts, int shift )
+{
+    if( shift <= 0 )
+        return pts;
+    if( shift >= 63 )
+        return pts < 0 ? -1 : 0;
+
+    int64_t divisor = (int64_t)1 << shift;
+    if( pts >= 0 )
+        return pts / divisor;
+    return -1 - ( ( -1 - pts ) / divisor );
+}
+
 #if HAVE_AUDIO
 #include "audio/audio.h"
 #endif
@@ -65,7 +83,8 @@ static int FFMS_CC update_progress( int64_t current, int64_t total, void *privat
     *update_time = newtime;
 
     char buf[PROGRESS_LENGTH+5+1];
-    snprintf( buf, sizeof(buf), "ffms [info]: indexing input file [%.1f%%]", 100.0 * current / total );
+    double percent = total ? 100.0 * (double)current / (double)total : 0.0;
+    snprintf( buf, sizeof(buf), "ffms [info]: indexing input file [%.1f%%]", percent );
     fprintf( stderr, "%-*s\r", PROGRESS_LENGTH, buf+5 );
     x264_cli_set_console_title( buf );
     fflush( stderr );
@@ -130,7 +149,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
 	{
 #if HAVE_AUDIO
         h->filename  = strdup( psz_filename );
-        h->has_audio = !!( FFMS_GetFirstTrackOfType( idx, FFMS_TYPE_AUDIO, &e ) > 0 );
+        h->has_audio = !!( FFMS_GetFirstTrackOfType( idx, FFMS_TYPE_AUDIO, &e ) >= 0 );
 #endif
         h->video_source = FFMS_CreateVideoSource( psz_filename, trackno, idx, opt->demuxer_threads, seekmode, &e );
 	}
@@ -140,11 +159,18 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     FAIL_IF_ERROR( !h->video_source, "could not create video source\n" );
 
     const FFMS_VideoProperties *videop = FFMS_GetVideoProperties( h->video_source );
-    info->num_frames   = h->num_frames = videop->NumFrames;
-    info->sar_height   = videop->SARDen;
-    info->sar_width    = videop->SARNum;
-    info->fps_den      = videop->FPSDenominator;
-    info->fps_num      = videop->FPSNumerator;
+    FAIL_IF_ERROR( videop->NumFrames < 0 || videop->NumFrames > INT_MAX, "invalid frame count\n" );
+    FAIL_IF_ERROR( videop->SARDen < 0 || videop->SARDen > UINT32_MAX ||
+                   videop->SARNum < 0 || videop->SARNum > UINT32_MAX,
+                   "invalid sample aspect ratio\n" );
+    FAIL_IF_ERROR( videop->FPSDenominator < 0 || videop->FPSDenominator > UINT32_MAX ||
+                   videop->FPSNumerator < 0 || videop->FPSNumerator > UINT32_MAX,
+                   "invalid framerate\n" );
+    info->num_frames   = h->num_frames = (int)videop->NumFrames;
+    info->sar_height   = (uint32_t)videop->SARDen;
+    info->sar_width    = (uint32_t)videop->SARNum;
+    info->fps_den      = (uint32_t)videop->FPSDenominator;
+    info->fps_num      = (uint32_t)videop->FPSNumerator;
     h->vfr_input       = info->vfr;
     /* ffms is thread unsafe as it uses a single frame buffer for all frame requests */
     info->thread_safe  = 0;
@@ -154,6 +180,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
 
     const FFMS_Frame *frame = FFMS_GetFrame( h->video_source, 0, &e );
     FAIL_IF_ERROR( !frame, "could not read frame 0\n" );
+    FAIL_IF_ERROR( invalid_dimensions( frame->EncodedWidth, frame->EncodedHeight ),
+                   "invalid video dimensions\n" );
 	
     /* -1 = 'unset' (internal) , 2 from lavf|ffms = 'unset' */
     if( frame->ColorSpace >= 0 && frame->ColorSpace <= 8 && frame->ColorSpace != 2 )
@@ -172,7 +200,10 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     /* ffms timestamps are in milliseconds. ffms also uses int64_ts for timebase,
      * so we need to reduce large timebases to prevent overflow */
     h->track = FFMS_GetTrackFromVideo( h->video_source );
+    FAIL_IF_ERROR( !h->track, "could not get video track\n" );
     const FFMS_TrackTimeBase *timebase = FFMS_GetTimeBase( h->track );
+    FAIL_IF_ERROR( !timebase || timebase->Num <= 0 || timebase->Den <= 0 || timebase->Den > INT64_MAX / 1000,
+                   "invalid timebase\n" );
     if( h->vfr_input )
     {
         int64_t timebase_num = timebase->Num;
@@ -185,15 +216,18 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
             timebase_den >>= 1;
             h->reduce_pts++;
         }
-        info->timebase_num = timebase_num;
-        info->timebase_den = timebase_den;
+        FAIL_IF_ERROR( timebase_num <= 0 || timebase_den <= 0, "invalid reduced timebase\n" );
+        info->timebase_num = (uint32_t)timebase_num;
+        info->timebase_den = (uint32_t)timebase_den;
     }
 	
     /* show video info */
     FFMS_Indexer *idxer    = FFMS_CreateIndexer( psz_filename, &e );
-    const char *format     = FFMS_GetFormatNameI( idxer );
-    const char *codec      = FFMS_GetCodecNameI( idxer, trackno );
-    double duration        = videop->NumFrames * videop->FPSDenominator / videop->FPSNumerator;
+    const char *format     = idxer ? FFMS_GetFormatNameI( idxer ) : "unknown";
+    const char *codec      = idxer ? FFMS_GetCodecNameI( idxer, trackno ) : "unknown";
+    double duration        = videop->FPSNumerator > 0 && videop->FPSDenominator >= 0 ?
+                             (double)videop->NumFrames * videop->FPSDenominator / videop->FPSNumerator : 0;
+    int duration_log       = duration > INT_MAX ? INT_MAX : (int)X264_MAX( duration, 0 );
     const AVPixFmtDescriptor *pix_desc = av_pix_fmt_desc_get(frame->EncodedPixelFormat);
     x264_cli_log( "ffms", X264_LOG_INFO,
                   "\n Format    : %s"
@@ -204,13 +238,14 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
                   "\n Duration  : %d:%02d:%02d\n",
                   format,
                   codec,
-                  pix_desc->name,
+                  pix_desc ? pix_desc->name : "unknown",
                   videop->FPSNumerator, videop->FPSDenominator,
                   (uint64_t)timebase->Num, (uint64_t)timebase->Den * 1000,
-                  (int)duration / 60 / 60, (int)duration / 60 % 60, (int)duration - (int)duration / 60 * 60 );
-    if( !strcmp( codec,"rawvideo" ) )
+                  duration_log / 60 / 60, duration_log / 60 % 60, duration_log - duration_log / 60 * 60 );
+    if( codec && !strcmp( codec,"rawvideo" ) )
         x264_cli_log( "ffms", X264_LOG_WARNING, "recommend using --demuxer lavf with rawvideo" );
-    FFMS_CancelIndexing( idxer );
+    if( idxer )
+        FFMS_CancelIndexing( idxer );
 
     *p_handle = h;
     return 0;
@@ -234,6 +269,8 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
     e.BufferSize = 0;
     const FFMS_Frame *frame = FFMS_GetFrame( h->video_source, i_frame, &e );
     FAIL_IF_ERROR( !frame, "could not read frame %d \n", i_frame );
+    FAIL_IF_ERROR( invalid_dimensions( frame->EncodedWidth, frame->EncodedHeight ),
+                   "invalid video dimensions\n" );
 
     memcpy( pic->img.stride, frame->Linesize, sizeof(pic->img.stride) );
     memcpy( pic->img.plane, frame->Data, sizeof(pic->img.plane) );
@@ -245,10 +282,10 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
     if( h->vfr_input )
     {
         const FFMS_FrameInfo *info = FFMS_GetFrameInfo( h->track, i_frame );
-        FAIL_IF_ERROR( info->PTS == AV_NOPTS_VALUE, "invalid timestamp. "
+        FAIL_IF_ERROR( !info || info->PTS == AV_NOPTS_VALUE, "invalid timestamp. "
                        "Use --force-cfr and specify a framerate with --fps\n" );
 
-        pic->pts = info->PTS >> h->reduce_pts;
+        pic->pts = reduce_pts_floor( info->PTS, h->reduce_pts );
         pic->duration = 0;
     }
     return 0;

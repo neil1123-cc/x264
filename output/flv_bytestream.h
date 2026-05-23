@@ -121,10 +121,11 @@ typedef struct flv_buffer
     unsigned d_max;
     FILE *fp;
     uint64_t d_total;
+    int error;
 } flv_buffer;
 
 flv_buffer *flv_create_writer( const char *filename );
-int flv_append_data( flv_buffer *c, uint8_t *data, unsigned size );
+int flv_append_data( flv_buffer *c, const uint8_t *data, unsigned size );
 int flv_write_byte( flv_buffer *c, uint8_t *byte );
 int flv_flush_data( flv_buffer *c );
 void flv_rewrite_amf_be24( flv_buffer *c, unsigned length, unsigned start );

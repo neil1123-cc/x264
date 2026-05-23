@@ -20,7 +20,10 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02111, USA.
  *****************************************************************************/
 
+#include <errno.h>
 #include <math.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include "video.h"
 
 #define NAME "hqdn3d"
@@ -71,53 +74,138 @@ static void precalc_coefs(int *ct, double dist25)
     ct[0] = (dist25 != 0);
 }
 
+static int parse_strength( const char *arg, char **end, double *strength )
+{
+    if( !arg || !*arg )
+        return -1;
+
+    errno = 0;
+    *strength = strtod( arg, end );
+    if( *end == arg || errno == ERANGE || !isfinite( *strength ) )
+        return -1;
+    return 0;
+}
+
+static int parse_strengths( const char *opt_string, double *lum_spac, double *chrom_spac,
+                            double *lum_tmp, double *chrom_tmp )
+{
+    double strength[4];
+    int count = 0;
+    const char *arg = opt_string;
+    char *end;
+
+    if( !arg || !*arg )
+        goto defaults;
+
+    while( count < 4 )
+    {
+        if( parse_strength( arg, &end, &strength[count] ) )
+            return -1;
+        count++;
+        if( !*end || (*end == ',' && !end[1]) )
+            break;
+        if( *end != ',' )
+            return -1;
+        arg = end + 1;
+    }
+    if( count == 4 && *end )
+        return -1;
+
+    switch( count )
+    {
+        case 1:
+            *lum_spac = strength[0];
+            if( *lum_spac )
+            {
+                *lum_tmp = PARAM3_DEFAULT * *lum_spac / PARAM1_DEFAULT;
+                *chrom_spac = PARAM2_DEFAULT * *lum_spac / PARAM1_DEFAULT;
+                *chrom_tmp = *lum_tmp * *chrom_spac / *lum_spac;
+            }
+            else
+                *lum_tmp = *chrom_spac = *chrom_tmp = 0;
+            break;
+        case 2:
+            *lum_spac = strength[0];
+            *chrom_spac = strength[1];
+            *lum_tmp = PARAM3_DEFAULT * *lum_spac / PARAM1_DEFAULT;
+            if( !*lum_spac )
+            {
+                if( *chrom_spac )
+                    return -1;
+                *chrom_tmp = 0;
+            }
+            else
+                *chrom_tmp = *lum_tmp * *chrom_spac / *lum_spac;
+            break;
+        case 3:
+            *lum_spac = strength[0];
+            *chrom_spac = strength[1];
+            *lum_tmp = strength[2];
+            if( !*lum_spac )
+            {
+                if( *chrom_spac || *lum_tmp )
+                    return -1;
+                *chrom_tmp = 0;
+            }
+            else
+                *chrom_tmp = *lum_tmp * *chrom_spac / *lum_spac;
+            break;
+        case 4:
+            *lum_spac = strength[0];
+            *chrom_spac = strength[1];
+            *lum_tmp = strength[2];
+            *chrom_tmp = strength[3];
+            break;
+        default:
+defaults:
+            *lum_spac = PARAM1_DEFAULT;
+            *lum_tmp = PARAM3_DEFAULT;
+            *chrom_spac = PARAM2_DEFAULT;
+            *chrom_tmp = *lum_tmp * *chrom_spac / *lum_spac;
+            break;
+    }
+
+    return !isfinite( *lum_spac ) || !isfinite( *chrom_spac ) ||
+           !isfinite( *lum_tmp ) || !isfinite( *chrom_tmp );
+}
+
 static int init(hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info,
                 x264_param_t *param, char *opt_string)
 {
     double lum_spac, lum_tmp, chrom_spac, chrom_tmp;
-    const x264_cli_csp_t *csp = x264_cli_get_csp(info->csp);
 
-    FAIL_IF_ERROR(!(info->csp == X264_CSP_I400 || X264_CSP_I420 || info->csp == X264_CSP_I422
+    FAIL_IF_ERROR( !info || info->width <= 0 || info->height <= 0 ||
+        info->width > MAX_RESOLUTION || info->height > MAX_RESOLUTION,
+        "invalid input resolution %dx%d\n", info ? info->width : 0, info ? info->height : 0 );
+    const x264_cli_csp_t *csp = x264_cli_get_csp(info->csp);
+    FAIL_IF_ERROR( !csp, "invalid colorspace\n" );
+    FAIL_IF_ERROR(!(info->csp == X264_CSP_I400 || info->csp == X264_CSP_I420 || info->csp == X264_CSP_I422
         || info->csp == X264_CSP_I444 || info->csp == X264_CSP_YV12),
         "Only planar YUV images supported\n");
+
+    if( parse_strengths( opt_string, &lum_spac, &chrom_spac, &lum_tmp, &chrom_tmp ) )
+    {
+        x264_cli_log( NAME, X264_LOG_ERROR, "invalid options `%s'\n", opt_string ? opt_string : "" );
+        return -1;
+    }
 
     hqdn3d_hnd_t *h = calloc(1, sizeof(hqdn3d_hnd_t));
     if(!h)
         return -1;
 
-    h->line = calloc(1, info->width*sizeof(int));
-    for(int i = 0; i < 3; i++)
-    h->frame[i] = malloc(info->width * csp->width[i]
-                         * info->height * csp->width[i]
-                         * sizeof(short));
-    if(!h->line || !h->frame[0] || !h->frame[1] || !h->frame[2])
-        return -1;
-
-    if(opt_string) {
-        switch(sscanf(opt_string, "%lf,%lf,%lf,%lf",
-                      &lum_spac, &chrom_spac, &lum_tmp, &chrom_tmp)) {
-        case 1:
-            lum_tmp = PARAM3_DEFAULT * lum_spac / PARAM1_DEFAULT;
-            chrom_spac = PARAM2_DEFAULT * lum_spac / PARAM1_DEFAULT;
-            chrom_tmp = lum_tmp * chrom_spac / lum_spac;
-            break;
-        case 2:
-            lum_tmp = PARAM3_DEFAULT * lum_spac / PARAM1_DEFAULT;
-        case 3:
-            chrom_tmp = lum_tmp * chrom_spac / lum_spac;
-        case 4:
-            break;
-        default:
-            lum_spac = PARAM1_DEFAULT;
-            lum_tmp = PARAM3_DEFAULT;
-            chrom_spac = PARAM2_DEFAULT;
-            chrom_tmp = lum_tmp * chrom_spac / lum_spac;
-        }
-    } else {
-        lum_spac = PARAM1_DEFAULT;
-        lum_tmp = PARAM3_DEFAULT;
-        chrom_spac = PARAM2_DEFAULT;
-        chrom_tmp = lum_tmp * chrom_spac / lum_spac;
+    if( (uint64_t)info->width > SIZE_MAX / sizeof(*h->line) )
+        goto fail;
+    h->line = calloc(1, (size_t)info->width * sizeof(*h->line));
+    if(!h->line)
+        goto fail;
+    for(int i = 0; i < csp->planes; i++)
+    {
+        int64_t plane_size = x264_cli_pic_plane_size( info->csp, info->width, info->height, i );
+        if( plane_size <= 0 || (uint64_t)plane_size > SIZE_MAX / sizeof(*h->frame[i]) )
+            goto fail;
+        h->frame[i] = malloc( (size_t)plane_size * sizeof(*h->frame[i]) );
+        if( !h->frame[i] )
+            goto fail;
     }
 
     precalc_coefs(h->coefs[0], lum_spac);
@@ -136,6 +224,13 @@ static int init(hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info,
     *handle = h;
     *filter = hqdn3d_filter;
     return 0;
+
+fail:
+    free(h->line);
+    for(int i = 0; i < 3; i++)
+        free(h->frame[i]);
+    free(h);
+    return -1;
 }
 
 static inline unsigned int lpm(unsigned int prev_mul,
@@ -258,7 +353,7 @@ static int get_frame(hnd_t handle, cli_pic_t *out, int frame)
 {
     hqdn3d_hnd_t *h = handle;
 
-    if(h->prev_filter.get_frame(h->prev_hnd, out, frame))
+    if( !h || !out || frame < 0 || h->prev_filter.get_frame(h->prev_hnd, out, frame) )
         return -1;
 
     for(int i = 0; i < out->img.planes; i++) {

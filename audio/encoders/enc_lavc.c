@@ -25,6 +25,54 @@ typedef struct enc_lavc_t
     SwrContext             *avr;
 } enc_lavc_t;
 
+static int set_framesize( audio_info_t *info, const char *name )
+{
+    if( info->framelen <= 0 || info->samplesize <= 0 ||
+        (uint64_t)info->framelen > SIZE_MAX / (uint64_t)info->samplesize )
+    {
+        x264_cli_log( name, X264_LOG_ERROR, "invalid audio frame size\n" );
+        return -1;
+    }
+    info->framesize = (size_t)info->framelen * (size_t)info->samplesize;
+    return 0;
+}
+
+static int get_sample_end( int64_t first_sample, int framelen, int64_t *last_sample )
+{
+    if( first_sample < 0 || framelen <= 0 || first_sample > INT64_MAX - framelen )
+        return -1;
+    *last_sample = first_sample + framelen;
+    return 0;
+}
+
+static int add_frame_dts( int64_t *dts, int framelen )
+{
+    if( framelen <= 0 || ( *dts != INVALID_DTS && *dts > INT64_MAX - framelen ) )
+        return -1;
+    *dts += framelen;
+    return 0;
+}
+
+static int add_info_delta_dts( int64_t *dts, audio_info_t *info )
+{
+    int delta = info->framelen;
+    if( info->last_delta )
+    {
+        if( info->last_delta > INT_MAX )
+            return -1;
+        delta = (int)info->last_delta;
+    }
+    return add_frame_dts( dts, delta );
+}
+
+static void add_skip_samples( int64_t *last_sample, uint64_t samplecount )
+{
+    if( *last_sample >= 0 && samplecount <= (uint64_t)INT64_MAX - (uint64_t)*last_sample )
+        *last_sample += samplecount;
+    else
+        *last_sample = INT64_MAX;
+}
+
 static int is_encoder_available( const char *name, void **priv )
 {
     // avcodec_register_all() removed in FFmpeg 8.x
@@ -105,8 +153,11 @@ static int resample_audio( SwrContext *avr, AVFrame *frame, audio_packet_t *pkt 
     return 0;
 }
 
-static int encode_audio( AVCodecContext *ctx, audio_packet_t *out, AVFrame *frame )
+static int encode_audio( AVCodecContext *ctx, audio_packet_t *out, int out_size, AVFrame *frame )
 {
+    if( !out || !out->data || out_size < 0 )
+        return -1;
+
     AVPacket *avpkt = av_packet_alloc();
     if( !avpkt )
         return -1;
@@ -121,6 +172,11 @@ static int encode_audio( AVCodecContext *ctx, audio_packet_t *out, AVFrame *fram
     ret = avcodec_receive_packet( ctx, avpkt );
     if( ret == 0 )
     {
+        if( avpkt->size < 0 || avpkt->size > out_size )
+        {
+            av_packet_free( &avpkt );
+            return -1;
+        }
         out->size = avpkt->size;
         memcpy( out->data, avpkt->data, avpkt->size );
     }
@@ -164,25 +220,37 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
 {
     assert( filter_chain );
     enc_lavc_t *h = calloc( 1, sizeof( enc_lavc_t ) );
+    if( !h )
+        return NULL;
     audio_hnd_t *chain = h->filter_chain = filter_chain;
     h->preinfo = h->info = chain->info;
+    h->info.opaque = NULL;
+    char **opts = NULL;
+    AVDictionary *avopts = NULL;
 
     static const char * const optlist[] = { AUDIO_CODEC_COMMON_OPTIONS, "profile", "cutoff", NULL };
-    char **opts = x264_split_options( opt_str, optlist );
+    opts = x264_split_options( opt_str, optlist );
     if( !opts )
     {
         x264_cli_log( "lavc", X264_LOG_ERROR, "wrong audio options.\n" );
-        return NULL;
+        goto error;
     }
 
     const char *codecname = x264_get_option( "codec", opts );
-    RETURN_IF_ERR( !codecname, "lavc", NULL, "codec not specified" );
+    if( !codecname )
+    {
+        x264_cli_log( "lavc", X264_LOG_ERROR, "codec not specified" );
+        goto error;
+    }
 
     // avcodec_register_all() removed in FFmpeg 8.x
 
     const AVCodec *codec = NULL;
-    RETURN_IF_ERR( is_encoder_available( codecname, (void **)&codec ),
-                   "lavc", NULL, "codec %s not supported or compiled in\n", codecname );
+    if( is_encoder_available( codecname, (void **)&codec ) )
+    {
+        x264_cli_log( "lavc", X264_LOG_ERROR, "codec %s not supported or compiled in\n", codecname );
+        goto error;
+    }
 
     int i, j;
     h->info.codec_name = NULL;
@@ -194,7 +262,11 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
             break;
         }
     }
-    RETURN_IF_ERR( !h->info.codec_name, "lavc", NULL, "failed to set codec name for muxer\n" );
+    if( !h->info.codec_name )
+    {
+        x264_cli_log( "lavc", X264_LOG_ERROR, "failed to set codec name for muxer\n" );
+        goto error;
+    }
 
     // FFmpeg 8.x: Get sample formats using helper function
     enum AVSampleFormat sample_fmts[64];
@@ -220,10 +292,7 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
 
     h->ctx                  = avcodec_alloc_context3( NULL );
     if( !h->ctx )
-    {
-        free( h );
-        return NULL;
-    }
+        goto error;
     h->ctx->sample_fmt      = h->smpfmt;
     h->ctx->sample_rate     = h->info.samplerate;
 
@@ -235,7 +304,6 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
 
     h->ctx->time_base       = (AVRational){ 1, h->ctx->sample_rate };
 
-    AVDictionary *avopts = NULL;
     av_dict_set( &avopts, "flags", "global_header", 0 ); // aac
     av_dict_set( &avopts, "strict", "-2", 0 );           // aac
     av_dict_set( &avopts, "reservoir", "1", 0 );         // mp3
@@ -253,6 +321,8 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
         if( ISCODEC( aac ) && strstr( aprofile, "he" ) )
         {
             audio_aac_info_t *aacinfo = malloc( sizeof( audio_aac_info_t ) );
+            if( !aacinfo )
+                goto error;
             aacinfo->has_sbr          = 1;
             h->info.opaque            = aacinfo;
         }
@@ -262,8 +332,11 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
 
     int is_vbr = x264_otob( x264_get_option( "is_vbr", opts ), ffcodecs[i].mode & MODE_VBR ? 1 : 0 );
 
-    RETURN_IF_ERR( ( ( !(ffcodecs[i].mode & MODE_BITRATE) && !is_vbr ) || ( !(ffcodecs[i].mode & MODE_VBR) && is_vbr ) ) && ( strcmp(codecname, "libfdk_aac") ),
-                   "lavc", NULL, "libavcodec's %s encoder doesn't allow %s mode.\n", codecname, is_vbr ? "VBR" : "bitrate" );
+    if( ( ( !(ffcodecs[i].mode & MODE_BITRATE) && !is_vbr ) || ( !(ffcodecs[i].mode & MODE_VBR) && is_vbr ) ) && ( strcmp(codecname, "libfdk_aac") ) )
+    {
+        x264_cli_log( "lavc", X264_LOG_ERROR, "libavcodec's %s encoder doesn't allow %s mode.\n", codecname, is_vbr ? "VBR" : "bitrate" );
+        goto error;
+    }
 
     float default_brval = is_vbr ? ffcodecs[i].default_brval : ffcodecs[i].default_brval * h->ctx->ch_layout.nb_channels;
     float brval = x264_otof( x264_get_option( "bitrate", opts ), default_brval );
@@ -271,6 +344,7 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     h->ctx->compression_level = x264_otof( x264_get_option( "quality", opts ), FF_COMPRESSION_DEFAULT );
 
     free( opts );
+    opts = NULL;
 
     if( is_vbr )
     {
@@ -280,7 +354,12 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     else
         h->ctx->bit_rate = lrintf( brval * 1000.0f );
 
-    RETURN_IF_ERR( avcodec_open2( h->ctx, codec, &avopts ), "lavc", NULL, "could not open the %s encoder\n", codec->name );
+    if( avcodec_open2( h->ctx, codec, &avopts ) )
+    {
+        x264_cli_log( "lavc", X264_LOG_ERROR, "could not open the %s encoder\n", codec->name );
+        goto error;
+    }
+    av_dict_free( &avopts );
 
     /* Set up frame buffer. */
     h->frame = av_frame_alloc();
@@ -338,10 +417,24 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     h->info.chansize        = IS_LPCM_CODEC_ID( h->ctx->codec->id )
                             ? h->info.depth / 8
                             : av_get_bytes_per_sample( h->ctx->sample_fmt );
+    if( h->info.chansize <= 0 || h->ctx->ch_layout.nb_channels <= 0 ||
+        h->ctx->ch_layout.nb_channels > INT_MAX / h->info.chansize )
+    {
+        x264_cli_log( "lavc", X264_LOG_ERROR, "invalid audio sample size\n" );
+        goto error;
+    }
     h->info.samplesize      = h->info.chansize * h->ctx->ch_layout.nb_channels;
-    h->info.framesize       = h->info.framelen * h->info.samplesize;
+    if( set_framesize( &h->info, "lavc" ) )
+        goto error;
 
-    h->buf_size = av_samples_get_buffer_size( NULL, h->ctx->ch_layout.nb_channels, h->ctx->frame_size, h->ctx->sample_fmt, 0 ) * 3 / 2;
+    int buf_size = av_samples_get_buffer_size( NULL, h->ctx->ch_layout.nb_channels, h->ctx->frame_size, h->ctx->sample_fmt, 0 );
+    int64_t scaled_buf_size = (int64_t)buf_size * 3 / 2;
+    if( buf_size <= 0 || scaled_buf_size > INT_MAX )
+    {
+        x264_cli_log( "lavc", X264_LOG_ERROR, "invalid audio buffer size\n" );
+        goto error;
+    }
+    h->buf_size = (int)scaled_buf_size;
     h->last_dts = INVALID_DTS;
 
     h->info.extradata       = h->ctx->extradata;
@@ -352,6 +445,9 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     return h;
 
 error:
+    free( opts );
+    if( avopts )
+        av_dict_free( &avopts );
     if( h->ctx )
     {
         avcodec_free_context( &h->ctx );
@@ -360,6 +456,8 @@ error:
         av_frame_free( &h->frame );
     if( h->avr )
         swr_free( &h->avr );
+    if( h->info.opaque )
+        free( h->info.opaque );
     free( h );
     return NULL;
 }
@@ -381,12 +479,20 @@ static audio_packet_t *get_next_packet( hnd_t handle )
 
     audio_packet_t *smp = NULL;
     audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
+    if( !out )
+        return NULL;
     out->info = h->info;
     out->data = malloc( h->buf_size );
+    if( !out->data )
+        goto error;
 
     while( out->size == 0 )
     {
-        smp = x264_af_get_samples( h->filter_chain, h->last_sample, h->last_sample + h->info.framelen );
+        int64_t last_sample;
+        if( get_sample_end( h->last_sample, h->info.framelen, &last_sample ) )
+            goto error;
+
+        smp = x264_af_get_samples( h->filter_chain, h->last_sample, last_sample );
         if( !smp )
             goto error; // not an error but need same handling
 
@@ -431,13 +537,14 @@ static audio_packet_t *get_next_packet( hnd_t handle )
             goto error;
         }
 
-        if( encode_audio( h->ctx, out, h->frame ) < 0 )
+        if( encode_audio( h->ctx, out, h->buf_size, h->frame ) < 0 )
         {
             x264_cli_log( "lavc", X264_LOG_ERROR, "error encoding audio! (%s)\n", strerror( -out->size ) );
             goto error;
         }
 
         x264_af_free_packet( smp );
+        smp = NULL;
     }
 
     if( out->size < 0 )
@@ -447,7 +554,9 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     }
 
     out->dts     = h->last_dts;
-    h->last_dts += h->info.framelen;
+    out->info    = h->info;
+    if( add_info_delta_dts( &h->last_dts, &h->info ) )
+        goto error;
     return out;
 
 error:
@@ -459,7 +568,8 @@ error:
 
 static void skip_samples( hnd_t handle, uint64_t samplecount )
 {
-    ((enc_lavc_t*)handle)->last_sample += samplecount;
+    enc_lavc_t *h = handle;
+    add_skip_samples( &h->last_sample, samplecount );
 }
 
 static audio_packet_t *finish( hnd_t handle )
@@ -469,19 +579,25 @@ static audio_packet_t *finish( hnd_t handle )
     h->finishing = 1;
 
     audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
+    if( !out )
+        return NULL;
     out->info     = h->info;
     out->channels = h->info.channels;
     out->data     = malloc( h->buf_size );
+    if( !out->data )
+        goto error;
 
-    if( encode_audio( h->ctx, out, NULL ) < 0 )
+    if( encode_audio( h->ctx, out, h->buf_size, NULL ) < 0 )
         goto error;
 
     if( out->size <= 0 )
         goto error;
 
     out->dts = h->last_dts;
-    out->samplecount = h->info.framelen;
-    h->last_dts     += h->info.framelen;
+    out->samplecount = h->info.last_delta ? h->info.last_delta : h->info.framelen;
+    out->info = h->info;
+    if( add_info_delta_dts( &h->last_dts, &h->info ) )
+        goto error;
     return out;
 
 error:
@@ -506,6 +622,8 @@ static void lavc_close( hnd_t handle )
         av_frame_free( &h->frame );
     if( h->avr )
         swr_free( &h->avr );
+    if( h->info.opaque )
+        free( h->info.opaque );
     free( h );
 }
 
