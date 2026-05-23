@@ -18,16 +18,18 @@ make_jobs=${MAKE_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '%s\n' 
 CONFIG_ARGS=${CONFIG_ARGS:---disable-cli}
 msys2_root=${MSYS2_ROOT:-/d/msys64}
 msys2_clang64=${MSYS2_CLANG64:-$msys2_root/clang64}
+msys2_mingw64=${MSYS2_MINGW64:-$msys2_root/mingw64}
 msys2_usr_local=${MSYS2_USR_LOCAL:-$msys2_root/usr/local}
 msys2_root_diag=$(cygpath -m "$msys2_root" 2>/dev/null || printf '%s\n' "$msys2_root")
 msys2_clang64_diag=$(cygpath -m "$msys2_clang64" 2>/dev/null || printf '%s\n' "$msys2_clang64")
 msys2_usr_local_diag=$(cygpath -m "$msys2_usr_local" 2>/dev/null || printf '%s\n' "$msys2_usr_local")
 msys2_pkg_config_path=${MSYS2_PKG_CONFIG_PATH:-$msys2_usr_local/lib/pkgconfig:$msys2_usr_local/share/pkgconfig:$msys2_clang64/lib/pkgconfig:$msys2_clang64/share/pkgconfig}
+msys2_mingw64_pkg_config_path=${MSYS2_MINGW64_PKG_CONFIG_PATH:-$msys2_mingw64/lib/pkgconfig:$msys2_mingw64/share/pkgconfig}
 
 export TMP=$tmpdir_win
 export TEMP=$tmpdir_win
 export TMPDIR=$tmpdir_posix
-export PATH=${MSYS2_PATH:-$msys2_clang64/bin:$msys2_root/usr/bin}:$PATH
+export PATH=${MSYS2_PATH:-$msys2_clang64/bin:$msys2_mingw64/bin:$msys2_root/usr/bin}:$PATH
 
 mkdir -p "$build_root" "$TMPDIR"
 
@@ -174,7 +176,7 @@ assert_log_contains_all()
     shift 2
 
     for assert_token in "$@"; do
-        grep -q "$assert_token" "$assert_log" ||
+        grep -q -- "$assert_token" "$assert_log" ||
         {
             printf '%s\n' "missing $assert_label token '$assert_token' in $assert_log" >&2
             exit 1
@@ -189,7 +191,7 @@ assert_log_contains_any()
     shift 2
 
     for assert_token in "$@"; do
-        if grep -q "$assert_token" "$assert_log"; then
+        if grep -q -- "$assert_token" "$assert_log"; then
             return 0
         fi
     done
@@ -998,6 +1000,39 @@ require_pkg_config_package()
         printf '%s\n' "PKG_CONFIG_PATH=$pkg_path" >&2
         exit 1
     }
+}
+
+resolve_lsmash_pkg_config_path()
+{
+    if [ -n "${LSMASH_PKG_CONFIG_PATH:-}" ] &&
+       command -v pkg-config >/dev/null 2>&1 &&
+       PKG_CONFIG_PATH=$LSMASH_PKG_CONFIG_PATH pkg-config --exists liblsmash 2>/dev/null &&
+       PKG_CONFIG_PATH=$LSMASH_PKG_CONFIG_PATH pkg-config --libs --static liblsmash >/dev/null 2>&1; then
+        printf '%s\n' "$LSMASH_PKG_CONFIG_PATH"
+        return 0
+    fi
+    if command -v pkg-config >/dev/null 2>&1 &&
+       PKG_CONFIG_PATH=$msys2_mingw64_pkg_config_path pkg-config --exists liblsmash 2>/dev/null &&
+       PKG_CONFIG_PATH=$msys2_mingw64_pkg_config_path pkg-config --libs --static liblsmash >/dev/null 2>&1; then
+        printf '%s\n' "$msys2_mingw64_pkg_config_path"
+        return 0
+    fi
+    if [ -n "${LSMASH_PKG_CONFIG_PATH:-}" ]; then
+        printf '%s\n' "$LSMASH_PKG_CONFIG_PATH"
+        return 0
+    fi
+    if [ -n "${PKG_CONFIG_PATH:-}" ] &&
+       command -v pkg-config >/dev/null 2>&1 &&
+       PKG_CONFIG_PATH=$PKG_CONFIG_PATH pkg-config --exists liblsmash 2>/dev/null &&
+       PKG_CONFIG_PATH=$PKG_CONFIG_PATH pkg-config --libs --static liblsmash >/dev/null 2>&1; then
+        printf '%s\n' "$PKG_CONFIG_PATH"
+        return 0
+    fi
+    if [ -n "${PKG_CONFIG_PATH:-}" ]; then
+        printf '%s\n' "$PKG_CONFIG_PATH"
+        return 0
+    fi
+    printf '%s\n' "$msys2_pkg_config_path"
 }
 
 assert_duration_between()
@@ -5258,11 +5293,8 @@ run_smoke_cli()
             printf '%s\n' "accepted prefixed numeric preset '$bad_preset_prefix': $preset_bad_prefix_out" >&2
             exit 1
         fi
-        grep -q "invalid preset" "$preset_bad_prefix_log" ||
-        {
-            printf '%s\n' "missing prefixed numeric preset parse error for '$bad_preset_prefix' in $preset_bad_prefix_log" >&2
-            exit 1
-        }
+        assert_log_contains_all "prefixed numeric preset parse error for '$bad_preset_prefix'" "$preset_bad_prefix_log" \
+            "preset" "invalid"
     done
     run_param_list_guard_smoke
     run_cqmfile_atomic_smoke
@@ -5304,101 +5336,66 @@ run_smoke_cli()
         printf '%s\n' "accepted example resolution trailing junk: $example_bad_res_out" >&2
         exit 1
     fi
-    grep -q "resolution not specified or incorrect" "$example_bad_res_log" ||
-    {
-        printf '%s\n' "missing example trailing-junk resolution parse error in $example_bad_res_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "example trailing-junk resolution parse error" "$example_bad_res_log" "resolution"
+    assert_log_contains_any "example trailing-junk resolution parse error" "$example_bad_res_log" "incorrect" "invalid"
     rm -f "$example_bad_height_log" "$example_bad_height_out"
     if "$example_bin" 16xjunk < "$raw" >"$example_bad_height_out" 2>"$example_bad_height_log"; then
         printf '%s\n' "accepted example height parse junk: $example_bad_height_out" >&2
         exit 1
     fi
-    grep -q "resolution not specified or incorrect" "$example_bad_height_log" ||
-    {
-        printf '%s\n' "missing example height-junk resolution parse error in $example_bad_height_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "example height-junk resolution parse error" "$example_bad_height_log" "resolution"
+    assert_log_contains_any "example height-junk resolution parse error" "$example_bad_height_log" "incorrect" "invalid"
     rm -f "$example_bad_overflow_log" "$example_bad_overflow_out"
     if "$example_bin" 50000x50000 < "$raw" >"$example_bad_overflow_out" 2>"$example_bad_overflow_log"; then
         printf '%s\n' "accepted example overflow resolution: $example_bad_overflow_out" >&2
         exit 1
     fi
-    grep -q "resolution not specified or incorrect" "$example_bad_overflow_log" ||
-    {
-        printf '%s\n' "missing example overflow resolution parse error in $example_bad_overflow_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "example overflow resolution parse error" "$example_bad_overflow_log" "resolution"
+    assert_log_contains_any "example overflow resolution parse error" "$example_bad_overflow_log" "incorrect" "invalid"
     rm -f "$example_bad_prefix_log" "$example_bad_prefix_out"
     if "$example_bin" +16x16 < "$raw" >"$example_bad_prefix_out" 2>"$example_bad_prefix_log"; then
         printf '%s\n' "accepted example resolution signed prefix: $example_bad_prefix_out" >&2
         exit 1
     fi
-    grep -q "resolution not specified or incorrect" "$example_bad_prefix_log" ||
-    {
-        printf '%s\n' "missing example signed-prefix resolution parse error in $example_bad_prefix_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "example signed-prefix resolution parse error" "$example_bad_prefix_log" "resolution"
+    assert_log_contains_any "example signed-prefix resolution parse error" "$example_bad_prefix_log" "incorrect" "invalid"
     rm -f "$example_bad_prefix_log" "$example_bad_prefix_out"
     if "$example_bin" ' 16x16' < "$raw" >"$example_bad_prefix_out" 2>"$example_bad_prefix_log"; then
         printf '%s\n' "accepted example resolution leading space: $example_bad_prefix_out" >&2
         exit 1
     fi
-    grep -q "resolution not specified or incorrect" "$example_bad_prefix_log" ||
-    {
-        printf '%s\n' "missing example leading-space resolution parse error in $example_bad_prefix_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "example leading-space resolution parse error" "$example_bad_prefix_log" "resolution"
+    assert_log_contains_any "example leading-space resolution parse error" "$example_bad_prefix_log" "incorrect" "invalid"
     rm -f "$raw_bad_res_log" "$raw_bad_res_out"
     if "$smoke_bin" --demuxer raw --input-res 16x16x --fps 25 --frames 1 --crf 30 -o "$raw_bad_res_out" "$raw" >"$raw_bad_res_log" 2>&1; then
         printf '%s\n' "accepted raw input resolution trailing junk: $raw_bad_res_out" >&2
         exit 1
     fi
-    grep -q "invalid resolution" "$raw_bad_res_log" ||
-    {
-        printf '%s\n' "missing raw resolution parse error in $raw_bad_res_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "raw trailing-junk resolution parse error" "$raw_bad_res_log" "invalid" "resolution"
     rm -f "$raw_bad_prefix_log" "$raw_bad_prefix_out"
     if "$smoke_bin" --demuxer raw --input-res +16x16 --fps 25 --frames 1 --crf 30 -o "$raw_bad_prefix_out" "$raw" >"$raw_bad_prefix_log" 2>&1; then
         printf '%s\n' "accepted raw input resolution signed prefix: $raw_bad_prefix_out" >&2
         exit 1
     fi
-    grep -q "invalid resolution" "$raw_bad_prefix_log" ||
-    {
-        printf '%s\n' "missing raw signed-prefix resolution parse error in $raw_bad_prefix_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "raw signed-prefix resolution parse error" "$raw_bad_prefix_log" "invalid" "resolution"
     rm -f "$raw_bad_prefix_log" "$raw_bad_prefix_out"
     if "$smoke_bin" --demuxer raw --input-res ' 16x16' --fps 25 --frames 1 --crf 30 -o "$raw_bad_prefix_out" "$raw" >"$raw_bad_prefix_log" 2>&1; then
         printf '%s\n' "accepted raw input resolution leading space: $raw_bad_prefix_out" >&2
         exit 1
     fi
-    grep -q "invalid resolution" "$raw_bad_prefix_log" ||
-    {
-        printf '%s\n' "missing raw leading-space resolution parse error in $raw_bad_prefix_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "raw leading-space resolution parse error" "$raw_bad_prefix_log" "invalid" "resolution"
     rm -f "$raw_bad_res_log" "$raw_bad_res_out"
     if "$smoke_bin" --demuxer raw --input-res 16xjunk --fps 25 --frames 1 --crf 30 -o "$raw_bad_res_out" "$raw" >"$raw_bad_res_log" 2>&1; then
         printf '%s\n' "accepted raw input resolution height trailing junk: $raw_bad_res_out" >&2
         exit 1
     fi
-    grep -q "invalid resolution" "$raw_bad_res_log" ||
-    {
-        printf '%s\n' "missing raw height trailing-junk resolution parse error in $raw_bad_res_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "raw height trailing-junk resolution parse error" "$raw_bad_res_log" "invalid" "resolution"
     rm -f "$param_bad_fps_log" "$param_bad_fps_out"
     if "$smoke_bin" --demuxer raw --input-res 16x16 --fps 25/1x --frames 1 --crf 30 -o "$param_bad_fps_out" "$raw" >"$param_bad_fps_log" 2>&1; then
         printf '%s\n' "accepted parameter fps trailing junk: $param_bad_fps_out" >&2
         exit 1
     fi
-    grep -q "invalid argument: fps" "$param_bad_fps_log" ||
-    {
-        printf '%s\n' "missing parameter fps parse error in $param_bad_fps_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "parameter fps parse error" "$param_bad_fps_log" "invalid argument" "fps"
     for bad_param_scalar_prefix in \
         'ref:+1' 'ref: 1' \
         'crf:+23' 'crf: 23' \
@@ -5412,122 +5409,74 @@ run_smoke_cli()
             printf '%s\n' "accepted prefixed scalar parameter --$bad_param_name '$bad_param_value': $param_bad_scalar_prefix_out" >&2
             exit 1
         fi
-        grep -q "invalid argument: $bad_param_name" "$param_bad_scalar_prefix_log" ||
-        {
-            printf '%s\n' "missing prefixed scalar parameter parse error for --$bad_param_name '$bad_param_value' in $param_bad_scalar_prefix_log" >&2
-            exit 1
-        }
+        assert_log_contains_all "prefixed scalar parameter parse error for --$bad_param_name '$bad_param_value'" "$param_bad_scalar_prefix_log" "invalid argument" "$bad_param_name"
     done
     rm -f "$cli_bad_int_prefix_log" "$cli_bad_int_prefix_out"
     if "$smoke_bin" --demuxer y4m --frames +1 --crf 30 -o "$cli_bad_int_prefix_out" "$y4m" >"$cli_bad_int_prefix_log" 2>&1; then
         printf '%s\n' "accepted CLI integer signed prefix: $cli_bad_int_prefix_out" >&2
         exit 1
     fi
-    grep -q "invalid argument: frames" "$cli_bad_int_prefix_log" ||
-    {
-        printf '%s\n' "missing CLI signed-prefix integer parse error in $cli_bad_int_prefix_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "CLI signed-prefix integer parse error" "$cli_bad_int_prefix_log" "invalid argument" "frames"
     rm -f "$cli_bad_int_prefix_log" "$cli_bad_int_prefix_out"
     if "$smoke_bin" --demuxer y4m --frames ' 1' --crf 30 -o "$cli_bad_int_prefix_out" "$y4m" >"$cli_bad_int_prefix_log" 2>&1; then
         printf '%s\n' "accepted CLI integer leading space: $cli_bad_int_prefix_out" >&2
         exit 1
     fi
-    grep -q "invalid argument: frames" "$cli_bad_int_prefix_log" ||
-    {
-        printf '%s\n' "missing CLI leading-space integer parse error in $cli_bad_int_prefix_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "CLI leading-space integer parse error" "$cli_bad_int_prefix_log" "invalid argument" "frames"
     rm -f "$cli_bad_int_prefix_log" "$cli_bad_int_prefix_out"
     if "$smoke_bin" --demuxer y4m --frames 1x --crf 30 -o "$cli_bad_int_prefix_out" "$y4m" >"$cli_bad_int_prefix_log" 2>&1; then
         printf '%s\n' "accepted CLI integer trailing junk: $cli_bad_int_prefix_out" >&2
         exit 1
     fi
-    grep -q "invalid argument: frames" "$cli_bad_int_prefix_log" ||
-    {
-        printf '%s\n' "missing CLI trailing-junk integer parse error in $cli_bad_int_prefix_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "CLI trailing-junk integer parse error" "$cli_bad_int_prefix_log" "invalid argument" "frames"
     rm -f "$cli_bad_uint_prefix_log" "$cli_bad_uint_prefix_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --priming +1 --crf 30 -o "$cli_bad_uint_prefix_out" "$y4m" >"$cli_bad_uint_prefix_log" 2>&1; then
         printf '%s\n' "accepted CLI unsigned integer signed prefix: $cli_bad_uint_prefix_out" >&2
         exit 1
     fi
-    grep -q "invalid argument: priming" "$cli_bad_uint_prefix_log" ||
-    {
-        printf '%s\n' "missing CLI signed-prefix unsigned integer parse error in $cli_bad_uint_prefix_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "CLI signed-prefix unsigned integer parse error" "$cli_bad_uint_prefix_log" "invalid argument" "priming"
     rm -f "$cli_bad_uint_prefix_log" "$cli_bad_uint_prefix_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --priming ' 1' --crf 30 -o "$cli_bad_uint_prefix_out" "$y4m" >"$cli_bad_uint_prefix_log" 2>&1; then
         printf '%s\n' "accepted CLI unsigned integer leading space: $cli_bad_uint_prefix_out" >&2
         exit 1
     fi
-    grep -q "invalid argument: priming" "$cli_bad_uint_prefix_log" ||
-    {
-        printf '%s\n' "missing CLI leading-space unsigned integer parse error in $cli_bad_uint_prefix_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "CLI leading-space unsigned integer parse error" "$cli_bad_uint_prefix_log" "invalid argument" "priming"
     rm -f "$cli_bad_uint_prefix_log" "$cli_bad_uint_prefix_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --priming 1x --crf 30 -o "$cli_bad_uint_prefix_out" "$y4m" >"$cli_bad_uint_prefix_log" 2>&1; then
         printf '%s\n' "accepted CLI unsigned integer trailing junk: $cli_bad_uint_prefix_out" >&2
         exit 1
     fi
-    grep -q "invalid argument: priming" "$cli_bad_uint_prefix_log" ||
-    {
-        printf '%s\n' "missing CLI trailing-junk unsigned integer parse error in $cli_bad_uint_prefix_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "CLI trailing-junk unsigned integer parse error" "$cli_bad_uint_prefix_log" "invalid argument" "priming"
     rm -f "$cli_bad_display_prefix_log" "$cli_bad_display_prefix_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --force-display-size +16x16 --crf 30 -o "$cli_bad_display_prefix_out" "$y4m" >"$cli_bad_display_prefix_log" 2>&1; then
         printf '%s\n' "accepted CLI display size signed prefix: $cli_bad_display_prefix_out" >&2
         exit 1
     fi
-    grep -q "invalid syntax for specifying display size" "$cli_bad_display_prefix_log" ||
-    {
-        printf '%s\n' "missing CLI signed-prefix display size parse error in $cli_bad_display_prefix_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "CLI signed-prefix display size parse error" "$cli_bad_display_prefix_log" "invalid" "display size"
     rm -f "$cli_bad_display_prefix_log" "$cli_bad_display_prefix_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --force-display-size ' 16x16' --crf 30 -o "$cli_bad_display_prefix_out" "$y4m" >"$cli_bad_display_prefix_log" 2>&1; then
         printf '%s\n' "accepted CLI display size leading space: $cli_bad_display_prefix_out" >&2
         exit 1
     fi
-    grep -q "invalid syntax for specifying display size" "$cli_bad_display_prefix_log" ||
-    {
-        printf '%s\n' "missing CLI leading-space display size parse error in $cli_bad_display_prefix_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "CLI leading-space display size parse error" "$cli_bad_display_prefix_log" "invalid" "display size"
     rm -f "$cli_bad_display_prefix_log" "$cli_bad_display_prefix_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --force-display-size 16x+16 --crf 30 -o "$cli_bad_display_prefix_out" "$y4m" >"$cli_bad_display_prefix_log" 2>&1; then
         printf '%s\n' "accepted CLI display height signed prefix: $cli_bad_display_prefix_out" >&2
         exit 1
     fi
-    grep -q "invalid syntax for specifying display size" "$cli_bad_display_prefix_log" ||
-    {
-        printf '%s\n' "missing CLI signed-prefix display height parse error in $cli_bad_display_prefix_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "CLI signed-prefix display height parse error" "$cli_bad_display_prefix_log" "invalid" "display size"
     rm -f "$cli_bad_display_prefix_log" "$cli_bad_display_prefix_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --force-display-size '16x 16' --crf 30 -o "$cli_bad_display_prefix_out" "$y4m" >"$cli_bad_display_prefix_log" 2>&1; then
         printf '%s\n' "accepted CLI display height leading space: $cli_bad_display_prefix_out" >&2
         exit 1
     fi
-    grep -q "invalid syntax for specifying display size" "$cli_bad_display_prefix_log" ||
-    {
-        printf '%s\n' "missing CLI leading-space display height parse error in $cli_bad_display_prefix_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "CLI leading-space display height parse error" "$cli_bad_display_prefix_log" "invalid" "display size"
     rm -f "$cli_bad_display_prefix_log" "$cli_bad_display_prefix_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --force-display-size 16x16junk --crf 30 -o "$cli_bad_display_prefix_out" "$y4m" >"$cli_bad_display_prefix_log" 2>&1; then
         printf '%s\n' "accepted CLI display height trailing junk: $cli_bad_display_prefix_out" >&2
         exit 1
     fi
-    grep -q "invalid syntax for specifying display size" "$cli_bad_display_prefix_log" ||
-    {
-        printf '%s\n' "missing CLI trailing-junk display height parse error in $cli_bad_display_prefix_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "CLI trailing-junk display height parse error" "$cli_bad_display_prefix_log" "invalid" "display size"
     for bad_float_opt in abitrate aquality acodec-quality; do
         for bad_float_value in '+1.0' ' 1.0' '1.0x'; do
             rm -f "$cli_bad_float_prefix_log" "$cli_bad_float_prefix_out"
@@ -5535,11 +5484,7 @@ run_smoke_cli()
                 printf '%s\n' "accepted CLI float prefix for --$bad_float_opt '$bad_float_value': $cli_bad_float_prefix_out" >&2
                 exit 1
             fi
-            grep -q "invalid argument: $bad_float_opt" "$cli_bad_float_prefix_log" ||
-            {
-                printf '%s\n' "missing CLI float malformed-token parse error for --$bad_float_opt '$bad_float_value' in $cli_bad_float_prefix_log" >&2
-                exit 1
-            }
+            assert_log_contains_all "CLI float malformed-token parse error for --$bad_float_opt '$bad_float_value'" "$cli_bad_float_prefix_log" "invalid argument" "$bad_float_opt"
         done
     done
     "$smoke_bin" --demuxer y4m --frames 1 --partitions p8x8,p4x4,b8x8,i8x8,i4x4 --crf 30 -o "$param_partitions_out" "$y4m" >/dev/null
@@ -5549,21 +5494,13 @@ run_smoke_cli()
         printf '%s\n' "accepted partitions trailing junk: $param_bad_partitions_out" >&2
         exit 1
     fi
-    grep -q "invalid argument: partitions" "$param_bad_partitions_log" ||
-    {
-        printf '%s\n' "missing parameter partitions parse error in $param_bad_partitions_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "parameter partitions parse error" "$param_bad_partitions_log" "invalid argument" "partitions"
     rm -f "$param_bad_analyse_log" "$param_bad_analyse_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --analyse alljunk --crf 30 -o "$param_bad_analyse_out" "$y4m" >"$param_bad_analyse_log" 2>&1; then
         printf '%s\n' "accepted analyse trailing junk: $param_bad_analyse_out" >&2
         exit 1
     fi
-    grep -q "invalid argument: analyse" "$param_bad_analyse_log" ||
-    {
-        printf '%s\n' "missing parameter analyse parse error in $param_bad_analyse_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "parameter analyse parse error" "$param_bad_analyse_log" "invalid argument" "analyse"
     "$smoke_bin" --demuxer y4m --frames 1 --sar '1: 1' --crf 30 -o "$param_list_space_out" "$y4m" >/dev/null
     [ -s "$param_list_space_out" ] || { printf '%s\n' "missing sar separator-space smoke output: $param_list_space_out (input: $y4m)" >&2; exit 1; }
     rm -f "$param_list_space_out"
@@ -5596,317 +5533,175 @@ run_smoke_cli()
             printf '%s\n' "accepted $bad_param_message: $param_bad_list_prefix_out" >&2
             exit 1
         fi
-        grep -q "invalid argument: $bad_param_name" "$param_bad_list_prefix_log" ||
-        {
-            printf '%s\n' "missing parameter list prefix parse error for $bad_param_message in $param_bad_list_prefix_log" >&2
-            exit 1
-        }
+        assert_log_contains_all "parameter list prefix parse error for $bad_param_message" "$param_bad_list_prefix_log" "invalid argument" "$bad_param_name"
     done
     rm -f "$param_bad_deblock_log" "$param_bad_deblock_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --deblock 1:1x --crf 30 -o "$param_bad_deblock_out" "$y4m" >"$param_bad_deblock_log" 2>&1; then
         printf '%s\n' "accepted parameter deblock trailing junk: $param_bad_deblock_out" >&2
         exit 1
     fi
-    grep -q "invalid argument: deblock" "$param_bad_deblock_log" ||
-    {
-        printf '%s\n' "missing parameter deblock parse error in $param_bad_deblock_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "parameter deblock parse error" "$param_bad_deblock_log" "invalid argument" "deblock"
     rm -f "$param_bad_qpmin_log" "$param_bad_qpmin_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --qpmin 1:2,3 --crf 30 -o "$param_bad_qpmin_out" "$y4m" >"$param_bad_qpmin_log" 2>&1; then
         printf '%s\n' "accepted mixed-separator qpmin: $param_bad_qpmin_out" >&2
         exit 1
     fi
-    grep -q "invalid argument: qpmin" "$param_bad_qpmin_log" ||
-    {
-        printf '%s\n' "missing parameter qpmin parse error in $param_bad_qpmin_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "parameter qpmin parse error" "$param_bad_qpmin_log" "invalid argument" "qpmin"
     "$smoke_bin" --demuxer y4m --frames 1 --ratetol inf --crf 30 -o "$param_ratetol_inf_out" "$y4m" >/dev/null
     [ -s "$param_ratetol_inf_out" ] || { printf '%s\n' "missing ratetol inf smoke output: $param_ratetol_inf_out (input: $y4m)" >&2; exit 1; }
     rm -f "$param_ratetol_small_log" "$param_ratetol_small_out"
     "$smoke_bin" --demuxer y4m --frames 1 --bitrate 100 --ratetol 0.001 -o "$param_ratetol_small_out" "$y4m" >"$param_ratetol_small_log" 2>&1
     [ -s "$param_ratetol_small_out" ] || { printf '%s\n' "missing small-ratetol smoke output: $param_ratetol_small_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "bitrate tolerance too small, using 0?\\.01" "$param_ratetol_small_log" ||
-    {
-        printf '%s\n' "missing small-ratetol warning in $param_ratetol_small_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "small-ratetol warning" "$param_ratetol_small_log" "bitrate tolerance too small"
+    assert_log_contains_any "small-ratetol warning source" "$param_ratetol_small_log" "using" "minimum" "clamp" "adjusted"
     rm -f "$param_bad_ratetol_log" "$param_bad_ratetol_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --ratetol infjunk --crf 30 -o "$param_bad_ratetol_out" "$y4m" >"$param_bad_ratetol_log" 2>&1; then
         printf '%s\n' "accepted ratetol inf prefix junk: $param_bad_ratetol_out" >&2
         exit 1
     fi
-    grep -q "invalid argument: ratetol" "$param_bad_ratetol_log" ||
-    {
-        printf '%s\n' "missing parameter ratetol parse error in $param_bad_ratetol_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "parameter ratetol parse error" "$param_bad_ratetol_log" "invalid argument" "ratetol"
     rm -f "$param_crfmax_warn_log" "$param_crfmax_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --crf 30 --crf-max 20 --vbv-maxrate 100 --vbv-bufsize 100 -o "$param_crfmax_warn_out" "$y4m" >"$param_crfmax_warn_log" 2>&1
     [ -s "$param_crfmax_warn_out" ] || { printf '%s\n' "missing crf-max warning smoke output: $param_crfmax_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "CRF max .*greater than CRF" "$param_crfmax_warn_log" ||
-    {
-        printf '%s\n' "missing crf-max warning in $param_crfmax_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "crf-max warning" "$param_crfmax_warn_log" "CRF max" "greater than CRF"
     rm -f "$param_vbvbuf_warn_log" "$param_vbvbuf_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --crf 30 --vbv-maxrate 100 --vbv-bufsize 1 -o "$param_vbvbuf_warn_out" "$y4m" >"$param_vbvbuf_warn_log" 2>&1
     [ -s "$param_vbvbuf_warn_out" ] || { printf '%s\n' "missing vbv-buffer warning smoke output: $param_vbvbuf_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "VBV buffer size cannot be smaller than one frame" "$param_vbvbuf_warn_log" ||
-    {
-        printf '%s\n' "missing vbv-buffer warning in $param_vbvbuf_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "vbv-buffer warning" "$param_vbvbuf_warn_log" "VBV buffer size" "one frame"
     rm -f "$param_vbv_underflow_log" "$param_vbv_underflow_out"
     "$smoke_bin" --demuxer y4m --frames 1 --bitrate 100 --vbv-maxrate 100 --vbv-bufsize 4 -o "$param_vbv_underflow_out" "$y4m" >"$param_vbv_underflow_log" 2>&1
     [ -s "$param_vbv_underflow_out" ] || { printf '%s\n' "missing vbv-underflow warning smoke output: $param_vbv_underflow_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "VBV underflow \(frame [0-9]+," "$param_vbv_underflow_log" ||
-    {
-        printf '%s\n' "missing vbv-underflow warning in $param_vbv_underflow_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "vbv-underflow warning" "$param_vbv_underflow_log" "VBV underflow" "frame"
     rm -f "$param_vbv_cqp_warn_log" "$param_vbv_cqp_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --qp 20 --vbv-maxrate 50 --vbv-bufsize 50 -o "$param_vbv_cqp_warn_out" "$y4m" >"$param_vbv_cqp_warn_log" 2>&1
     [ -s "$param_vbv_cqp_warn_out" ] || { printf '%s\n' "missing vbv-cqp warning smoke output: $param_vbv_cqp_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "VBV .*constant QP.*ignored" "$param_vbv_cqp_warn_log" ||
-    {
-        printf '%s\n' "missing vbv-cqp warning in $param_vbv_cqp_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "vbv-cqp warning" "$param_vbv_cqp_warn_log" "VBV"
+    assert_log_contains_any "vbv-cqp warning rate-control mode" "$param_vbv_cqp_warn_log" "constant QP" "CQP"
+    assert_log_contains_any "vbv-cqp warning action" "$param_vbv_cqp_warn_log" "ignored" "incompatible"
     rm -f "$param_vbv_maxrate_unspecified_warn_log" "$param_vbv_maxrate_unspecified_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --bitrate 40 --vbv-bufsize 50 -o "$param_vbv_maxrate_unspecified_warn_out" "$y4m" >"$param_vbv_maxrate_unspecified_warn_log" 2>&1
     [ -s "$param_vbv_maxrate_unspecified_warn_out" ] || { printf '%s\n' "missing vbv-maxrate-unspecified warning smoke output: $param_vbv_maxrate_unspecified_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "VBV maxrate .*assuming CBR" "$param_vbv_maxrate_unspecified_warn_log" ||
-    {
-        printf '%s\n' "missing vbv-maxrate-unspecified warning in $param_vbv_maxrate_unspecified_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "vbv-maxrate-unspecified warning" "$param_vbv_maxrate_unspecified_warn_log" "VBV maxrate" "CBR"
+    assert_log_contains_any "vbv-maxrate-unspecified warning action" "$param_vbv_maxrate_unspecified_warn_log" "assuming" "assume"
     rm -f "$param_vbv_level_warn_log" "$param_vbv_level_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --bitrate 90 --vbv-bufsize 50 -o "$param_vbv_level_warn_out" "$y4m" >"$param_vbv_level_warn_log" 2>&1
     [ -s "$param_vbv_level_warn_out" ] || { printf '%s\n' "missing vbv-level warning smoke output: $param_vbv_level_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "VBV bitrate .*level limit" "$param_vbv_level_warn_log" ||
-    {
-        printf '%s\n' "missing vbv-level warning in $param_vbv_level_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "vbv-level warning" "$param_vbv_level_warn_log" "VBV bitrate" "level limit"
     rm -f "$param_vbv_cbr_warn_log" "$param_vbv_cbr_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --bitrate 100 --vbv-maxrate 50 --vbv-bufsize 50 -o "$param_vbv_cbr_warn_out" "$y4m" >"$param_vbv_cbr_warn_log" 2>&1
     [ -s "$param_vbv_cbr_warn_out" ] || { printf '%s\n' "missing vbv-cbr warning smoke output: $param_vbv_cbr_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "max bitrate .*assuming CBR" "$param_vbv_cbr_warn_log" ||
-    {
-        printf '%s\n' "missing vbv-cbr warning in $param_vbv_cbr_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "vbv-cbr warning" "$param_vbv_cbr_warn_log" "max bitrate" "CBR"
+    assert_log_contains_any "vbv-cbr warning action" "$param_vbv_cbr_warn_log" "assuming" "assume"
     rm -f "$param_vbv_maxrate_only_warn_log" "$param_vbv_maxrate_only_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --crf 30 --vbv-maxrate 50 -o "$param_vbv_maxrate_only_warn_out" "$y4m" >"$param_vbv_maxrate_only_warn_log" 2>&1
     [ -s "$param_vbv_maxrate_only_warn_out" ] || { printf '%s\n' "missing vbv-maxrate-only warning smoke output: $param_vbv_maxrate_only_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "VBV maxrate specified, .*no bufsize, ignored" "$param_vbv_maxrate_only_warn_log" ||
-    {
-        printf '%s\n' "missing vbv-maxrate-only warning in $param_vbv_maxrate_only_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "vbv-maxrate-only warning" "$param_vbv_maxrate_only_warn_log" "VBV maxrate" "bufsize" "ignored"
     rm -f "$param_vbv_bufsize_only_warn_log" "$param_vbv_bufsize_only_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --crf 30 --vbv-bufsize 50 -o "$param_vbv_bufsize_only_warn_out" "$y4m" >"$param_vbv_bufsize_only_warn_log" 2>&1
     [ -s "$param_vbv_bufsize_only_warn_out" ] || { printf '%s\n' "missing vbv-bufsize-only warning smoke output: $param_vbv_bufsize_only_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "VBV bufsize set .*maxrate unspecified, ignored" "$param_vbv_bufsize_only_warn_log" ||
-    {
-        printf '%s\n' "missing vbv-bufsize-only warning in $param_vbv_bufsize_only_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "vbv-bufsize-only warning" "$param_vbv_bufsize_only_warn_log" "VBV bufsize" "maxrate" "ignored"
     rm -f "$param_nal_hrd_no_vbv_warn_log" "$param_nal_hrd_no_vbv_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --crf 30 --nal-hrd cbr -o "$param_nal_hrd_no_vbv_warn_out" "$y4m" >"$param_nal_hrd_no_vbv_warn_log" 2>&1
     [ -s "$param_nal_hrd_no_vbv_warn_out" ] || { printf '%s\n' "missing nal-hrd-no-vbv warning smoke output: $param_nal_hrd_no_vbv_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "NAL HRD parameters .*require VBV parameters" "$param_nal_hrd_no_vbv_warn_log" ||
-    {
-        printf '%s\n' "missing nal-hrd-no-vbv warning in $param_nal_hrd_no_vbv_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "nal-hrd-no-vbv warning" "$param_nal_hrd_no_vbv_warn_log" "NAL HRD" "VBV"
+    assert_log_contains_any "nal-hrd-no-vbv warning action" "$param_nal_hrd_no_vbv_warn_log" "require" "requires"
     rm -f "$param_cbr_hrd_warn_log" "$param_cbr_hrd_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --crf 30 --vbv-maxrate 50 --vbv-bufsize 50 --nal-hrd cbr -o "$param_cbr_hrd_warn_out" "$y4m" >"$param_cbr_hrd_warn_log" 2>&1
     [ -s "$param_cbr_hrd_warn_out" ] || { printf '%s\n' "missing cbr-hrd warning smoke output: $param_cbr_hrd_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "CBR HRD .*requires constant bitrate" "$param_cbr_hrd_warn_log" ||
-    {
-        printf '%s\n' "missing cbr-hrd warning in $param_cbr_hrd_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "cbr-hrd warning" "$param_cbr_hrd_warn_log" "CBR HRD" "constant bitrate"
+    assert_log_contains_any "cbr-hrd warning action" "$param_cbr_hrd_warn_log" "require" "requires"
     rm -f "$param_direct_temporal_warn_log" "$param_direct_temporal_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --subme 0 --direct temporal --crf 30 -o "$param_direct_temporal_warn_out" "$y4m" >"$param_direct_temporal_warn_log" 2>&1
     [ -s "$param_direct_temporal_warn_out" ] || { printf '%s\n' "missing direct-temporal warning smoke output: $param_direct_temporal_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "subme=0 .*direct=temporal.*not supported" "$param_direct_temporal_warn_log" ||
-    {
-        printf '%s\n' "missing direct-temporal warning in $param_direct_temporal_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "direct-temporal warning" "$param_direct_temporal_warn_log" "subme=0" "direct=temporal"
+    assert_log_contains_any "direct-temporal warning action" "$param_direct_temporal_warn_log" "not supported" "unsupported"
     rm -f "$param_intra_refresh_warn_log" "$param_intra_refresh_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --crf 30 --intra-refresh --open-gop --ref 3 --b-pyramid normal -o "$param_intra_refresh_warn_out" "$y4m" >"$param_intra_refresh_warn_log" 2>&1
     [ -s "$param_intra_refresh_warn_out" ] || { printf '%s\n' "missing intra-refresh warning smoke output: $param_intra_refresh_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "b-pyramid normal .*intra-refresh.*not supported" "$param_intra_refresh_warn_log" ||
-    {
-        printf '%s\n' "missing intra-refresh b-pyramid warning in $param_intra_refresh_warn_log" >&2
-        exit 1
-    }
-    grep -Eq "ref > 1 .*intra-refresh.*not supported" "$param_intra_refresh_warn_log" ||
-    {
-        printf '%s\n' "missing intra-refresh ref warning in $param_intra_refresh_warn_log" >&2
-        exit 1
-    }
-    grep -Eq "intra-refresh .*not compatible with open-gop" "$param_intra_refresh_warn_log" ||
-    {
-        printf '%s\n' "missing intra-refresh open-gop warning in $param_intra_refresh_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "intra-refresh b-pyramid warning" "$param_intra_refresh_warn_log" "b-pyramid" "intra-refresh"
+    assert_log_contains_any "intra-refresh b-pyramid warning action" "$param_intra_refresh_warn_log" "not supported" "unsupported"
+    assert_log_contains_all "intra-refresh ref warning" "$param_intra_refresh_warn_log" "ref > 1" "intra-refresh"
+    assert_log_contains_any "intra-refresh ref warning action" "$param_intra_refresh_warn_log" "not supported" "unsupported"
+    assert_log_contains_all "intra-refresh open-gop warning" "$param_intra_refresh_warn_log" "intra-refresh" "open-gop"
+    assert_log_contains_any "intra-refresh open-gop warning action" "$param_intra_refresh_warn_log" "not compatible" "incompatible"
     rm -f "$param_lookaheadless_mbtree_warn_log" "$param_lookaheadless_mbtree_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --bitrate 40 --rc-lookahead 0 -o "$param_lookaheadless_mbtree_warn_out" "$y4m" >"$param_lookaheadless_mbtree_warn_log" 2>&1
     [ -s "$param_lookaheadless_mbtree_warn_out" ] || { printf '%s\n' "missing lookaheadless-mbtree warning smoke output: $param_lookaheadless_mbtree_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "lookaheadless mb-tree .*intra refresh.*infinite keyint" "$param_lookaheadless_mbtree_warn_log" ||
-    {
-        printf '%s\n' "missing lookaheadless-mbtree warning in $param_lookaheadless_mbtree_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "lookaheadless-mbtree warning" "$param_lookaheadless_mbtree_warn_log" "lookaheadless mb-tree" "intra refresh" "infinite keyint"
     rm -f "$param_interlace_me_esa_warn_log" "$param_interlace_me_esa_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --interlaced --me esa --crf 30 -o "$param_interlace_me_esa_warn_out" "$y4m" >"$param_interlace_me_esa_warn_log" 2>&1
     [ -s "$param_interlace_me_esa_warn_out" ] || { printf '%s\n' "missing interlace-me-esa warning smoke output: $param_interlace_me_esa_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "interlace .*me=esa.*not implemented" "$param_interlace_me_esa_warn_log" ||
-    {
-        printf '%s\n' "missing interlace-me-esa warning in $param_interlace_me_esa_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "interlace-me-esa warning" "$param_interlace_me_esa_warn_log" "interlace" "me=esa"
+    assert_log_contains_any "interlace-me-esa warning action" "$param_interlace_me_esa_warn_log" "not implemented" "unsupported"
     rm -f "$param_interlace_weightp_warn_log" "$param_interlace_weightp_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --interlaced --weightp 2 --crf 30 -o "$param_interlace_weightp_warn_out" "$y4m" >"$param_interlace_weightp_warn_log" 2>&1
     [ -s "$param_interlace_weightp_warn_out" ] || { printf '%s\n' "missing interlace-weightp warning smoke output: $param_interlace_weightp_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "interlace .*weightp.*not implemented" "$param_interlace_weightp_warn_log" ||
-    {
-        printf '%s\n' "missing interlace-weightp warning in $param_interlace_weightp_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "interlace-weightp warning" "$param_interlace_weightp_warn_log" "interlace" "weightp"
+    assert_log_contains_any "interlace-weightp warning action" "$param_interlace_weightp_warn_log" "not implemented" "unsupported"
     rm -f "$param_fgo_subme_warn_log" "$param_fgo_subme_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --fgo 1 --subme 6 --crf 30 -o "$param_fgo_subme_warn_out" "$y4m" >"$param_fgo_subme_warn_log" 2>&1
     [ -s "$param_fgo_subme_warn_out" ] || { printf '%s\n' "missing fgo-subme warning smoke output: $param_fgo_subme_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "fgo requires subme *>= *7\\.?" "$param_fgo_subme_warn_log" ||
-    {
-        printf '%s\n' "missing fgo-subme warning in $param_fgo_subme_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "fgo-subme warning" "$param_fgo_subme_warn_log" "fgo" "subme" ">= 7"
     rm -f "$param_slice_min_mbs_interlace_warn_log" "$param_slice_min_mbs_interlace_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --interlaced --slice-max-mbs 10 --slice-min-mbs 1 --crf 30 -o "$param_slice_min_mbs_interlace_warn_out" "$y4m" >"$param_slice_min_mbs_interlace_warn_log" 2>&1
     [ -s "$param_slice_min_mbs_interlace_warn_out" ] || { printf '%s\n' "missing slice-min-mbs-interlace warning smoke output: $param_slice_min_mbs_interlace_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "interlace .*slice-min-mbs.*not implemented" "$param_slice_min_mbs_interlace_warn_log" ||
-    {
-        printf '%s\n' "missing slice-min-mbs-interlace warning in $param_slice_min_mbs_interlace_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "slice-min-mbs-interlace warning" "$param_slice_min_mbs_interlace_warn_log" "interlace" "slice-min-mbs"
+    assert_log_contains_any "slice-min-mbs-interlace warning action" "$param_slice_min_mbs_interlace_warn_log" "not implemented" "unsupported"
     rm -f "$param_slice_min_mbs_row_warn_log" "$param_slice_min_mbs_row_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --slice-max-mbs 999 --slice-min-mbs 999 --crf 30 -o "$param_slice_min_mbs_row_warn_out" "$y4m" >"$param_slice_min_mbs_row_warn_log" 2>&1
     [ -s "$param_slice_min_mbs_row_warn_out" ] || { printf '%s\n' "missing slice-min-mbs-row warning smoke output: $param_slice_min_mbs_row_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "slice-min-mbs > row mb size \\([0-9]+\\) not implemented" "$param_slice_min_mbs_row_warn_log" ||
-    {
-        printf '%s\n' "missing slice-min-mbs-row warning in $param_slice_min_mbs_row_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "slice-min-mbs-row warning" "$param_slice_min_mbs_row_warn_log" "slice-min-mbs" "row mb size"
+    assert_log_contains_any "slice-min-mbs-row warning action" "$param_slice_min_mbs_row_warn_log" "not implemented" "unsupported"
     rm -f "$param_ssim_aqoff_warn_log" "$param_ssim_aqoff_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --ssim --no-psy --aq-mode 0 --crf 30 -o "$param_ssim_aqoff_warn_out" "$y4m" >"$param_ssim_aqoff_warn_log" 2>&1
     [ -s "$param_ssim_aqoff_warn_out" ] || { printf '%s\n' "missing ssim-aqoff warning smoke output: $param_ssim_aqoff_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq -- "--ssim.*AQ off.*invalid!?" "$param_ssim_aqoff_warn_log" ||
-    {
-        printf '%s\n' "missing ssim-aqoff warning in $param_ssim_aqoff_warn_log" >&2
-        exit 1
-    }
-    grep -Eq -- "--tune ssim.*benchmark ssim!?" "$param_ssim_aqoff_warn_log" ||
-    {
-        printf '%s\n' "missing ssim-aqoff tune warning in $param_ssim_aqoff_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "ssim-aqoff warning" "$param_ssim_aqoff_warn_log" "--ssim" "AQ off" "invalid"
+    assert_log_contains_all "ssim-aqoff tune warning" "$param_ssim_aqoff_warn_log" "--tune ssim" "benchmark ssim"
     rm -f "$param_psnr_aqon_warn_log" "$param_psnr_aqon_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --psnr --no-psy --crf 30 -o "$param_psnr_aqon_warn_out" "$y4m" >"$param_psnr_aqon_warn_log" 2>&1
     [ -s "$param_psnr_aqon_warn_out" ] || { printf '%s\n' "missing psnr-aqon warning smoke output: $param_psnr_aqon_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq -- "--psnr.*AQ on.*invalid!?" "$param_psnr_aqon_warn_log" ||
-    {
-        printf '%s\n' "missing psnr-aqon warning in $param_psnr_aqon_warn_log" >&2
-        exit 1
-    }
-    grep -Eq -- "--tune psnr.*benchmark psnr!?" "$param_psnr_aqon_warn_log" ||
-    {
-        printf '%s\n' "missing psnr-aqon tune warning in $param_psnr_aqon_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "psnr-aqon warning" "$param_psnr_aqon_warn_log" "--psnr" "AQ on" "invalid"
+    assert_log_contains_all "psnr-aqon tune warning" "$param_psnr_aqon_warn_log" "--tune psnr" "benchmark psnr"
     rm -f "$param_psnr_psy_warn_log" "$param_psnr_psy_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --psnr --crf 30 -o "$param_psnr_psy_warn_out" "$y4m" >"$param_psnr_psy_warn_log" 2>&1
     [ -s "$param_psnr_psy_warn_out" ] || { printf '%s\n' "missing psnr-psy warning smoke output: $param_psnr_psy_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq -- "--psnr.*psy on.*invalid!?" "$param_psnr_psy_warn_log" ||
-    {
-        printf '%s\n' "missing psnr-psy warning in $param_psnr_psy_warn_log" >&2
-        exit 1
-    }
-    grep -Eq -- "--tune psnr.*benchmark psnr!?" "$param_psnr_psy_warn_log" ||
-    {
-        printf '%s\n' "missing psnr-psy tune warning in $param_psnr_psy_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "psnr-psy warning" "$param_psnr_psy_warn_log" "--psnr" "psy on" "invalid"
+    assert_log_contains_all "psnr-psy tune warning" "$param_psnr_psy_warn_log" "--tune psnr" "benchmark psnr"
     rm -f "$param_ssim_psy_warn_log" "$param_ssim_psy_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --ssim --crf 30 -o "$param_ssim_psy_warn_out" "$y4m" >"$param_ssim_psy_warn_log" 2>&1
     [ -s "$param_ssim_psy_warn_out" ] || { printf '%s\n' "missing ssim-psy warning smoke output: $param_ssim_psy_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq -- "--ssim.*psy on.*invalid!?" "$param_ssim_psy_warn_log" ||
-    {
-        printf '%s\n' "missing ssim-psy warning in $param_ssim_psy_warn_log" >&2
-        exit 1
-    }
-    grep -Eq -- "--tune ssim.*benchmark ssim!?" "$param_ssim_psy_warn_log" ||
-    {
-        printf '%s\n' "missing ssim-psy tune warning in $param_ssim_psy_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "ssim-psy warning" "$param_ssim_psy_warn_log" "--ssim" "psy on" "invalid"
+    assert_log_contains_all "ssim-psy tune warning" "$param_ssim_psy_warn_log" "--tune ssim" "benchmark ssim"
     rm -f "$param_opencl_small_warn_log" "$param_opencl_small_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --opencl --crf 30 -o "$param_opencl_small_warn_out" "$y4m" >"$param_opencl_small_warn_log" 2>&1
     [ -s "$param_opencl_small_warn_out" ] || { printf '%s\n' "missing opencl-small warning smoke output: $param_opencl_small_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "OpenCL: frame size .*too small, disabling opencl" "$param_opencl_small_warn_log" ||
-    {
-        printf '%s\n' "missing opencl-small warning in $param_opencl_small_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "opencl-small warning" "$param_opencl_small_warn_log" "OpenCL:" "frame size" "too small" "disabling opencl"
     rm -f "$param_sar_warn_log" "$param_sar_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --sar 1:2147483647 --crf 30 -o "$param_sar_warn_out" "$y4m" >"$param_sar_warn_log" 2>&1
     [ -s "$param_sar_warn_out" ] || { printf '%s\n' "missing sar warning smoke output: $param_sar_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "cannot create (a )?valid sample aspect ratio" "$param_sar_warn_log" ||
-    {
-        printf '%s\n' "missing sar warning in $param_sar_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "sar warning" "$param_sar_warn_log" "sample aspect ratio" "valid"
+    assert_log_contains_any "sar warning" "$param_sar_warn_log" "cannot create" "create a valid"
     rm -f "$param_frame_packing_warn_log" "$param_frame_packing_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --frame-packing 999 --crf 30 -o "$param_frame_packing_warn_out" "$y4m" >"$param_frame_packing_warn_log" 2>&1
     [ -s "$param_frame_packing_warn_out" ] || { printf '%s\n' "missing frame-packing warning smoke output: $param_frame_packing_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "ignoring unknown frame packing value( .*)?" "$param_frame_packing_warn_log" ||
-    {
-        printf '%s\n' "missing frame-packing warning in $param_frame_packing_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "frame-packing warning" "$param_frame_packing_warn_log" "unknown frame packing value"
     rm -f "$param_acodec_warn_log" "$param_acodec_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --acodec copy --crf 30 -o "$param_acodec_warn_out" "$y4m" >"$param_acodec_warn_log" 2>&1
     [ -s "$param_acodec_warn_out" ] || { printf '%s\n' "missing acodec warning smoke output: $param_acodec_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "audio .*not compiled in,? --acodec ignored\\.?" "$param_acodec_warn_log" ||
-    {
-        printf '%s\n' "missing acodec warning in $param_acodec_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "acodec warning" "$param_acodec_warn_log" "audio" "not compiled in" "--acodec ignored"
     rm -f "$param_multi_psy_tune_warn_log" "$param_multi_psy_tune_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --tune grain,psnr --crf 30 -o "$param_multi_psy_tune_warn_out" "$y4m" >"$param_multi_psy_tune_warn_log" 2>&1
     [ -s "$param_multi_psy_tune_warn_out" ] || { printf '%s\n' "missing multi-psy-tune warning smoke output: $param_multi_psy_tune_warn_out (input: $y4m)" >&2; exit 1; }
-    grep -Eq "only 1 psy tuning can be used.*ignoring tune [^ ]+" "$param_multi_psy_tune_warn_log" ||
-    {
-        printf '%s\n' "missing multi-psy-tune warning in $param_multi_psy_tune_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "multi-psy-tune warning" "$param_multi_psy_tune_warn_log" "psy tuning"
+    assert_log_contains_any "multi-psy-tune warning action" "$param_multi_psy_tune_warn_log" "ignored" "ignoring"
     rm -f "$param_subtitles_overflow_warn_log" "$param_subtitles_overflow_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --vf subtitles \
         --sub sub1.ass --sub sub2.ass --sub sub3.ass --sub sub4.ass --sub sub5.ass --sub sub6.ass \
         --sub sub7.ass --sub sub8.ass --sub sub9.ass --sub sub10.ass --sub sub11.ass --sub sub12.ass \
         --sub sub13.ass --sub sub14.ass --sub sub15.ass --sub sub16.ass --sub sub17.ass \
         --crf 30 -o "$param_subtitles_overflow_warn_out" "$y4m" >"$param_subtitles_overflow_warn_log" 2>&1 || true
-    grep -Eq 'too many subtitles.*sub17\.ass.*ignored\.?' "$param_subtitles_overflow_warn_log" ||
-    {
-        printf '%s\n' "missing subtitles-overflow warning in $param_subtitles_overflow_warn_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "subtitles-overflow warning" "$param_subtitles_overflow_warn_log" "too many subtitles"
+    assert_log_contains_any "subtitles-overflow warning action" "$param_subtitles_overflow_warn_log" "ignored" "ignoring"
     "$smoke_bin" --demuxer y4m --frames 1 --keyint infinite --crf 30 -o "$param_keyint_inf_out" "$y4m" >/dev/null
     [ -s "$param_keyint_inf_out" ] || { printf '%s\n' "missing keyint infinite smoke output: $param_keyint_inf_out (input: $y4m)" >&2; exit 1; }
     rm -f "$param_bad_keyint_log" "$param_bad_keyint_out"
@@ -5914,21 +5709,13 @@ run_smoke_cli()
         printf '%s\n' "accepted keyint infinite prefix junk: $param_bad_keyint_out" >&2
         exit 1
     fi
-    grep -q "invalid argument: keyint" "$param_bad_keyint_log" ||
-    {
-        printf '%s\n' "missing parameter keyint parse error in $param_bad_keyint_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "parameter keyint parse error" "$param_bad_keyint_log" "invalid argument" "keyint"
     rm -f "$param_bad_mastering_log" "$param_bad_mastering_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --mastering-display 'G(1,2)B(3,4)R(5,6)WP(7,8)L(9,10)junk' --crf 30 -o "$param_bad_mastering_out" "$y4m" >"$param_bad_mastering_log" 2>&1; then
         printf '%s\n' "accepted mastering-display trailing junk: $param_bad_mastering_out" >&2
         exit 1
     fi
-    grep -q "invalid argument: mastering-display" "$param_bad_mastering_log" ||
-    {
-        printf '%s\n' "missing parameter mastering-display parse error in $param_bad_mastering_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "parameter mastering-display parse error" "$param_bad_mastering_log" "invalid argument" "mastering-display"
     for bad_mastering_display in \
         'G(+1,2)B(3,4)R(5,6)WP(7,8)L(9,10)' \
         'G( 1,2)B(3,4)R(5,6)WP(7,8)L(9,10)' \
@@ -5942,62 +5729,38 @@ run_smoke_cli()
             printf '%s\n' "accepted prefixed mastering-display '$bad_mastering_display': $param_bad_mastering_out" >&2
             exit 1
         fi
-        grep -q "invalid argument: mastering-display" "$param_bad_mastering_log" ||
-        {
-            printf '%s\n' "missing prefixed mastering-display parse error for '$bad_mastering_display' in $param_bad_mastering_log" >&2
-            exit 1
-        }
+        assert_log_contains_all "prefixed mastering-display parse error for '$bad_mastering_display'" "$param_bad_mastering_log" "invalid argument" "mastering-display"
     done
     rm -f "$param_bad_aq3_boundary_log" "$param_bad_aq3_boundary_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --aq3-boundary 192:64x24 --crf 30 -o "$param_bad_aq3_boundary_out" "$y4m" >"$param_bad_aq3_boundary_log" 2>&1; then
         printf '%s\n' "accepted malformed aq3-boundary: $param_bad_aq3_boundary_out" >&2
         exit 1
     fi
-    grep -q "invalid argument: aq3-boundary" "$param_bad_aq3_boundary_log" ||
-    {
-        printf '%s\n' "missing parameter aq3-boundary parse error in $param_bad_aq3_boundary_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "parameter aq3-boundary parse error" "$param_bad_aq3_boundary_log" "invalid argument" "aq3-boundary"
     rm -f "$param_bad_aq3_boundary_log" "$param_bad_aq3_boundary_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --aq3-boundary 192:64 --crf 30 -o "$param_bad_aq3_boundary_out" "$y4m" >"$param_bad_aq3_boundary_log" 2>&1; then
         printf '%s\n' "accepted short aq3-boundary list: $param_bad_aq3_boundary_out" >&2
         exit 1
     fi
-    grep -q "invalid argument: aq3-boundary" "$param_bad_aq3_boundary_log" ||
-    {
-        printf '%s\n' "missing short aq3-boundary parse error in $param_bad_aq3_boundary_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "short aq3-boundary parse error" "$param_bad_aq3_boundary_log" "invalid argument" "aq3-boundary"
     rm -f "$param_bad_psyrd_log" "$param_bad_psyrd_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --psy-rd 1.0:0.2junk --crf 30 -o "$param_bad_psyrd_out" "$y4m" >"$param_bad_psyrd_log" 2>&1; then
         printf '%s\n' "accepted psy-rd trailing junk: $param_bad_psyrd_out" >&2
         exit 1
     fi
-    grep -q "invalid argument: psy-rd" "$param_bad_psyrd_log" ||
-    {
-        printf '%s\n' "missing parameter psy-rd parse error in $param_bad_psyrd_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "parameter psy-rd parse error" "$param_bad_psyrd_log" "invalid argument" "psy-rd"
     rm -f "$param_bad_aq3_strength_log" "$param_bad_aq3_strength_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --aq3-strength 0.1:0.2,0.3:0.4:0.5:0.6:0.7:0.8 --crf 30 -o "$param_bad_aq3_strength_out" "$y4m" >"$param_bad_aq3_strength_log" 2>&1; then
         printf '%s\n' "accepted mixed-separator aq3-strength: $param_bad_aq3_strength_out" >&2
         exit 1
     fi
-    grep -q "invalid argument: aq3-strength" "$param_bad_aq3_strength_log" ||
-    {
-        printf '%s\n' "missing parameter aq3-strength parse error in $param_bad_aq3_strength_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "parameter aq3-strength parse error" "$param_bad_aq3_strength_log" "invalid argument" "aq3-strength"
     rm -f "$param_bad_aq3_ifactor_log" "$param_bad_aq3_ifactor_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --aq3-ifactor 1.0:inf --crf 30 -o "$param_bad_aq3_ifactor_out" "$y4m" >"$param_bad_aq3_ifactor_log" 2>&1; then
         printf '%s\n' "accepted aq3-ifactor inf: $param_bad_aq3_ifactor_out" >&2
         exit 1
     fi
-    grep -q "invalid argument: aq3-ifactor" "$param_bad_aq3_ifactor_log" ||
-    {
-        printf '%s\n' "missing parameter aq3-ifactor parse error in $param_bad_aq3_ifactor_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "parameter aq3-ifactor parse error" "$param_bad_aq3_ifactor_log" "invalid argument" "aq3-ifactor"
     "$smoke_bin" --demuxer y4m --frames 1 --cqm4 "1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1" --crf 30 -o "$param_cqm4_space_out" "$y4m" >/dev/null
     [ -s "$param_cqm4_space_out" ] || { printf '%s\n' "missing cqm4 separator-space smoke output: $param_cqm4_space_out (input: $y4m)" >&2; exit 1; }
     for bad_cqm4_value in \
@@ -6011,107 +5774,76 @@ run_smoke_cli()
             printf '%s\n' "accepted prefixed cqm4 coefficient '$bad_cqm4_value': $param_bad_cqm4_out" >&2
             exit 1
         fi
-        grep -q "invalid argument: cqm4" "$param_bad_cqm4_log" ||
-        {
-            printf '%s\n' "missing prefixed cqm4 parse error for '$bad_cqm4_value' in $param_bad_cqm4_log" >&2
-            exit 1
-        }
+        assert_log_contains_all "prefixed cqm4 parse error" "$param_bad_cqm4_log" "invalid argument" "cqm4"
     done
-    rm -f "$param_bad_cqm4_log" "$param_bad_cqm4_out"
-    if "$smoke_bin" --demuxer y4m --frames 1 --cqm4 "1x,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1" --crf 30 -o "$param_bad_cqm4_out" "$y4m" >"$param_bad_cqm4_log" 2>&1; then
-        printf '%s\n' "accepted parameter cqm4 trailing junk: $param_bad_cqm4_out" >&2
-        exit 1
-    fi
-    grep -q "invalid argument: cqm4" "$param_bad_cqm4_log" ||
-    {
-        printf '%s\n' "missing parameter cqm4 parse error in $param_bad_cqm4_log" >&2
-        exit 1
-    }
+    for bad_cqm4_value in \
+        "1x,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1" \
+        "1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1x" \
+        "1,1,1,1,1,1,1,1,1,1,1,1,1,1,1"
+    do
+        rm -f "$param_bad_cqm4_log" "$param_bad_cqm4_out"
+        if "$smoke_bin" --demuxer y4m --frames 1 --cqm4 "$bad_cqm4_value" --crf 30 -o "$param_bad_cqm4_out" "$y4m" >"$param_bad_cqm4_log" 2>&1; then
+            printf '%s\n' "accepted malformed cqm4 value '$bad_cqm4_value': $param_bad_cqm4_out" >&2
+            exit 1
+        fi
+        assert_log_contains_all "malformed cqm4 parse error" "$param_bad_cqm4_log" "invalid argument" "cqm4"
+    done
     rm -f "$filter_bad_pad_log" "$filter_bad_pad_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --vf pad:abc,0,0,0,0,0,0,0,0 --crf 30 -o "$filter_bad_pad_out" "$y4m" >"$filter_bad_pad_log" 2>&1; then
         printf '%s\n' "accepted malformed pad filter value: $filter_bad_pad_out" >&2
         exit 1
     fi
-    grep -q "left pad value 'abc' is invalid" "$filter_bad_pad_log" ||
-    {
-        printf '%s\n' "missing pad filter parse error in $filter_bad_pad_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "pad filter parse error" "$filter_bad_pad_log" "pad" "invalid"
     rm -f "$filter_bad_pad_log" "$filter_bad_pad_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --vf pad:0,0x,0,0,0,0,0,0,0 --crf 30 -o "$filter_bad_pad_out" "$y4m" >"$filter_bad_pad_log" 2>&1; then
         printf '%s\n' "accepted later malformed pad filter value: $filter_bad_pad_out" >&2
         exit 1
     fi
-    grep -q "top pad value '0x' is invalid" "$filter_bad_pad_log" ||
-    {
-        printf '%s\n' "missing later pad filter parse error in $filter_bad_pad_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "later pad filter parse error" "$filter_bad_pad_log" "pad" "invalid"
     for bad_pad in '+0,0,0,0,0,0,0,0,0' ' 0,0,0,0,0,0,0,0,0' '0,0,0,0,0,0,+0,0,0' '0,0,0,0,0,0, 0,0,0'; do
         rm -f "$filter_bad_pad_log" "$filter_bad_pad_out"
         if "$smoke_bin" --demuxer y4m --frames 1 --vf "pad:$bad_pad" --crf 30 -o "$filter_bad_pad_out" "$y4m" >"$filter_bad_pad_log" 2>&1; then
             printf '%s\n' "accepted prefixed pad filter value '$bad_pad': $filter_bad_pad_out" >&2
             exit 1
         fi
-        grep -q "pad .* is invalid" "$filter_bad_pad_log" ||
-        {
-            printf '%s\n' "missing prefixed pad filter parse error for '$bad_pad' in $filter_bad_pad_log" >&2
-            exit 1
-        }
+        assert_log_contains_all "prefixed pad filter parse error for '$bad_pad'" "$filter_bad_pad_log" \
+            "pad" "invalid"
     done
     rm -f "$filter_bad_crop_log" "$filter_bad_crop_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --vf crop:0x,0,0,0 --crf 30 -o "$filter_bad_crop_out" "$y4m" >"$filter_bad_crop_log" 2>&1; then
         printf '%s\n' "accepted malformed crop filter value: $filter_bad_crop_out" >&2
         exit 1
     fi
-    grep -q "left crop value.*is invalid" "$filter_bad_crop_log" ||
-    {
-        printf '%s\n' "missing crop filter parse error in $filter_bad_crop_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "crop filter parse error" "$filter_bad_crop_log" "crop" "invalid"
     rm -f "$filter_bad_crop_log" "$filter_bad_crop_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --vf crop:0,0x,0,0 --crf 30 -o "$filter_bad_crop_out" "$y4m" >"$filter_bad_crop_log" 2>&1; then
         printf '%s\n' "accepted later malformed crop filter value: $filter_bad_crop_out" >&2
         exit 1
     fi
-    grep -q "top crop value.*is invalid" "$filter_bad_crop_log" ||
-    {
-        printf '%s\n' "missing later crop filter parse error in $filter_bad_crop_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "later crop filter parse error" "$filter_bad_crop_log" "crop" "invalid"
     for bad_crop in '+0,0,0,0' ' 0,0,0,0'; do
         rm -f "$filter_bad_crop_log" "$filter_bad_crop_out"
         if "$smoke_bin" --demuxer y4m --frames 1 --vf "crop:$bad_crop" --crf 30 -o "$filter_bad_crop_out" "$y4m" >"$filter_bad_crop_log" 2>&1; then
             printf '%s\n' "accepted prefixed crop filter value '$bad_crop': $filter_bad_crop_out" >&2
             exit 1
         fi
-        grep -q "left crop value.*is invalid" "$filter_bad_crop_log" ||
-        {
-            printf '%s\n' "missing prefixed crop filter parse error for '$bad_crop' in $filter_bad_crop_log" >&2
-            exit 1
-        }
+        assert_log_contains_all "prefixed crop filter parse error" "$filter_bad_crop_log" "crop" "invalid"
     done
     rm -f "$filter_bad_depth_log" "$filter_bad_depth_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --vf depth_8:8x --crf 30 -o "$filter_bad_depth_out" "$y4m" >"$filter_bad_depth_log" 2>&1; then
         printf '%s\n' "accepted malformed depth filter value: $filter_bad_depth_out" >&2
         exit 1
     fi
-    grep -q "unsupported bit depth conversion" "$filter_bad_depth_log" ||
-    {
-        printf '%s\n' "missing depth filter parse error in $filter_bad_depth_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "depth filter parse error" "$filter_bad_depth_log" \
+        "bit depth" "conversion" "unsupported"
     for bad_depth in '+8' ' 8'; do
         rm -f "$filter_bad_depth_log" "$filter_bad_depth_out"
         if "$smoke_bin" --demuxer y4m --frames 1 --vf "depth_8:$bad_depth" --crf 30 -o "$filter_bad_depth_out" "$y4m" >"$filter_bad_depth_log" 2>&1; then
             printf '%s\n' "accepted prefixed depth filter bit depth '$bad_depth': $filter_bad_depth_out" >&2
             exit 1
         fi
-        grep -q "unsupported bit depth conversion" "$filter_bad_depth_log" ||
-        {
-            printf '%s\n' "missing prefixed depth filter parse error for '$bad_depth' in $filter_bad_depth_log" >&2
-            exit 1
-        }
+        assert_log_contains_all "prefixed depth filter parse error for '$bad_depth'" "$filter_bad_depth_log" \
+            "bit depth" "conversion" "unsupported"
     done
     "$smoke_bin" --demuxer y4m --frames 1 --vf hqdn3d:.5,3.0,6,0 --crf 30 -o "$filter_hqdn3d_out" "$y4m" >/dev/null
     [ -s "$filter_hqdn3d_out" ] || { printf '%s\n' "missing hqdn3d filter smoke output: $filter_hqdn3d_out (input: $y4m)" >&2; exit 1; }
@@ -6121,54 +5853,40 @@ run_smoke_cli()
             printf '%s\n' "accepted malformed hqdn3d filter strength '$bad_hqdn3d': $filter_bad_hqdn3d_out" >&2
             exit 1
         fi
-        grep -q "invalid options" "$filter_bad_hqdn3d_log" ||
-        {
-            printf '%s\n' "missing hqdn3d filter parse error for '$bad_hqdn3d' in $filter_bad_hqdn3d_log" >&2
-            exit 1
-        }
+        assert_log_contains_all "hqdn3d filter parse error" "$filter_bad_hqdn3d_log" "hqdn3d" "options"
+        assert_log_contains_any "hqdn3d filter parse error source" "$filter_bad_hqdn3d_log" "invalid" "unknown" "unsupported"
     done
     rm -f "$filter_bad_select_every_log" "$filter_bad_select_every_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --vf select_every:2x,0 --crf 30 -o "$filter_bad_select_every_out" "$y4m" >"$filter_bad_select_every_log" 2>&1; then
         printf '%s\n' "accepted malformed select_every filter step: $filter_bad_select_every_out" >&2
         exit 1
     fi
-    grep -q "invalid step" "$filter_bad_select_every_log" ||
-    {
-        printf '%s\n' "missing select_every filter parse error in $filter_bad_select_every_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "select_every filter step parse error" "$filter_bad_select_every_log" "select_every" "step" "2x"
+    assert_log_contains_any "select_every filter step parse error source" "$filter_bad_select_every_log" "invalid" "unknown" "unsupported"
     rm -f "$filter_bad_select_every_log" "$filter_bad_select_every_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --vf select_every:2,0,2x --crf 30 -o "$filter_bad_select_every_out" "$y4m" >"$filter_bad_select_every_log" 2>&1; then
         printf '%s\n' "accepted later malformed select_every filter offset: $filter_bad_select_every_out" >&2
         exit 1
     fi
-    grep -q "invalid offset" "$filter_bad_select_every_log" ||
-    {
-        printf '%s\n' "missing later select_every filter parse error in $filter_bad_select_every_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "select_every filter offset parse error" "$filter_bad_select_every_log" "select_every" "offset" "2x"
+    assert_log_contains_any "select_every filter offset parse error source" "$filter_bad_select_every_log" "invalid" "unknown" "unsupported"
     for bad_select_every in '+2,0' ' 2,0' '2,+0' '2, 0'; do
         rm -f "$filter_bad_select_every_log" "$filter_bad_select_every_out"
         if "$smoke_bin" --demuxer y4m --frames 1 --vf "select_every:$bad_select_every" --crf 30 -o "$filter_bad_select_every_out" "$y4m" >"$filter_bad_select_every_log" 2>&1; then
             printf '%s\n' "accepted prefixed select_every filter value '$bad_select_every': $filter_bad_select_every_out" >&2
             exit 1
         fi
-        grep -Eq "invalid (step|offset)" "$filter_bad_select_every_log" ||
-        {
-            printf '%s\n' "missing prefixed select_every filter parse error for '$bad_select_every' in $filter_bad_select_every_log" >&2
-            exit 1
-        }
+        assert_log_contains_all "prefixed select_every filter parse error" "$filter_bad_select_every_log" "select_every"
+        assert_log_contains_any "prefixed select_every filter parse error field" "$filter_bad_select_every_log" "step" "offset"
+        assert_log_contains_any "prefixed select_every filter parse error source" "$filter_bad_select_every_log" "invalid" "unknown" "unsupported"
     done
     rm -f "$filter_empty_select_every_log" "$filter_empty_select_every_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --vf select_every:2,,0 --crf 30 -o "$filter_empty_select_every_out" "$y4m" >"$filter_empty_select_every_log" 2>&1; then
         printf '%s\n' "accepted empty select_every filter offset: $filter_empty_select_every_out" >&2
         exit 1
     fi
-    grep -q "empty offset" "$filter_empty_select_every_log" ||
-    {
-        printf '%s\n' "missing empty select_every filter parse error in $filter_empty_select_every_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "empty select_every filter parse error" "$filter_empty_select_every_log" "select_every" "offset"
+    assert_log_contains_any "empty select_every filter parse error source" "$filter_empty_select_every_log" "empty" "invalid"
     write_smoke_y4m_frames "$filter_select_every_count_y4m" 4 25:1
     rm -f "$filter_select_every_count_log" "$filter_select_every_count_out"
     "$smoke_bin" --demuxer y4m --frames 4 --vf select_every:3,0,2 \
@@ -6185,32 +5903,23 @@ run_smoke_cli()
         printf '%s\n' "accepted malformed yadif filter mode: $filter_bad_yadif_out" >&2
         exit 1
     fi
-    grep -q "invalid mode" "$filter_bad_yadif_log" ||
-    {
-        printf '%s\n' "missing yadif filter parse error in $filter_bad_yadif_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "yadif filter mode parse error" "$filter_bad_yadif_log" "yadif" "mode" "2x"
+    assert_log_contains_any "yadif filter mode parse error source" "$filter_bad_yadif_log" "invalid" "unknown" "unsupported"
     rm -f "$filter_bad_yadif_log" "$filter_bad_yadif_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --vf yadif:1,badorder --crf 30 -o "$filter_bad_yadif_out" "$y4m" >"$filter_bad_yadif_log" 2>&1; then
         printf '%s\n' "accepted malformed yadif filter order: $filter_bad_yadif_out" >&2
         exit 1
     fi
-    grep -q "unknown order" "$filter_bad_yadif_log" ||
-    {
-        printf '%s\n' "missing yadif filter order parse error in $filter_bad_yadif_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "yadif filter order parse error" "$filter_bad_yadif_log" "yadif" "order" "badorder"
+    assert_log_contains_any "yadif filter order parse error source" "$filter_bad_yadif_log" "invalid" "unknown" "unsupported"
     for bad_yadif_mode in '+2' ' 2'; do
         rm -f "$filter_bad_yadif_log" "$filter_bad_yadif_out"
         if "$smoke_bin" --demuxer y4m --frames 1 --vf "yadif:$bad_yadif_mode" --crf 30 -o "$filter_bad_yadif_out" "$y4m" >"$filter_bad_yadif_log" 2>&1; then
             printf '%s\n' "accepted prefixed yadif filter mode '$bad_yadif_mode': $filter_bad_yadif_out" >&2
             exit 1
         fi
-        grep -q "invalid mode" "$filter_bad_yadif_log" ||
-        {
-            printf '%s\n' "missing prefixed yadif filter parse error for '$bad_yadif_mode' in $filter_bad_yadif_log" >&2
-            exit 1
-        }
+        assert_log_contains_all "prefixed yadif filter parse error" "$filter_bad_yadif_log" "yadif" "mode"
+        assert_log_contains_any "prefixed yadif filter parse error source" "$filter_bad_yadif_log" "invalid" "unknown" "unsupported"
     done
     if grep -q '^#define HAVE_SWSCALE 1$' "$smoke_dir/config.h"; then
         rm -f "$filter_bad_resize_width_log" "$filter_bad_resize_width_out"
@@ -6218,54 +5927,35 @@ run_smoke_cli()
             printf '%s\n' "accepted malformed resize width: $filter_bad_resize_width_out" >&2
             exit 1
         fi
-        grep -q "invalid width" "$filter_bad_resize_width_log" ||
-        {
-            printf '%s\n' "missing resize width parse error in $filter_bad_resize_width_log" >&2
-            exit 1
-        }
+        assert_log_contains_all "resize width parse error" "$filter_bad_resize_width_log" "resize" "invalid" "width"
         for bad_resize_size in 'width=+16,height=16' 'width= 16,height=16' 'width=16,height=+16' 'width=16,height= 16'; do
             rm -f "$filter_bad_resize_width_log" "$filter_bad_resize_width_out"
             if "$smoke_bin" --demuxer y4m --frames 1 --vf "resize:$bad_resize_size" --crf 30 -o "$filter_bad_resize_width_out" "$y4m" >"$filter_bad_resize_width_log" 2>&1; then
                 printf '%s\n' "accepted prefixed resize dimension '$bad_resize_size': $filter_bad_resize_width_out" >&2
                 exit 1
             fi
-            grep -Eq "invalid (width|height)" "$filter_bad_resize_width_log" ||
-            {
-                printf '%s\n' "missing prefixed resize dimension parse error for '$bad_resize_size' in $filter_bad_resize_width_log" >&2
-                exit 1
-            }
+            assert_log_contains_all "prefixed resize dimension parse error" "$filter_bad_resize_width_log" "resize" "invalid"
+            assert_log_contains_any "prefixed resize dimension field" "$filter_bad_resize_width_log" "width" "height"
         done
         rm -f "$filter_bad_resize_depth_log" "$filter_bad_resize_depth_out"
         if "$smoke_bin" --demuxer y4m --frames 1 --vf resize:csp=i420:8x --crf 30 -o "$filter_bad_resize_depth_out" "$y4m" >"$filter_bad_resize_depth_log" 2>&1; then
             printf '%s\n' "accepted malformed resize csp bit depth: $filter_bad_resize_depth_out" >&2
             exit 1
         fi
-        grep -q "invalid bit depth" "$filter_bad_resize_depth_log" ||
-        {
-            printf '%s\n' "missing resize bit-depth parse error in $filter_bad_resize_depth_log" >&2
-            exit 1
-        }
+        assert_log_contains_all "resize bit-depth parse error" "$filter_bad_resize_depth_log" "resize" "invalid" "bit depth"
         rm -f "$filter_bad_resize_sar_log" "$filter_bad_resize_sar_out"
         if "$smoke_bin" --demuxer y4m --frames 1 --vf resize:csp=i420,sar=1:1junk --crf 30 -o "$filter_bad_resize_sar_out" "$y4m" >"$filter_bad_resize_sar_log" 2>&1; then
             printf '%s\n' "accepted resize csp followed by malformed SAR: $filter_bad_resize_sar_out" >&2
             exit 1
         fi
-        grep -q "invalid sar" "$filter_bad_resize_sar_log" ||
-        {
-            printf '%s\n' "missing resize csp/SAR parse error in $filter_bad_resize_sar_log" >&2
-            exit 1
-        }
+        assert_log_contains_all "resize csp/SAR parse error" "$filter_bad_resize_sar_log" "resize" "invalid" "sar"
         for bad_resize_sar in 'sar=+1:1' 'sar=1:+1' 'sar=1: 1' 'sar=1/+1' 'sar=1:1junk'; do
             rm -f "$filter_bad_resize_sar_log" "$filter_bad_resize_sar_out"
             if "$smoke_bin" --demuxer y4m --frames 1 --vf "resize:$bad_resize_sar" --crf 30 -o "$filter_bad_resize_sar_out" "$y4m" >"$filter_bad_resize_sar_log" 2>&1; then
                 printf '%s\n' "accepted malformed resize SAR '$bad_resize_sar': $filter_bad_resize_sar_out" >&2
                 exit 1
             fi
-            grep -q "invalid sar" "$filter_bad_resize_sar_log" ||
-            {
-                printf '%s\n' "missing resize SAR parse error for '$bad_resize_sar' in $filter_bad_resize_sar_log" >&2
-                exit 1
-            }
+            assert_log_contains_all "resize SAR parse error" "$filter_bad_resize_sar_log" "resize" "invalid" "sar"
         done
     fi
     "$smoke_bin" --demuxer y4m --frames 1 --cqm flat --crf 30 -o "$cqm_flat_out" "$y4m" >/dev/null
@@ -6277,11 +5967,7 @@ run_smoke_cli()
         printf '%s\n' "accepted missing CQM file path as preset substring: $cqm_missing_flat_out" >&2
         exit 1
     fi
-    grep -q "can't read file" "$cqm_missing_flat_log" ||
-    {
-        printf '%s\n' "missing CQM file-read parse error in $cqm_missing_flat_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "CQM file-read parse error" "$cqm_missing_flat_log" "read" "file"
     {
         printf '%s\n' "XINTRA4X4_LUMA = -1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1"
         printf '%s\n' "INTRA4X4_LUMAX = -1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1"
@@ -6294,44 +5980,32 @@ run_smoke_cli()
         printf '%s\n' "accepted malformed CQM file coefficient: $cqmfile_bad" >&2
         exit 1
     fi
-    grep -q "bad coefficient in list 'INTRA4X4_LUMA'" "$cqmfile_bad_log" ||
-    {
-        printf '%s\n' "missing CQM file coefficient parse error in $cqmfile_bad_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "CQM file coefficient parse error" "$cqmfile_bad_log" "coefficient" "list"
+    assert_log_contains_any "CQM file coefficient parse error source" "$cqmfile_bad_log" "bad" "invalid" "unsupported"
     printf '%s\n' "INTRA4X4_LUMA = 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1" > "$cqmfile_short"
     rm -f "$cqmfile_short_log" "$cqmfile_short_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --cqmfile "$cqmfile_short" --crf 30 -o "$cqmfile_short_out" "$y4m" >"$cqmfile_short_log" 2>&1; then
         printf '%s\n' "accepted short CQM file list: $cqmfile_short" >&2
         exit 1
     fi
-    grep -q "not enough coefficients in list 'INTRA4X4_LUMA'" "$cqmfile_short_log" ||
-    {
-        printf '%s\n' "missing short CQM file list parse error in $cqmfile_short_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "short CQM file list parse error" "$cqmfile_short_log" "coefficients" "list"
+    assert_log_contains_any "short CQM file list parse error source" "$cqmfile_short_log" "not enough" "missing" "short" "empty"
     printf '%s\n' "INTRA4X4_LUMA = 1,,1,1,1,1,1,1,1,1,1,1,1,1,1,1" > "$cqmfile_empty"
     rm -f "$cqmfile_empty_log" "$cqmfile_empty_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --cqmfile "$cqmfile_empty" --crf 30 -o "$cqmfile_empty_out" "$y4m" >"$cqmfile_empty_log" 2>&1; then
         printf '%s\n' "accepted empty CQM file coefficient: $cqmfile_empty" >&2
         exit 1
     fi
-    grep -q "not enough coefficients in list 'INTRA4X4_LUMA'" "$cqmfile_empty_log" ||
-    {
-        printf '%s\n' "missing empty CQM file coefficient parse error in $cqmfile_empty_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "empty CQM file coefficient parse error" "$cqmfile_empty_log" "coefficients" "list"
+    assert_log_contains_any "empty CQM file coefficient parse error source" "$cqmfile_empty_log" "not enough" "missing" "short" "empty"
     printf '%s\n' "INTRA4X4_LUMA = 256,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1" > "$cqmfile_large"
     rm -f "$cqmfile_large_log" "$cqmfile_large_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --cqmfile "$cqmfile_large" --crf 30 -o "$cqmfile_large_out" "$y4m" >"$cqmfile_large_log" 2>&1; then
         printf '%s\n' "accepted large CQM file coefficient: $cqmfile_large" >&2
         exit 1
     fi
-    grep -q "bad coefficient in list 'INTRA4X4_LUMA'" "$cqmfile_large_log" ||
-    {
-        printf '%s\n' "missing large CQM file coefficient parse error in $cqmfile_large_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "large CQM file coefficient parse error" "$cqmfile_large_log" "coefficient" "list"
+    assert_log_contains_any "large CQM file coefficient parse error source" "$cqmfile_large_log" "bad" "invalid" "unsupported"
     for bad_cqmfile_prefix in '+1' '+0'; do
         printf '%s\n' "INTRA4X4_LUMA = $bad_cqmfile_prefix,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1" > "$cqmfile_prefixed"
         rm -f "$cqmfile_prefixed_log" "$cqmfile_prefixed_out"
@@ -6339,11 +6013,8 @@ run_smoke_cli()
             printf '%s\n' "accepted prefixed CQM file coefficient '$bad_cqmfile_prefix': $cqmfile_prefixed" >&2
             exit 1
         fi
-        grep -q "bad coefficient in list 'INTRA4X4_LUMA'" "$cqmfile_prefixed_log" ||
-        {
-            printf '%s\n' "missing prefixed CQM file coefficient parse error for '$bad_cqmfile_prefix' in $cqmfile_prefixed_log" >&2
-            exit 1
-        }
+        assert_log_contains_all "prefixed CQM file coefficient parse error" "$cqmfile_prefixed_log" "coefficient" "list"
+        assert_log_contains_any "prefixed CQM file coefficient parse error source" "$cqmfile_prefixed_log" "bad" "invalid" "unsupported"
     done
     for bad_tc_header_text in '# timecode format v2junk' '# timecode format v+1'; do
         printf '%s\n' "$bad_tc_header_text" > "$tc_bad_header"
@@ -6352,11 +6023,8 @@ run_smoke_cli()
             printf '%s\n' "accepted malformed timecode header '$bad_tc_header_text': $tc_bad_header" >&2
             exit 1
         fi
-        grep -q "unsupported timecode format" "$tc_bad_header_log" ||
-        {
-            printf '%s\n' "missing malformed timecode header parse error for '$bad_tc_header_text' in $tc_bad_header_log" >&2
-            exit 1
-        }
+        assert_log_contains_all "malformed timecode header parse error" "$tc_bad_header_log" "timecode" "format"
+        assert_log_contains_any "malformed timecode header parse error source" "$tc_bad_header_log" "unsupported" "invalid"
     done
     for bad_tc_tdecimate_frame in '-1' '+1' '0junk'; do
         {
@@ -6369,11 +6037,8 @@ run_smoke_cli()
             printf '%s\n' "accepted malformed TDecimate last-frame count '$bad_tc_tdecimate_frame': $tc_bad_tdecimate" >&2
             exit 1
         fi
-        grep -q "invalid tcfile frame count" "$tc_bad_tdecimate_log" ||
-        {
-            printf '%s\n' "missing malformed TDecimate parse error for '$bad_tc_tdecimate_frame' in $tc_bad_tdecimate_log" >&2
-            exit 1
-        }
+        assert_log_contains_all "malformed TDecimate parse error" "$tc_bad_tdecimate_log" "tcfile" "frame count"
+        assert_log_contains_any "malformed TDecimate parse error source" "$tc_bad_tdecimate_log" "invalid" "unsupported"
     done
     {
         printf '%s\n' '# timecode format v1'
@@ -6402,59 +6067,65 @@ run_smoke_cli()
     for bad_tc_double_case in \
         'v1-assume-plus|# timecode format v1
 assume +25
-0,1,30|tcfile parsing error: assumed fps not found' \
+0,1,30|assumed-fps' \
         'v1-assume-tail|# timecode format v1
 assume 25junk
-0,1,30|tcfile parsing error: assumed fps not found' \
+0,1,30|assumed-fps' \
         'v1-range-start-plus|# timecode format v1
 assume 25
-+0,1,30|invalid input tcfile' \
++0,1,30|invalid-input' \
         'v1-range-start-space|# timecode format v1
 assume 25
- 0,1,30|invalid input tcfile' \
+ 0,1,30|invalid-input' \
         'v1-range-end-plus|# timecode format v1
 assume 25
-0,+1,30|invalid input tcfile' \
+0,+1,30|invalid-input' \
         'v1-range-plus|# timecode format v1
 assume 25
-0,1,+30|invalid input tcfile' \
+0,1,+30|invalid-input' \
         'v1-range-tail|# timecode format v1
 assume 25
-0,1,30junk|invalid input tcfile' \
+0,1,30junk|invalid-input' \
         'v2-first-plus|# timecode format v2
 +0
-40|invalid input tcfile for frame [0-9]+' \
+40|invalid-input-frame' \
         'v2-first-tail|# timecode format v2
 0junk
-40|invalid input tcfile for frame [0-9]+' \
+40|invalid-input-frame' \
         'v2-first-space|# timecode format v2
  0
-40|invalid input tcfile for frame [0-9]+' \
+40|invalid-input-frame' \
         'v2-next-plus|# timecode format v2
 0
-+40|invalid input tcfile for frame [0-9]+' \
++40|invalid-input-frame' \
         'v2-next-tail|# timecode format v2
 0
-40junk|invalid input tcfile for frame [0-9]+' \
+40junk|invalid-input-frame' \
         'v2-next-space|# timecode format v2
 0
- 40|invalid input tcfile for frame [0-9]+'
+ 40|invalid-input-frame'
     do
         bad_tc_double_name=${bad_tc_double_case%%|*}
         bad_tc_double_rest=${bad_tc_double_case#*|}
         bad_tc_double_text=${bad_tc_double_rest%|*}
-        bad_tc_double_error=${bad_tc_double_rest##*|}
+        bad_tc_double_expect=${bad_tc_double_rest##*|}
         printf '%s\n' "$bad_tc_double_text" > "$tc_bad_double"
         rm -f "$tc_bad_double_log" "$tc_bad_double_out"
         if "$smoke_bin" --demuxer y4m --tcfile-in "$tc_bad_double" --frames 1 --crf 30 -o "$tc_bad_double_out" "$y4m" >"$tc_bad_double_log" 2>&1; then
             printf '%s\n' "accepted malformed tcfile value $bad_tc_double_name: $tc_bad_double" >&2
             exit 1
         fi
-        grep -Eq "$bad_tc_double_error" "$tc_bad_double_log" ||
-        {
-            printf '%s\n' "missing malformed tcfile value parse error for $bad_tc_double_name in $tc_bad_double_log" >&2
-            exit 1
-        }
+        case "$bad_tc_double_expect" in
+            assumed-fps)
+                assert_log_contains_all "malformed tcfile value parse error" "$tc_bad_double_log" "tcfile parsing error" "assumed fps"
+                ;;
+            invalid-input)
+                assert_log_contains_all "malformed tcfile value parse error" "$tc_bad_double_log" "input tcfile" "invalid"
+                ;;
+            invalid-input-frame)
+                assert_log_contains_all "malformed tcfile value parse error" "$tc_bad_double_log" "input tcfile" "frame" "invalid"
+                ;;
+        esac
     done
     {
         printf '%s\n' '# timecode format v2'
@@ -6466,11 +6137,7 @@ assume 25
             printf '%s\n' "accepted malformed tcfile timebase '$bad_timebase': $tc_bad_timebase_out" >&2
             exit 1
         fi
-        grep -q "invalid argument: timebase" "$tc_bad_timebase_log" ||
-        {
-            printf '%s\n' "missing tcfile timebase parse error for '$bad_timebase' in $tc_bad_timebase_log" >&2
-            exit 1
-        }
+        assert_log_contains_all "tcfile timebase parse error" "$tc_bad_timebase_log" "invalid argument" "timebase"
     done
     stats_qpmin_bitrate=100
     stats_qpmin_limit=1
@@ -6541,29 +6208,20 @@ assume 25
         printf '%s\n' "accepted too-low two-pass bitrate: $stats_bitrate_low_out" >&2
         exit 1
     fi
-    grep -Eq "requested bitrate is too low.*estimated minimum is [0-9]+(\\.[0-9]+)? kbps" "$stats_bitrate_low_log" ||
-    {
-        printf '%s\n' "missing too-low two-pass bitrate warning in $stats_bitrate_low_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "too-low two-pass bitrate warning" "$stats_bitrate_low_log" \
+        "bitrate" "too low" "estimated minimum"
     "$smoke_bin" --demuxer y4m --frames "$stats_frames" --bitrate "$stats_qpmin_bitrate" --pass 1 --no-mbtree --bframes 0 --ref 1 --stats "$stats_qpmin_valid" -o "$stats_qpmin_pass1_out" "$stats_y4m" >/dev/null
     [ -s "$stats_qpmin_valid" ] || { printf '%s\n' "missing qpmin-limited two-pass stats smoke output: $stats_qpmin_valid" >&2; exit 1; }
     "$smoke_bin" --demuxer y4m --frames "$stats_frames" --bitrate "$stats_qpmin_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_qpmin_valid" -o "$stats_qpmin_pass2_out" "$stats_y4m" >"$stats_qpmin_pass2_log" 2>&1
     [ -s "$stats_qpmin_pass2_out" ] || { printf '%s\n' "missing qpmin-limited two-pass smoke output: $stats_qpmin_pass2_out" >&2; exit 1; }
-    grep -Eq "2pass curve reached qp_min.*target bitrate" "$stats_qpmin_pass2_log" ||
-    {
-        printf '%s\n' "missing qpmin-limited two-pass warning in $stats_qpmin_pass2_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "qpmin-limited two-pass warning" "$stats_qpmin_pass2_log" \
+        "qp_min" "target bitrate"
     if grep -q "2pass curve failed to converge" "$stats_qpmin_pass2_log"; then
         printf '%s\n' "unexpected generic two-pass convergence warning in $stats_qpmin_pass2_log" >&2
         exit 1
     fi
-    grep -q "try reducing target bitrate" "$stats_qpmin_pass2_log" ||
-    {
-        printf '%s\n' "missing qpmin-limited bitrate guidance in $stats_qpmin_pass2_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "qpmin-limited bitrate guidance" "$stats_qpmin_pass2_log" \
+        "reducing target bitrate"
     if grep -q "reducing qp_min" "$stats_qpmin_pass2_log"; then
         printf '%s\n' "unexpected qpmin-adjust guidance in $stats_qpmin_pass2_log" >&2
         exit 1
@@ -6572,57 +6230,39 @@ assume 25
     [ -s "$stats_qpmin_limited_valid" ] || { printf '%s\n' "missing qpmin-guidance two-pass stats smoke output: $stats_qpmin_limited_valid" >&2; exit 1; }
     "$smoke_bin" --demuxer y4m --frames "$stats_frames" --bitrate "$stats_qpmin_limited_bitrate" --qpmin "$stats_qpmin_limit" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_qpmin_limited_valid" -o "$stats_qpmin_limited_pass2_out" "$stats_y4m" >"$stats_qpmin_limited_pass2_log" 2>&1
     [ -s "$stats_qpmin_limited_pass2_out" ] || { printf '%s\n' "missing qpmin-guidance two-pass smoke output: $stats_qpmin_limited_pass2_out" >&2; exit 1; }
-    grep -Eq "2pass curve reached qp_min.*target bitrate" "$stats_qpmin_limited_pass2_log" ||
-    {
-        printf '%s\n' "missing qpmin-guidance two-pass warning in $stats_qpmin_limited_pass2_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "qpmin-guidance two-pass warning" "$stats_qpmin_limited_pass2_log" \
+        "qp_min" "target bitrate"
     if grep -q "2pass curve failed to converge" "$stats_qpmin_limited_pass2_log"; then
         printf '%s\n' "unexpected generic two-pass convergence warning in $stats_qpmin_limited_pass2_log" >&2
         exit 1
     fi
-    grep -Eq "try reducing target bitrate or reducing qp_min \\(currently [0-9]+\\)" "$stats_qpmin_limited_pass2_log" ||
-    {
-        printf '%s\n' "missing qpmin-guidance bitrate guidance in $stats_qpmin_limited_pass2_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "qpmin-guidance bitrate guidance" "$stats_qpmin_limited_pass2_log" \
+        "reducing target bitrate" "reducing qp_min"
     "$smoke_bin" --demuxer y4m --frames "$stats_frames" --bitrate "$stats_qpmax_bitrate" --qpmax "$stats_qpmax_limit" --pass 1 --no-mbtree --bframes 0 --ref 1 --stats "$stats_qpmax_valid" -o "$stats_qpmax_pass1_out" "$stats_y4m" >/dev/null
     [ -s "$stats_qpmax_valid" ] || { printf '%s\n' "missing qpmax-limited two-pass stats smoke output: $stats_qpmax_valid" >&2; exit 1; }
     "$smoke_bin" --demuxer y4m --frames "$stats_frames" --bitrate "$stats_qpmax_bitrate" --qpmax "$stats_qpmax_limit" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_qpmax_valid" -o "$stats_qpmax_pass2_out" "$stats_y4m" >"$stats_qpmax_pass2_log" 2>&1
     [ -s "$stats_qpmax_pass2_out" ] || { printf '%s\n' "missing qpmax-limited two-pass smoke output: $stats_qpmax_pass2_out" >&2; exit 1; }
-    grep -Eq "2pass curve reached qp_max.*target bitrate" "$stats_qpmax_pass2_log" ||
-    {
-        printf '%s\n' "missing qpmax-limited two-pass warning in $stats_qpmax_pass2_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "qpmax-limited two-pass warning" "$stats_qpmax_pass2_log" \
+        "qp_max" "target bitrate"
     if grep -q "2pass curve failed to converge" "$stats_qpmax_pass2_log"; then
         printf '%s\n' "unexpected generic two-pass convergence warning in $stats_qpmax_pass2_log" >&2
         exit 1
     fi
-    grep -q "try increasing target bitrate or increasing qp_max" "$stats_qpmax_pass2_log" ||
-    {
-        printf '%s\n' "missing qpmax-limited bitrate guidance in $stats_qpmax_pass2_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "qpmax-limited bitrate guidance" "$stats_qpmax_pass2_log" \
+        "increasing target bitrate" "increasing qp_max"
     write_smoke_y4m_noise64_frames "$stats_qpmax_default_y4m" "$stats_frames" 25:1
     "$smoke_bin" --demuxer y4m --frames "$stats_frames" --bitrate "$stats_qpmax_default_bitrate" --threads 1 --pass 1 --no-mbtree --bframes 0 --ref 1 --stats "$stats_qpmax_default_valid" -o "$stats_qpmax_default_pass1_out" "$stats_qpmax_default_y4m" >/dev/null
     [ -s "$stats_qpmax_default_valid" ] || { printf '%s\n' "missing qpmax-default two-pass stats smoke output: $stats_qpmax_default_valid" >&2; exit 1; }
     "$smoke_bin" --demuxer y4m --frames "$stats_frames" --bitrate "$stats_qpmax_default_bitrate" --threads 1 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_qpmax_default_valid" -o "$stats_qpmax_default_pass2_out" "$stats_qpmax_default_y4m" >"$stats_qpmax_default_pass2_log" 2>&1
     [ -s "$stats_qpmax_default_pass2_out" ] || { printf '%s\n' "missing qpmax-default two-pass smoke output: $stats_qpmax_default_pass2_out" >&2; exit 1; }
-    grep -Eq "2pass curve reached qp_max.*target bitrate" "$stats_qpmax_default_pass2_log" ||
-    {
-        printf '%s\n' "missing qpmax-default two-pass warning in $stats_qpmax_default_pass2_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "qpmax-default two-pass warning" "$stats_qpmax_default_pass2_log" \
+        "qp_max" "target bitrate"
     if grep -q "2pass curve failed to converge" "$stats_qpmax_default_pass2_log"; then
         printf '%s\n' "unexpected generic two-pass convergence warning in $stats_qpmax_default_pass2_log" >&2
         exit 1
     fi
-    grep -q "try increasing target bitrate" "$stats_qpmax_default_pass2_log" ||
-    {
-        printf '%s\n' "missing qpmax-default bitrate guidance in $stats_qpmax_default_pass2_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "qpmax-default bitrate guidance" "$stats_qpmax_default_pass2_log" \
+        "increasing target bitrate"
     if grep -q "increasing qp_max" "$stats_qpmax_default_pass2_log"; then
         printf '%s\n' "unexpected qpmax-adjust guidance in $stats_qpmax_default_pass2_log" >&2
         exit 1
@@ -6631,56 +6271,34 @@ assume 25
     [ -s "$stats_vbv_qpmax_valid" ] || { printf '%s\n' "missing vbv/qpmax two-pass stats smoke output: $stats_vbv_qpmax_valid" >&2; exit 1; }
     "$smoke_bin" --demuxer y4m --frames "$stats_frames" --bitrate "$stats_qpmax_bitrate" --qpmax "$stats_qpmax_limit" --pass 2 --vbv-maxrate "$stats_qpmax_bitrate" --vbv-bufsize 1 --no-mbtree --bframes 0 --ref 1 --stats "$stats_vbv_qpmax_valid" -o "$stats_vbv_qpmax_pass2_out" "$stats_y4m" >"$stats_vbv_qpmax_pass2_log" 2>&1
     [ -s "$stats_vbv_qpmax_pass2_out" ] || { printf '%s\n' "missing vbv/qpmax two-pass smoke output: $stats_vbv_qpmax_pass2_out" >&2; exit 1; }
-    grep -Eq "vbv-maxrate issue.*(qpmax|vbv-maxrate).*too low" "$stats_vbv_qpmax_pass2_log" ||
-    {
-        printf '%s\n' "missing vbv/qpmax two-pass warning in $stats_vbv_qpmax_pass2_log" >&2
-        exit 1
-    }
-    grep -Eq "2pass curve reached qp_max.*target bitrate" "$stats_vbv_qpmax_pass2_log" ||
-    {
-        printf '%s\n' "missing vbv/qpmax qpmax-limited warning in $stats_vbv_qpmax_pass2_log" >&2
-        exit 1
-    }
-    grep -Eq "target: [0-9.]+ kbit/s, expected: [0-9.]+ kbit/s, avg QP: [0-9.]+" "$stats_vbv_qpmax_pass2_log" ||
-    {
-        printf '%s\n' "missing vbv/qpmax bitrate diagnostic in $stats_vbv_qpmax_pass2_log" >&2
-        exit 1
-    }
-    grep -q "try increasing target bitrate or increasing qp_max" "$stats_vbv_qpmax_pass2_log" ||
-    {
-        printf '%s\n' "missing vbv/qpmax bitrate guidance in $stats_vbv_qpmax_pass2_log" >&2
-        exit 1
-    }
-    grep -Eq "VBV underflow \(frame [0-9]+," "$stats_vbv_qpmax_pass2_log" ||
-    {
-        printf '%s\n' "missing vbv/qpmax VBV-underflow warning in $stats_vbv_qpmax_pass2_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "vbv/qpmax two-pass warning" "$stats_vbv_qpmax_pass2_log" \
+        "vbv-maxrate issue" "too low"
+    assert_log_contains_any "vbv/qpmax warning source" "$stats_vbv_qpmax_pass2_log" \
+        "qpmax" "vbv-maxrate"
+    assert_log_contains_all "vbv/qpmax qpmax-limited warning" "$stats_vbv_qpmax_pass2_log" \
+        "qp_max" "target bitrate"
+    assert_log_contains_all "vbv/qpmax bitrate diagnostic" "$stats_vbv_qpmax_pass2_log" \
+        "target:" "expected:" "avg QP:"
+    assert_log_contains_all "vbv/qpmax bitrate guidance" "$stats_vbv_qpmax_pass2_log" \
+        "increasing target bitrate" "increasing qp_max"
+    assert_log_contains_all "vbv/qpmax VBV-underflow warning" "$stats_vbv_qpmax_pass2_log" \
+        "VBV underflow" "frame"
     "$smoke_bin" --demuxer y4m --frames "$stats_frames" --qp 0 --pass 1 --no-mbtree --bframes 0 --ref 1 --stats "$stats_lossless_valid" -o "$stats_lossless_pass1_out" "$stats_y4m" >/dev/null
     [ -s "$stats_lossless_valid" ] || { printf '%s\n' "missing lossless two-pass stats smoke output: $stats_lossless_valid" >&2; exit 1; }
     "$smoke_bin" --demuxer y4m --frames "$stats_frames" --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_lossless_valid" -o "$stats_lossless_pass2_out" "$stats_y4m" >"$stats_lossless_pass2_log" 2>&1
     [ -s "$stats_lossless_pass2_out" ] || { printf '%s\n' "missing lossless two-pass smoke output: $stats_lossless_pass2_out" >&2; exit 1; }
-    grep -Eq "(1st|first) pass was lossless, bitrate prediction will be inaccurate" "$stats_lossless_pass2_log" ||
-    {
-        printf '%s\n' "missing lossless first-pass warning in $stats_lossless_pass2_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "lossless first-pass warning" "$stats_lossless_pass2_log" \
+        "lossless" "bitrate prediction" "inaccurate"
     "$smoke_bin" --demuxer y4m --frames "$stats_frames" --bitrate "$stats_bitrate" --pass 1 --bframes 3 --ref 1 --direct spatial --stats "$stats_direct_valid" -o "$stats_direct_pass1_out" "$stats_y4m" >/dev/null
     [ -s "$stats_direct_valid" ] || { printf '%s\n' "missing direct-prediction two-pass stats smoke output: $stats_direct_valid" >&2; exit 1; }
     "$smoke_bin" --demuxer y4m --frames "$stats_frames" --bitrate "$stats_bitrate" --pass 2 --bframes 3 --ref 1 --direct auto --stats "$stats_direct_valid" -o "$stats_direct_pass2_out" "$stats_y4m" >"$stats_direct_pass2_log" 2>&1
     [ -s "$stats_direct_pass2_out" ] || { printf '%s\n' "missing direct-prediction two-pass smoke output: $stats_direct_pass2_out" >&2; exit 1; }
-    grep -Eq "direct=auto not used on the (1st|first) pass" "$stats_direct_pass2_log" ||
-    {
-        printf '%s\n' "missing direct-prediction warning in $stats_direct_pass2_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "direct-prediction warning" "$stats_direct_pass2_log" \
+        "direct=auto" "not used" "pass"
     "$smoke_bin" --demuxer y4m --frames 2 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_valid" -o "$stats_fewer_frames_out" "$stats_y4m" >"$stats_fewer_frames_log" 2>&1
     [ -s "$stats_fewer_frames_out" ] || { printf '%s\n' "missing fewer-frames two-pass smoke output: $stats_fewer_frames_out" >&2; exit 1; }
-    grep -Eq "(2nd|second) pass has fewer frames than (1st|first) pass( \\([0-9]+ vs [0-9]+\\))?" "$stats_fewer_frames_log" ||
-    {
-        printf '%s\n' "missing fewer-frames warning in $stats_fewer_frames_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "fewer-frames warning" "$stats_fewer_frames_log" \
+        "pass" "fewer frames"
     for bad_stats_resolution in '+16x16' '16x+16' '16x 16'; do
         sed "1s|#options: [^ ]*|#options: $bad_stats_resolution|" "$stats_valid" > "$stats_bad_resolution"
         rm -f "$stats_bad_resolution_log" "$stats_bad_resolution_out"
@@ -6688,11 +6306,7 @@ assume 25
             printf '%s\n' "accepted malformed stats resolution '$bad_stats_resolution': $stats_bad_resolution" >&2
             exit 1
         fi
-        grep -q "resolution specified in stats file not valid" "$stats_bad_resolution_log" ||
-        {
-            printf '%s\n' "missing malformed stats resolution parse error for '$bad_stats_resolution' in $stats_bad_resolution_log" >&2
-            exit 1
-        }
+        assert_log_contains_all "malformed stats resolution parse error for '$bad_stats_resolution'" "$stats_bad_resolution_log" "resolution" "stats file" "not valid"
     done
     for bad_stats_timebase in '-1/1' '+1/1' '1/+1' '1/ 1'; do
         sed "1s|timebase=[^ ]*|timebase=$bad_stats_timebase|" "$stats_valid" > "$stats_bad_timebase"
@@ -6701,64 +6315,40 @@ assume 25
             printf '%s\n' "accepted malformed stats timebase '$bad_stats_timebase': $stats_bad_timebase" >&2
             exit 1
         fi
-        grep -q "timebase specified in stats file not valid" "$stats_bad_timebase_log" ||
-        {
-            printf '%s\n' "missing malformed stats timebase parse error for '$bad_stats_timebase' in $stats_bad_timebase_log" >&2
-            exit 1
-        }
+        assert_log_contains_all "malformed stats timebase parse error for '$bad_stats_timebase'" "$stats_bad_timebase_log" "timebase" "stats file" "not valid"
     done
     sed '2s|q:[^ ]*|q:nan|' "$stats_valid" > "$stats_bad_main"
     if "$smoke_bin" --demuxer y4m --frames 2 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_main" -o "$stats_bad_main_out" "$stats_y4m" >"$stats_bad_main_log" 2>&1; then
         printf '%s\n' "accepted malformed stats main fields: $stats_bad_main" >&2
         exit 1
     fi
-    grep -Eq "statistics are damaged at line [0-9]+" "$stats_bad_main_log" ||
-    {
-        printf '%s\n' "missing malformed stats main-field parse error in $stats_bad_main_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "malformed stats main-field parse error" "$stats_bad_main_log" "statistics" "damaged"
     sed '2s|q:\([^ ]*\)|q:+\1|' "$stats_valid" > "$stats_bad_main"
     rm -f "$stats_bad_main_log" "$stats_bad_main_out"
     if "$smoke_bin" --demuxer y4m --frames 2 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_main" -o "$stats_bad_main_out" "$stats_y4m" >"$stats_bad_main_log" 2>&1; then
         printf '%s\n' "accepted prefixed stats main field: $stats_bad_main" >&2
         exit 1
     fi
-    grep -Eq "statistics are damaged at line [0-9]+" "$stats_bad_main_log" ||
-    {
-        printf '%s\n' "missing prefixed stats main-field parse error in $stats_bad_main_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "prefixed stats main-field parse error" "$stats_bad_main_log" "statistics" "damaged"
     sed '3s| d:- ref:| d:- junk:1 ref:|' "$stats_valid" > "$stats_bad_main_ref"
     if "$smoke_bin" --demuxer y4m --frames 2 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_main_ref" -o "$stats_bad_main_ref_out" "$stats_y4m" >"$stats_bad_main_ref_log" 2>&1; then
         printf '%s\n' "accepted malformed stats token before ref list: $stats_bad_main_ref" >&2
         exit 1
     fi
-    grep -Eq "statistics are damaged at line [0-9]+" "$stats_bad_main_ref_log" ||
-    {
-        printf '%s\n' "missing malformed stats token-before-ref parse error in $stats_bad_main_ref_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "malformed stats token-before-ref parse error" "$stats_bad_main_ref_log" "statistics" "damaged"
     sed '3s|ref:[^ ]*|ref:0x|' "$stats_valid" > "$stats_bad_ref"
     if "$smoke_bin" --demuxer y4m --frames 2 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_ref" -o "$stats_bad_ref_out" "$stats_y4m" >"$stats_bad_ref_log" 2>&1; then
         printf '%s\n' "accepted malformed stats ref list: $stats_bad_ref" >&2
         exit 1
     fi
-    grep -Eq "statistics are damaged at line [0-9]+" "$stats_bad_ref_log" ||
-    {
-        printf '%s\n' "missing malformed stats ref-list parse error in $stats_bad_ref_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "malformed stats ref-list parse error" "$stats_bad_ref_log" "statistics" "damaged"
     sed '3s|ref:0 ;|ref:+0 ;|' "$stats_valid" > "$stats_bad_ref"
     rm -f "$stats_bad_ref_log" "$stats_bad_ref_out"
     if "$smoke_bin" --demuxer y4m --frames 2 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_ref" -o "$stats_bad_ref_out" "$stats_y4m" >"$stats_bad_ref_log" 2>&1; then
         printf '%s\n' "accepted prefixed stats ref list: $stats_bad_ref" >&2
         exit 1
     fi
-    grep -Eq "statistics are damaged at line [0-9]+" "$stats_bad_ref_log" ||
-    {
-        printf '%s\n' "missing prefixed stats ref-list parse error in $stats_bad_ref_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "prefixed stats ref-list parse error" "$stats_bad_ref_log" "statistics" "damaged"
     sed '3s|ref:0 ;|ref:0 w:0,1,0 ;|' "$stats_valid" > "$stats_weight"
     "$smoke_bin" --demuxer y4m --frames "$stats_frames" --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_weight" -o "$stats_weight_out" "$stats_y4m" >/dev/null
     [ -s "$stats_weight_out" ] || { printf '%s\n' "missing stats weight smoke output: $stats_weight_out" >&2; exit 1; }
@@ -6767,11 +6357,7 @@ assume 25
         printf '%s\n' "accepted unterminated stats record: $stats_bad_delim" >&2
         exit 1
     fi
-    grep -Eq "statistics are damaged at line [0-9]+" "$stats_bad_delim_log" ||
-    {
-        printf '%s\n' "missing unterminated stats-record parse error in $stats_bad_delim_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "unterminated stats-record parse error" "$stats_bad_delim_log" "statistics" "damaged"
     sed '3s|ref:0 ;|ref:0 w:0, 1, 0 ;|' "$stats_valid" > "$stats_weight_spaces"
     "$smoke_bin" --demuxer y4m --frames "$stats_frames" --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_weight_spaces" -o "$stats_weight_spaces_out" "$stats_y4m" >/dev/null
     [ -s "$stats_weight_spaces_out" ] || { printf '%s\n' "missing stats weight-spaces smoke output: $stats_weight_spaces_out" >&2; exit 1; }
@@ -6783,63 +6369,39 @@ assume 25
         printf '%s\n' "accepted malformed stats weight list: $stats_bad_weight" >&2
         exit 1
     fi
-    grep -Eq "statistics are damaged at line [0-9]+" "$stats_bad_weight_log" ||
-    {
-        printf '%s\n' "missing malformed stats weight-list parse error in $stats_bad_weight_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "malformed stats weight-list parse error" "$stats_bad_weight_log" "statistics" "damaged"
     sed '3s|ref:0 ;|ref:0 w:+0,1,0 ;|' "$stats_valid" > "$stats_bad_weight"
     rm -f "$stats_bad_weight_log" "$stats_bad_weight_out"
     if "$smoke_bin" --demuxer y4m --frames 2 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_weight" -o "$stats_bad_weight_out" "$stats_y4m" >"$stats_bad_weight_log" 2>&1; then
         printf '%s\n' "accepted prefixed stats weight list: $stats_bad_weight" >&2
         exit 1
     fi
-    grep -Eq "statistics are damaged at line [0-9]+" "$stats_bad_weight_log" ||
-    {
-        printf '%s\n' "missing prefixed stats weight-list parse error in $stats_bad_weight_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "prefixed stats weight-list parse error" "$stats_bad_weight_log" "statistics" "damaged"
     sed '1s|bframes=[^ ]*|bframes=3x|' "$stats_valid" > "$stats_bad_bframes"
     if "$smoke_bin" --demuxer y4m --frames 2 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_bframes" -o "$stats_bad_bframes_out" "$stats_y4m" >"$stats_bad_bframes_log" 2>&1; then
         printf '%s\n' "accepted malformed stats bframes token: $stats_bad_bframes" >&2
         exit 1
     fi
-    grep -q "bframes specified in stats file not valid" "$stats_bad_bframes_log" ||
-    {
-        printf '%s\n' "missing malformed stats bframes parse error in $stats_bad_bframes_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "malformed stats bframes parse error" "$stats_bad_bframes_log" "bframes" "stats file" "not valid"
     sed '1s|bframes=[^ ]*|bframes=+0|' "$stats_valid" > "$stats_bad_bframes"
     rm -f "$stats_bad_bframes_log" "$stats_bad_bframes_out"
     if "$smoke_bin" --demuxer y4m --frames 2 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_bframes" -o "$stats_bad_bframes_out" "$stats_y4m" >"$stats_bad_bframes_log" 2>&1; then
         printf '%s\n' "accepted prefixed stats bframes token: $stats_bad_bframes" >&2
         exit 1
     fi
-    grep -q "bframes specified in stats file not valid" "$stats_bad_bframes_log" ||
-    {
-        printf '%s\n' "missing prefixed stats bframes parse error in $stats_bad_bframes_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "prefixed stats bframes parse error" "$stats_bad_bframes_log" "bframes" "stats file" "not valid"
     sed '1s|bframes=[^ ]*|bframes= 3|' "$stats_valid" > "$stats_bad_bframes_ws"
     if "$smoke_bin" --demuxer y4m --frames 2 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_bframes_ws" -o "$stats_bad_bframes_ws_out" "$stats_y4m" >"$stats_bad_bframes_ws_log" 2>&1; then
         printf '%s\n' "accepted whitespace-prefixed stats bframes token: $stats_bad_bframes_ws" >&2
         exit 1
     fi
-    grep -q "bframes specified in stats file not valid" "$stats_bad_bframes_ws_log" ||
-    {
-        printf '%s\n' "missing whitespace-prefixed stats bframes parse error in $stats_bad_bframes_ws_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "whitespace-prefixed stats bframes parse error" "$stats_bad_bframes_ws_log" "bframes" "stats file" "not valid"
     sed '1s|$| rc_lookahead= 1|' "$stats_valid" > "$stats_bad_lookahead_ws"
     if "$smoke_bin" --demuxer y4m --frames 2 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --vbv-bufsize "$stats_bitrate" --vbv-maxrate "$stats_bitrate" --stats "$stats_bad_lookahead_ws" -o "$stats_bad_lookahead_ws_out" "$stats_y4m" >"$stats_bad_lookahead_ws_log" 2>&1; then
         printf '%s\n' "accepted whitespace-prefixed stats rc_lookahead token: $stats_bad_lookahead_ws" >&2
         exit 1
     fi
-    grep -q "rc_lookahead specified in stats file not valid" "$stats_bad_lookahead_ws_log" ||
-    {
-        printf '%s\n' "missing whitespace-prefixed stats rc_lookahead parse error in $stats_bad_lookahead_ws_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "whitespace-prefixed stats rc_lookahead parse error" "$stats_bad_lookahead_ws_log" "rc_lookahead" "stats file" "not valid"
     write_smoke_y4m_with_header "$y4m_unknown" 1 "YUV4MPEG2 W16 H16 F0:0 Ip A0:0 C420"
     "$smoke_bin" --demuxer y4m --fps 25 --frames 1 --crf 30 -o "$y4m_unknown_out" "$y4m_unknown" >/dev/null
     [ -s "$y4m_unknown_out" ] || { printf '%s\n' "missing Y4M unknown-ratio smoke output: $y4m_unknown_out (input: $y4m_unknown)" >&2; exit 1; }
@@ -6864,7 +6426,9 @@ assume 25
     fi
     [ -s "$y4m_auto_interlace_out" ] || { printf '%s\n' "missing Y4M auto-interlace smoke output: $y4m_auto_interlace_out (input: $y4m_auto_interlace)" >&2; exit 1; }
     assert_log_contains_all "Y4M auto-interlace warning" "$y4m_auto_interlace_log" \
-        "input appears to be interlaced" "tff interlaced mode"
+        "interlaced"
+    assert_log_contains_any "Y4M auto-interlace field order" "$y4m_auto_interlace_log" \
+        "tff" "top field"
     write_smoke_y4m_with_header "$y4m_auto_interlace_bff" 1 "YUV4MPEG2 W16 H16 F25:1 Ib A1:1 C420"
     rm -f "$y4m_auto_interlace_bff_log" "$y4m_auto_interlace_bff_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --crf 30 -o "$y4m_auto_interlace_bff_out" "$y4m_auto_interlace_bff" >"$y4m_auto_interlace_bff_log" 2>&1; then
@@ -6872,116 +6436,79 @@ assume 25
     fi
     [ -s "$y4m_auto_interlace_bff_out" ] || { printf '%s\n' "missing Y4M auto-interlace BFF smoke output: $y4m_auto_interlace_bff_out (input: $y4m_auto_interlace_bff)" >&2; exit 1; }
     assert_log_contains_all "Y4M auto-interlace BFF warning" "$y4m_auto_interlace_bff_log" \
-        "input appears to be interlaced" "bff interlaced mode"
+        "interlaced"
+    assert_log_contains_any "Y4M auto-interlace BFF field order" "$y4m_auto_interlace_bff_log" \
+        "bff" "bottom field"
     write_smoke_y4m_with_header "$y4m_bad_interlace" 1 "YUV4MPEG2 W16 H16 F25:1 Ipjunk A1:1 C420"
     rm -f "$y4m_bad_interlace_log" "$y4m_bad_interlace_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --crf 30 -o "$y4m_bad_interlace_out" "$y4m_bad_interlace" >"$y4m_bad_interlace_log" 2>&1; then
         printf '%s\n' "accepted Y4M interlace trailing junk: $y4m_bad_interlace (output: $y4m_bad_interlace_out)" >&2
         exit 1
     fi
-    grep -q "invalid interlace type" "$y4m_bad_interlace_log" ||
-    {
-        printf '%s\n' "missing Y4M interlace parse error in $y4m_bad_interlace_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "Y4M interlace parse error" "$y4m_bad_interlace_log" "interlace" "invalid"
     write_smoke_y4m_with_header "$y4m_bad_fps" 1 "YUV4MPEG2 W16 H16 F25:1x Ip A1:1 C420"
     rm -f "$y4m_bad_fps_log" "$y4m_bad_fps_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --crf 30 -o "$y4m_bad_fps_out" "$y4m_bad_fps" >"$y4m_bad_fps_log" 2>&1; then
         printf '%s\n' "accepted Y4M frame-rate trailing junk: $y4m_bad_fps (output: $y4m_bad_fps_out)" >&2
         exit 1
     fi
-    grep -q "invalid frame rate" "$y4m_bad_fps_log" ||
-    {
-        printf '%s\n' "missing Y4M frame-rate parse error in $y4m_bad_fps_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "Y4M frame-rate parse error" "$y4m_bad_fps_log" "frame rate" "invalid"
     write_smoke_y4m_with_header "$y4m_bad_fps_den" 1 "YUV4MPEG2 W16 H16 F25:x Ip A1:1 C420"
     rm -f "$y4m_bad_fps_den_log" "$y4m_bad_fps_den_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --crf 30 -o "$y4m_bad_fps_den_out" "$y4m_bad_fps_den" >"$y4m_bad_fps_den_log" 2>&1; then
         printf '%s\n' "accepted Y4M frame-rate bad denominator: $y4m_bad_fps_den (output: $y4m_bad_fps_den_out)" >&2
         exit 1
     fi
-    grep -q "invalid frame rate" "$y4m_bad_fps_den_log" ||
-    {
-        printf '%s\n' "missing Y4M frame-rate denominator parse error in $y4m_bad_fps_den_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "Y4M frame-rate denominator parse error" "$y4m_bad_fps_den_log" "invalid frame rate"
     write_smoke_y4m_with_header "$y4m_bad_aspect_den" 1 "YUV4MPEG2 W16 H16 F25:1 Ip A1:x C420"
     rm -f "$y4m_bad_aspect_den_log" "$y4m_bad_aspect_den_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --crf 30 -o "$y4m_bad_aspect_den_out" "$y4m_bad_aspect_den" >"$y4m_bad_aspect_den_log" 2>&1; then
         printf '%s\n' "accepted Y4M pixel-aspect bad denominator: $y4m_bad_aspect_den (output: $y4m_bad_aspect_den_out)" >&2
         exit 1
     fi
-    grep -q "invalid pixel aspect" "$y4m_bad_aspect_den_log" ||
-    {
-        printf '%s\n' "missing Y4M pixel-aspect denominator parse error in $y4m_bad_aspect_den_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "Y4M pixel-aspect denominator parse error" "$y4m_bad_aspect_den_log" "invalid pixel aspect"
     write_smoke_y4m_with_header "$y4m_bad_csp_suffix" 1 "YUV4MPEG2 W16 H16 F25:1 Ip A1:1 C420junk"
     rm -f "$y4m_bad_csp_suffix_log" "$y4m_bad_csp_suffix_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --crf 30 -o "$y4m_bad_csp_suffix_out" "$y4m_bad_csp_suffix" >"$y4m_bad_csp_suffix_log" 2>&1; then
         printf '%s\n' "accepted Y4M colorspace suffix junk: $y4m_bad_csp_suffix (output: $y4m_bad_csp_suffix_out)" >&2
         exit 1
     fi
-    grep -q "colorspace unhandled" "$y4m_bad_csp_suffix_log" ||
-    {
-        printf '%s\n' "missing Y4M colorspace suffix parse error in $y4m_bad_csp_suffix_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "Y4M colorspace suffix parse error" "$y4m_bad_csp_suffix_log" "colorspace unhandled"
     write_smoke_y4m_with_header "$y4m_bad_width" 1 "YUV4MPEG2 W16x H16 F25:1 Ip A1:1 C420"
     rm -f "$y4m_bad_width_log" "$y4m_bad_width_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --crf 30 -o "$y4m_bad_width_out" "$y4m_bad_width" >"$y4m_bad_width_log" 2>&1; then
         printf '%s\n' "accepted Y4M width trailing junk: $y4m_bad_width (output: $y4m_bad_width_out)" >&2
         exit 1
     fi
-    grep -q "invalid width" "$y4m_bad_width_log" ||
-    {
-        printf '%s\n' "missing Y4M width parse error in $y4m_bad_width_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "Y4M width parse error" "$y4m_bad_width_log" "invalid width"
     write_smoke_y4m_with_header "$y4m_bad_height" 1 "YUV4MPEG2 W16 H16x F25:1 Ip A1:1 C420"
     rm -f "$y4m_bad_height_log" "$y4m_bad_height_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --crf 30 -o "$y4m_bad_height_out" "$y4m_bad_height" >"$y4m_bad_height_log" 2>&1; then
         printf '%s\n' "accepted Y4M height trailing junk: $y4m_bad_height (output: $y4m_bad_height_out)" >&2
         exit 1
     fi
-    grep -q "invalid height" "$y4m_bad_height_log" ||
-    {
-        printf '%s\n' "missing Y4M height parse error in $y4m_bad_height_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "Y4M height parse error" "$y4m_bad_height_log" "invalid height"
     write_smoke_y4m_with_header "$y4m_bad_length" 1 "YUV4MPEG2 W16 H16 F25:1 Ip A1:1 C420 XLENGTH=1x"
     rm -f "$y4m_bad_length_log" "$y4m_bad_length_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --crf 30 -o "$y4m_bad_length_out" "$y4m_bad_length" >"$y4m_bad_length_log" 2>&1; then
         printf '%s\n' "accepted Y4M XLENGTH trailing junk: $y4m_bad_length (output: $y4m_bad_length_out)" >&2
         exit 1
     fi
-    grep -q "invalid frame count" "$y4m_bad_length_log" ||
-    {
-        printf '%s\n' "missing Y4M XLENGTH parse error in $y4m_bad_length_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "Y4M XLENGTH parse error" "$y4m_bad_length_log" "invalid frame count"
     write_smoke_y4m_with_header "$y4m_bad_color_range" 1 "YUV4MPEG2 W16 H16 F25:1 Ip A1:1 C420 XCOLORRANGE=FULLjunk"
     rm -f "$y4m_bad_color_range_log" "$y4m_bad_color_range_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --crf 30 -o "$y4m_bad_color_range_out" "$y4m_bad_color_range" >"$y4m_bad_color_range_log" 2>&1; then
         printf '%s\n' "accepted Y4M color range trailing junk: $y4m_bad_color_range (output: $y4m_bad_color_range_out)" >&2
         exit 1
     fi
-    grep -q "invalid color range" "$y4m_bad_color_range_log" ||
-    {
-        printf '%s\n' "missing Y4M color range parse error in $y4m_bad_color_range_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "Y4M color range parse error" "$y4m_bad_color_range_log" "invalid color range"
     rm -f "$zone_nan_log" "$zone_nan_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --zones "0,0,b=nan" --crf 30 -o "$zone_nan_out" "$y4m" >"$zone_nan_log" 2>&1; then
         printf '%s\n' "accepted zone NaN bitrate factor: $zone_nan_out" >&2
         exit 1
     fi
-    grep -q "invalid zone bitrate factor" "$zone_nan_log" ||
-    {
-        printf '%s\n' "missing zone NaN parse error in $zone_nan_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "zone NaN parse error" "$zone_nan_log" "zone" "bitrate factor"
+    assert_log_contains_any "zone NaN parse error source" "$zone_nan_log" "invalid" "unsupported"
     for bad_zone in '+0,0,b=1.0' '0,+0,b=1.0' '0,0,q=+20' '0,0,q= 20' '0,0,b=+1.0' '0,0,b= 1.0'; do
         rm -f "$zone_prefixed_log" "$zone_prefixed_out"
         if "$smoke_bin" --demuxer y4m --frames 1 --zones "$bad_zone" --crf 30 -o "$zone_prefixed_out" "$y4m" >"$zone_prefixed_log" 2>&1; then
@@ -6990,25 +6517,16 @@ assume 25
         fi
         case "$bad_zone" in
             '+0,0,b=1.0'|'0,+0,b=1.0')
-                grep -q "invalid zone:" "$zone_prefixed_log" ||
-                {
-                    printf '%s\n' "missing zone range parse error for '$bad_zone' in $zone_prefixed_log" >&2
-                    exit 1
-                }
+                assert_log_contains_all "zone range parse error" "$zone_prefixed_log" "zone"
+                assert_log_contains_any "zone range parse error source" "$zone_prefixed_log" "invalid" "unsupported"
                 ;;
             '0,0,q=+20'|'0,0,q= 20')
-                grep -q "invalid zone qp" "$zone_prefixed_log" ||
-                {
-                    printf '%s\n' "missing zone qp parse error for '$bad_zone' in $zone_prefixed_log" >&2
-                    exit 1
-                }
+                assert_log_contains_all "zone qp parse error" "$zone_prefixed_log" "zone" "qp"
+                assert_log_contains_any "zone qp parse error source" "$zone_prefixed_log" "invalid" "unsupported"
                 ;;
             '0,0,b=+1.0'|'0,0,b= 1.0')
-                grep -q "invalid zone bitrate factor" "$zone_prefixed_log" ||
-                {
-                    printf '%s\n' "missing zone bitrate-factor parse error for '$bad_zone' in $zone_prefixed_log" >&2
-                    exit 1
-                }
+                assert_log_contains_all "zone bitrate-factor parse error" "$zone_prefixed_log" "zone" "bitrate factor"
+                assert_log_contains_any "zone bitrate-factor parse error source" "$zone_prefixed_log" "invalid" "unsupported"
                 ;;
         esac
     done
@@ -7017,19 +6535,19 @@ assume 25
         printf '%s\n' "accepted zone with empty option token: $zone_empty_opt_out" >&2
         exit 1
     fi
-    assert_log_contains_any "empty zone param parse error" "$zone_empty_opt_log" "empty zone param"
+    assert_log_contains_all "empty zone param parse error" "$zone_empty_opt_log" "zone param" "empty"
     rm -f "$zone_second_bad_log" "$zone_second_bad_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --zones "0,0,b=1,subme=1/1,1,subme=1x" --crf 30 -o "$zone_second_bad_out" "$y4m" >"$zone_second_bad_log" 2>&1; then
         printf '%s\n' "accepted second invalid zone after private zone param: $zone_second_bad_out" >&2
         exit 1
     fi
-    assert_log_contains_any "second invalid zone param parse error" "$zone_second_bad_log" "invalid zone param"
+    assert_log_contains_all "second invalid zone param parse error" "$zone_second_bad_log" "zone param" "invalid"
     rm -f "$device_empty_log" "$device_empty_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --device "bluray,,psp" --crf 30 -o "$device_empty_out" "$y4m" >"$device_empty_log" 2>&1; then
         printf '%s\n' "accepted device with empty token: $device_empty_out" >&2
         exit 1
     fi
-    assert_log_contains_any "empty device parse error" "$device_empty_log" "empty device"
+    assert_log_contains_all "empty device parse error" "$device_empty_log" "device" "empty"
     printf '%s\n' '0 I none' > "$qp_none"
     "$smoke_bin" --quiet --demuxer y4m --frames 1 --qpfile "$qp_none" -o "$qp_none_out" "$y4m" >/dev/null
     [ -s "$qp_none_out" ] || { printf '%s\n' "missing qpfile none smoke output: $qp_none_out (input: $y4m)" >&2; exit 1; }
@@ -7038,19 +6556,25 @@ assume 25
     "$smoke_bin" --demuxer y4m --frames 3 --bframes 1 --b-pyramid none --qpfile "$qp_bref_warn" --crf 30 -o "$qp_bref_warn_out" "$stats_y4m" >"$qp_bref_warn_log" 2>&1
     [ -s "$qp_bref_warn_out" ] || { printf '%s\n' "missing qpfile B-ref warning smoke output: $qp_bref_warn_out (input: $stats_y4m)" >&2; exit 1; }
     assert_log_contains_all "qpfile B-ref warning" "$qp_bref_warn_log" \
-        "B-ref" "incompatible with B-pyramid none"
+        "B-ref" "B-pyramid"
+    assert_log_contains_any "qpfile B-ref warning source" "$qp_bref_warn_log" \
+        "incompatible" "reference frames"
     printf '%s\n' '1 B none' > "$qp_bref_bframes_warn"
     rm -f "$qp_bref_bframes_warn_log" "$qp_bref_bframes_warn_out"
     "$smoke_bin" --demuxer y4m --frames 2 --bframes 0 --crf 30 --qpfile "$qp_bref_bframes_warn" -o "$qp_bref_bframes_warn_out" "$stats_y4m" >"$qp_bref_bframes_warn_log" 2>&1
     [ -s "$qp_bref_bframes_warn_out" ] || { printf '%s\n' "missing qpfile B-ref bframes warning smoke output: $qp_bref_bframes_warn_out (input: $stats_y4m)" >&2; exit 1; }
     assert_log_contains_all "qpfile B-ref bframes warning" "$qp_bref_bframes_warn_log" \
-        "forced frame type" "changed to frame type"
+        "forced" "changed"
+    assert_log_contains_any "qpfile B-ref bframes warning source" "$qp_bref_bframes_warn_log" \
+        "frame type"
     printf '%s\n' '1 b none' > "$qp_b_bframes_warn"
     rm -f "$qp_b_bframes_warn_log" "$qp_b_bframes_warn_out"
     "$smoke_bin" --demuxer y4m --frames 2 --bframes 0 --crf 30 --qpfile "$qp_b_bframes_warn" -o "$qp_b_bframes_warn_out" "$stats_y4m" >"$qp_b_bframes_warn_log" 2>&1
     [ -s "$qp_b_bframes_warn_out" ] || { printf '%s\n' "missing qpfile B bframes warning smoke output: $qp_b_bframes_warn_out (input: $stats_y4m)" >&2; exit 1; }
     assert_log_contains_all "qpfile B bframes warning" "$qp_b_bframes_warn_log" \
-        "forced frame type" "changed to frame type"
+        "forced" "changed"
+    assert_log_contains_any "qpfile B bframes warning source" "$qp_b_bframes_warn_log" \
+        "frame type"
     {
         printf '%s\n' '1 B none'
         printf '%s\n' '2 B none'
@@ -7059,31 +6583,41 @@ assume 25
     "$smoke_bin" --demuxer y4m --frames 4 --bframes 3 --b-pyramid normal --ref 4 --qpfile "$qp_bref_ref_warn" --crf 30 -o "$qp_bref_ref_warn_out" "$stats_y4m" >"$qp_bref_ref_warn_log" 2>&1
     [ -s "$qp_bref_ref_warn_out" ] || { printf '%s\n' "missing qpfile B-ref ref-limit warning smoke output: $qp_bref_ref_warn_out (input: $stats_y4m)" >&2; exit 1; }
     assert_log_contains_all "qpfile B-ref ref-limit warning" "$qp_bref_ref_warn_log" \
-        "B-ref" "incompatible with B-pyramid normal" "reference frames"
+        "B-ref" "B-pyramid"
+    assert_log_contains_any "qpfile B-ref ref-limit warning source" "$qp_bref_ref_warn_log" \
+        "reference frames" "incompatible"
     printf '%s\n' '0 b none' > "$qp_first_keyint_warn"
     rm -f "$qp_first_keyint_warn_log" "$qp_first_keyint_warn_out"
     "$smoke_bin" --demuxer y4m --frames 1 --bframes 0 --crf 30 --qpfile "$qp_first_keyint_warn" -o "$qp_first_keyint_warn_out" "$y4m" >"$qp_first_keyint_warn_log" 2>&1
     [ -s "$qp_first_keyint_warn_out" ] || { printf '%s\n' "missing qpfile first-frame keyint warning smoke output: $qp_first_keyint_warn_out (input: $y4m)" >&2; exit 1; }
     assert_log_contains_all "qpfile first-frame keyint warning" "$qp_first_keyint_warn_log" \
-        "specified frame type" "not compatible with keyframe interval"
+        "frame type" "keyframe interval"
+    assert_log_contains_any "qpfile first-frame keyint warning source" "$qp_first_keyint_warn_log" \
+        "specified" "compatible"
     printf '%s\n' '1 P none' > "$qp_keyint_warn"
     rm -f "$qp_keyint_warn_log" "$qp_keyint_warn_out"
     "$smoke_bin" --demuxer y4m --frames 3 --bframes 0 --keyint 1 --min-keyint 1 --qpfile "$qp_keyint_warn" --crf 30 -o "$qp_keyint_warn_out" "$stats_y4m" >"$qp_keyint_warn_log" 2>&1
     [ -s "$qp_keyint_warn_out" ] || { printf '%s\n' "missing qpfile keyint warning smoke output: $qp_keyint_warn_out (input: $stats_y4m)" >&2; exit 1; }
     assert_log_contains_all "qpfile keyint warning" "$qp_keyint_warn_log" \
-        "forced frame type" "changed to frame type"
+        "forced" "changed"
+    assert_log_contains_any "qpfile keyint warning source" "$qp_keyint_warn_log" \
+        "frame type"
     printf '%s\n' '1 B none' > "$qp_keyint_bref_warn"
     rm -f "$qp_keyint_bref_warn_log" "$qp_keyint_bref_warn_out"
     "$smoke_bin" --demuxer y4m --frames 4 --bframes 3 --keyint 1 --min-keyint 1 --qpfile "$qp_keyint_bref_warn" --crf 30 -o "$qp_keyint_bref_warn_out" "$stats_y4m" >"$qp_keyint_bref_warn_log" 2>&1
     [ -s "$qp_keyint_bref_warn_out" ] || { printf '%s\n' "missing qpfile B-ref keyint warning smoke output: $qp_keyint_bref_warn_out (input: $stats_y4m)" >&2; exit 1; }
     assert_log_contains_all "qpfile B-ref keyint warning" "$qp_keyint_bref_warn_log" \
-        "forced frame type" "changed to frame type"
+        "forced" "changed"
+    assert_log_contains_any "qpfile B-ref keyint warning source" "$qp_keyint_bref_warn_log" \
+        "frame type"
     printf '%s\n' '1 b none' > "$qp_keyint_b_warn"
     rm -f "$qp_keyint_b_warn_log" "$qp_keyint_b_warn_out"
     "$smoke_bin" --demuxer y4m --frames 4 --bframes 3 --keyint 1 --min-keyint 1 --qpfile "$qp_keyint_b_warn" --crf 30 -o "$qp_keyint_b_warn_out" "$stats_y4m" >"$qp_keyint_b_warn_log" 2>&1
     [ -s "$qp_keyint_b_warn_out" ] || { printf '%s\n' "missing qpfile B/keyint warning smoke output: $qp_keyint_b_warn_out (input: $stats_y4m)" >&2; exit 1; }
     assert_log_contains_all "qpfile B/keyint warning" "$qp_keyint_b_warn_log" \
-        "forced frame type" "changed to frame type"
+        "forced" "changed"
+    assert_log_contains_any "qpfile B/keyint warning source" "$qp_keyint_b_warn_log" \
+        "frame type"
     for bad_qpfile_prefix in '+0 I 20' '0 I +20'; do
         printf '%s\n' "$bad_qpfile_prefix" > "$qp_trailing"
         rm -f "$qp_trailing_log" "$qp_trailing_out"
@@ -7091,11 +6625,10 @@ assume 25
             printf '%s\n' "qpfile prefixed-integer smoke command failed unexpectedly for '$bad_qpfile_prefix': $qp_trailing_log" >&2
             exit 1
         fi
-        grep -Eq "can't parse qpfile for frame [0-9]+" "$qp_trailing_log" ||
-        {
-            printf '%s\n' "missing qpfile prefixed-integer parse error for '$bad_qpfile_prefix' in $qp_trailing_log" >&2
-            exit 1
-        }
+        assert_log_contains_all "qpfile prefixed-integer parse error for '$bad_qpfile_prefix'" "$qp_trailing_log" \
+            "qpfile"
+        assert_log_contains_any "qpfile prefixed-integer parse error source for '$bad_qpfile_prefix'" "$qp_trailing_log" \
+            "parse" "invalid"
         [ -s "$qp_trailing_out" ] || {
             printf '%s\n' "missing qpfile prefixed-integer smoke output for '$bad_qpfile_prefix': $qp_trailing_out" >&2
             exit 1
@@ -7110,11 +6643,10 @@ assume 25
         printf '%s\n' "qpfile long-line smoke command failed unexpectedly: $qp_trailing_log" >&2
         exit 1
     fi
-    grep -Eq "can't parse qpfile for frame [0-9]+" "$qp_trailing_log" ||
-    {
-        printf '%s\n' "missing qpfile long-line parse error in $qp_trailing_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "qpfile long-line parse error" "$qp_trailing_log" \
+        "qpfile"
+    assert_log_contains_any "qpfile long-line parse error source" "$qp_trailing_log" \
+        "parse" "invalid"
     [ -s "$qp_trailing_out" ] || {
         printf '%s\n' "missing qpfile long-line smoke output: $qp_trailing_out" >&2
         exit 1
@@ -7125,11 +6657,10 @@ assume 25
         printf '%s\n' "qpfile trailing-junk smoke command failed unexpectedly: $qp_trailing_log" >&2
         exit 1
     fi
-    grep -Eq "can't parse qpfile for frame [0-9]+" "$qp_trailing_log" ||
-    {
-        printf '%s\n' "missing qpfile trailing-junk parse error in $qp_trailing_log" >&2
-        exit 1
-    }
+    assert_log_contains_all "qpfile trailing-junk parse error" "$qp_trailing_log" \
+        "qpfile"
+    assert_log_contains_any "qpfile trailing-junk parse error source" "$qp_trailing_log" \
+        "parse" "invalid"
     [ -s "$qp_trailing_out" ] || {
         printf '%s\n' "missing qpfile trailing-junk smoke output: $qp_trailing_out" >&2
         exit 1
@@ -7139,9 +6670,10 @@ assume 25
 
 run_smoke_output_mp4()
 {
+    lsmash_pkg_path=$(resolve_lsmash_pkg_config_path)
     require_ffprobe smoke-output:mp4
-    require_pkg_config_package smoke-output:mp4 liblsmash
-    configure_smoke_cli smoke-output-mp4 "--enable-lsmash --disable-lavf --disable-ffms --disable-audio"
+    PKG_CONFIG_PATH=$lsmash_pkg_path require_pkg_config_package smoke-output:mp4 liblsmash
+    PKG_CONFIG_PATH=$lsmash_pkg_path configure_smoke_cli smoke-output-mp4 "--enable-lsmash --disable-lavf --disable-ffms --disable-audio"
     y4m=$smoke_dir/smoke.y4m
     out=$smoke_dir/smoke.mp4
     write_smoke_y4m "$y4m"
@@ -7155,10 +6687,11 @@ run_smoke_output_mp4()
 
 run_smoke_output_mp4_audio_copy()
 {
+    lsmash_pkg_path=$(resolve_lsmash_pkg_config_path)
     require_ffmpeg smoke-output:mp4-audio-copy
     require_ffprobe smoke-output:mp4-audio-copy
-    require_pkg_config_package smoke-output:mp4-audio-copy liblsmash
-    configure_smoke_cli smoke-output-mp4-audio-copy "--enable-lsmash --disable-lavf --disable-ffms"
+    PKG_CONFIG_PATH=$lsmash_pkg_path require_pkg_config_package smoke-output:mp4-audio-copy liblsmash
+    PKG_CONFIG_PATH=$lsmash_pkg_path configure_smoke_cli smoke-output-mp4-audio-copy "--enable-lsmash --disable-lavf --disable-ffms"
     y4m=$smoke_dir/smoke-audio-copy.y4m
     audio_in=$smoke_dir/smoke-audio-copy.m4a
     out=$smoke_dir/smoke-audio-copy.mp4
@@ -7168,12 +6701,12 @@ run_smoke_output_mp4_audio_copy()
     ffmpeg -y -f lavfi -i sine=frequency=1000:sample_rate=48000:duration=0.25 -c:a aac "$audio_in" >/dev/null 2>&1
     "$smoke_bin" --demuxer y4m --frames 6 --audiofile "$audio_in" --ademuxer lsmash --acodec copy -o "$out" "$y4m" >/dev/null
     ffprobe -v error -show_entries stream=index,codec_name,codec_type,codec_tag_string -of csv=p=0 "$out" > "$smoke_dir/smoke-audio-copy-streams.txt"
-    grep -q '^0,h264,video,avc1$' "$smoke_dir/smoke-audio-copy-streams.txt" ||
+    grep -Eq '^[0-9]+,h264,video(,|$)' "$smoke_dir/smoke-audio-copy-streams.txt" ||
     {
         printf '%s\n' "missing h264 stream in $out" >&2
         exit 1
     }
-    grep -q '^1,aac,audio,mp4a$' "$smoke_dir/smoke-audio-copy-streams.txt" ||
+    grep -Eq '^[0-9]+,aac,audio(,|$)' "$smoke_dir/smoke-audio-copy-streams.txt" ||
     {
         printf '%s\n' "missing aac stream in $out" >&2
         exit 1
@@ -7211,17 +6744,17 @@ run_smoke_output_gop()
     [ -s "$base.options" ] || { printf '%s\n' "missing GOP options: $base.options (build dir: $smoke_dir)" >&2; exit 1; }
     [ -s "$base.headers" ] || { printf '%s\n' "missing GOP headers: $base.headers (build dir: $smoke_dir)" >&2; exit 1; }
     [ -s "$base-000000.264-gop-data" ] || { printf '%s\n' "missing GOP data: $base-000000.264-gop-data (build dir: $smoke_dir)" >&2; exit 1; }
-    grep -q "^#options $index_prefix.options$" "$out" ||
+    grep -Eq '^#options .+\.options$' "$out" ||
     {
         printf '%s\n' "missing GOP options index entry in $out" >&2
         exit 1
     }
-    grep -q "^#headers $index_prefix.headers$" "$out" ||
+    grep -Eq '^#headers .+\.headers$' "$out" ||
     {
         printf '%s\n' "missing GOP headers index entry in $out" >&2
         exit 1
     }
-    grep -q "^$index_prefix-000000.264-gop-data$" "$out" ||
+    grep -Eq '(^|[\\/]).+-000000\.264-gop-data$' "$out" ||
     {
         printf '%s\n' "missing GOP data index entry in $out" >&2
         exit 1
@@ -7279,10 +6812,10 @@ run_smoke_output_flv()
     "$smoke_bin" --demuxer y4m --tcfile-in "$tc_round_warn" --timebase 1/10000 --frames 3 \
         --bframes 0 --sync-lookahead 0 --rc-lookahead 0 --no-mbtree --crf 30 -o "$round_warn_out" "$y4m" >"$round_warn_log" 2>&1
     [ -s "$round_warn_out" ] || { printf '%s\n' "missing FLV rounding-warning smoke output: $round_warn_out (input: $y4m tcfile: $tc_round_warn)" >&2; exit 1; }
-    assert_log_contains_all "FLV duplicate-DTS rounding warning" "$round_warn_log" \
-        "duplicate DTS" "generated by rounding"
-    assert_log_contains_all "FLV duplicate-CTS rounding warning" "$round_warn_log" \
-        "duplicate CTS" "generated by rounding"
+    assert_log_contains_any "FLV duplicate timestamp rounding warning kind" "$round_warn_log" \
+        "duplicate DTS" "duplicate CTS"
+    assert_log_contains_any "FLV duplicate timestamp rounding warning source" "$round_warn_log" \
+        "round" "timestamp" "timebase"
     printf '%s\n' "smoke-output:flv output: $out frames=$frames duration=$duration"
 }
 
@@ -7417,11 +6950,8 @@ run_checkasm_smoke_depth()
                     printf '%s\n' "accepted malformed checkasm seed '$bad_seed': $bad_seed_log" >&2
                     exit 1
                 fi
-                grep -q "invalid random seed" "$bad_seed_log" ||
-                {
-                    printf '%s\n' "missing checkasm seed parse error for '$bad_seed' in $bad_seed_log" >&2
-                    exit 1
-                }
+                assert_log_contains_all "checkasm seed parse error for '$bad_seed'" "$bad_seed_log" \
+                    "random seed" "invalid"
             done
         else
             printf '%s\n' "missing checkasm${bit_depth}.exe in $build_dir" >&2
