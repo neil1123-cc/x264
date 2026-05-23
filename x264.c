@@ -114,6 +114,22 @@ static int cli_i64_sub_overflow( int64_t a, int64_t b, int64_t *dst )
     return 0;
 }
 
+static int cli_i64_mul_positive_overflow( int64_t a, int64_t b, int64_t *dst )
+{
+    if( !dst || a < 0 || b < 0 || (a && b > INT64_MAX / a) )
+        return -1;
+    *dst = a * b;
+    return 0;
+}
+
+static int cli_double_to_i64_pts( double value, int64_t *dst )
+{
+    if( !dst || !isfinite( value ) || value < (double)INT64_MIN || value > (double)INT64_MAX )
+        return -1;
+    *dst = (int64_t)value;
+    return 0;
+}
+
 static int estimate_final_ts( int64_t *dst, int64_t last_ts, int64_t previous_ts, int64_t first_ts )
 {
     int64_t delta;
@@ -613,10 +629,11 @@ static inline void x264_log_done( void )
     psz_log_file = NULL;
 }
 
-static inline void x264_log_init( const char *file_name )
+static inline int x264_log_init( const char *file_name )
 {
     x264_log_done();
     psz_log_file = strdup( file_name );
+    return !psz_log_file;
 }
 
 static int cli_log_level = X264_LOG_INFO;
@@ -2384,7 +2401,7 @@ static int parse( int argc, char **argv, x264_param_t *param, cli_opt_t *opt )
                 param->b_stylish = 1;
                 break;
             case OPT_LOG_FILE:
-                x264_log_init( optarg );
+                b_error |= x264_log_init( optarg );
                 goto generic_option;
             case OPT_LOG_FILE_LEVEL:
                 if( !parse_enum_value( optarg, x264_log_level_names, &cli_log_file_level ) )
@@ -3132,7 +3149,12 @@ static int encode( x264_param_t *param, cli_opt_t *opt )
     i_start = x264_mdate();
 
     /* ticks/frame = ticks/second / frames/second */
-    ticks_per_frame = (int64_t)param->i_timebase_den * param->i_fps_den / param->i_timebase_num / param->i_fps_num;
+    int64_t ticks_num;
+    FAIL_IF_ERROR2( param->i_timebase_num <= 0 || param->i_timebase_den <= 0 ||
+                    param->i_fps_num <= 0 || param->i_fps_den <= 0 ||
+                    cli_i64_mul_positive_overflow( param->i_timebase_den, param->i_fps_den, &ticks_num ),
+                    "ticks_per_frame invalid\n" );
+    ticks_per_frame = ticks_num / param->i_timebase_num / param->i_fps_num;
     FAIL_IF_ERROR2( ticks_per_frame < 1 && !param->b_vfr_input, "ticks_per_frame invalid: %"PRId64"\n", ticks_per_frame );
     ticks_per_frame = X264_MAX( ticks_per_frame, 1 );
 
@@ -3184,7 +3206,8 @@ static int encode( x264_param_t *param, cli_opt_t *opt )
             pulldown_pts += pulldown_frame_duration[pic.i_pic_struct];
         }
         else if( opt->timebase_convert_multiplier != 0.0 )
-            pic.i_pts = (int64_t)( (double)pic.i_pts * opt->timebase_convert_multiplier + 0.5 );
+            FAIL_IF_ERROR2( cli_double_to_i64_pts( (double)pic.i_pts * opt->timebase_convert_multiplier + 0.5, &pic.i_pts ),
+                            "pts conversion overflow at frame %d\n", i_frame );
 
         if( pic.i_pts <= largest_pts )
         {
@@ -3194,7 +3217,8 @@ static int encode( x264_param_t *param, cli_opt_t *opt )
             else if( pts_warning_cnt == MAX_PTS_WARNING )
                 x264_cli_log( "x264", X264_LOG_WARNING, "too many nonmonotonic pts warnings, suppressing further ones\n" );
             pts_warning_cnt++;
-            pic.i_pts = largest_pts + ticks_per_frame;
+            FAIL_IF_ERROR2( cli_i64_add_overflow( largest_pts, ticks_per_frame, &pic.i_pts ),
+                            "pts overflow at frame %d\n", i_frame );
         }
 
         if( opt->qpfile )

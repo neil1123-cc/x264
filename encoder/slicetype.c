@@ -420,7 +420,7 @@ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int
                  * because scale has a much wider range than offset (because of denom), so
                  * it should almost never need to be clamped. */
                 cur_offset = x264_clip3( cur_offset, -128, 127 );
-                cur_scale = x264_clip3f( (1 << mindenom) * (fenc_mean[plane] - cur_offset) / ref_mean[plane] + 0.5f, 0, 127 );
+                cur_scale = x264_clip3f( (double)(1 << mindenom) * ((double)fenc_mean[plane] - cur_offset) / (double)ref_mean[plane] + 0.5, 0, 127 );
             }
             int start_offset = x264_clip3( cur_offset - offset_dist, -128, 127 );
             int end_offset   = x264_clip3( cur_offset + offset_dist, -128, 127 );
@@ -1035,7 +1035,7 @@ static int slicetype_frame_cost_recalculate( x264_t *h, x264_frame_t **frames, i
 
 static void macroblock_tree_finish( x264_t *h, x264_frame_t *frame, float average_duration, int ref0_distance )
 {
-    int fps_factor = roundf( CLIP_DURATION(average_duration) / CLIP_DURATION(frame->f_duration) * 256.0f / MBTREE_PRECISION );
+    int fps_factor = roundf( (float)(CLIP_DURATION(average_duration) / CLIP_DURATION(frame->f_duration) * 256.0 / (double)MBTREE_PRECISION) );
     float weightdelta = 0.0f;
     if( ref0_distance && frame->f_weighted_cost_delta[ref0_distance-1] > 0 )
         weightdelta = (1.0f - frame->f_weighted_cost_delta[ref0_distance-1]) * 10.0f * h->param.rc.f_fade_compensate;
@@ -1067,7 +1067,7 @@ static void macroblock_tree_propagate( x264_t *h, x264_frame_t **frames, float a
     uint16_t *lowres_costs = frames[b]->lowres_costs[b-p0][p1-b];
 
     x264_emms();
-    float fps_factor = CLIP_DURATION(frames[b]->f_duration) / (CLIP_DURATION(average_duration) * 256.0f) * MBTREE_PRECISION;
+    float fps_factor = (float)(CLIP_DURATION(frames[b]->f_duration) / (CLIP_DURATION(average_duration) * 256.0) * (double)MBTREE_PRECISION);
 
     /* For non-reffed frames the source costs are always zero, so just memset one row and re-use it. */
     if( !referenced )
@@ -1426,7 +1426,7 @@ static int scenecut_internal( x264_t *h, x264_mb_analysis_t *a, x264_frame_t **f
                  / ( h->param.i_keyint_max - h->param.i_keyint_min );
     }
 
-    res = pcost >= (1.0 - f_bias) * icost;
+    res = pcost >= (1.0 - (double)f_bias) * icost;
     if( res && real_scenecut )
     {
         int imb = frame->i_intra_mbs[p1-p0];
@@ -1434,7 +1434,7 @@ static int scenecut_internal( x264_t *h, x264_mb_analysis_t *a, x264_frame_t **f
         x264_log( h, X264_LOG_DEBUG, "scene cut at %d Icost:%d Pcost:%d ratio:%.4f bias:%.4f gop:%d (imb:%d pmb:%d)\n",
                   frame->i_frame,
                   icost, pcost, 1. - (double)pcost / icost,
-                  f_bias, i_gop_size, imb, pmb );
+                  (double)f_bias, i_gop_size, imb, pmb );
     }
     return res;
 }

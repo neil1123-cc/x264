@@ -420,6 +420,14 @@ static int try_mkv_timebase_den( double *fpss, timecode_hnd_t *h, int loop_num )
     return 0;
 }
 
+static int timecode_advance_line_number( int *line )
+{
+    if( *line == INT_MAX )
+        return -1;
+    (*line)++;
+    return 0;
+}
+
 static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info )
 {
     char buff[256];
@@ -439,10 +447,13 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
         int prev_start = -1, prev_end = -1;
 
         h->assume_fps = 0;
-        for( num = 2; fgets( buff, sizeof(buff), tcfile_in ) != NULL; num++ )
+        for( num = 2; fgets( buff, sizeof(buff), tcfile_in ) != NULL; )
         {
             if( NO_TIMECODE_LINE )
+            {
+                FAIL_IF_ERROR( timecode_advance_line_number( &num ), "too many tcfile lines\n" );
                 continue;
+            }
             char *p = buff;
             while( *p && isspace( (unsigned char)*p ) )
                 p++;
@@ -462,7 +473,7 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
         file_pos = ftell( tcfile_in );
         FAIL_IF_ERROR( file_pos < 0, "tcfile seek failed\n" );
         h->stored_pts_num = 0;
-        for( seq_num = 0; fgets( buff, sizeof(buff), tcfile_in ) != NULL; num++ )
+        for( seq_num = 0; fgets( buff, sizeof(buff), tcfile_in ) != NULL; )
         {
             if( NO_TIMECODE_LINE )
             {
@@ -473,11 +484,15 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
                     FAIL_IF_ERROR( end < 0 || end == INT_MAX, "invalid tcfile frame count\n" );
                     h->stored_pts_num = end + 1;
                 }
+                FAIL_IF_ERROR( timecode_advance_line_number( &num ), "too many tcfile lines\n" );
                 continue;
             }
             ret = timecode_parse_v1_range( buff, &start, &end, &seq_fps ) ? 0 : 3;
             if( ret == EOF )
+            {
+                FAIL_IF_ERROR( timecode_advance_line_number( &num ), "too many tcfile lines\n" );
                 continue;
+            }
             FAIL_IF_ERROR( ret != 3, "invalid input tcfile\n" );
             FAIL_IF_ERROR( start > end || start <= prev_start || end <= prev_end || !timecode_is_positive_finite( seq_fps ),
                            "invalid input tcfile at line %d: %s\n", num, buff );
@@ -485,6 +500,7 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
             prev_end = end;
             if( h->auto_timebase_den || h->auto_timebase_num )
                 ++seq_num;
+            FAIL_IF_ERROR( timecode_advance_line_number( &num ), "too many tcfile lines\n" );
         }
         if( !h->stored_pts_num )
         {

@@ -93,8 +93,43 @@ static int invalid_plane_height( int width, int height, const x264_cli_csp_t *cs
         return 1;
 
     for( int i = 0; i < csp->planes; i++ )
-        if( (int)(height * csp->height[i]) < 4 )
+        if( height * csp->height[i] < 4.0f )
             return 1;
+    return 0;
+}
+
+static int yadif_abs_stride( int stride )
+{
+    if( stride == INT_MIN )
+        return -1;
+    return stride < 0 ? -stride : stride;
+}
+
+static int yadif_scale_dimension( int value, float scale, int *out )
+{
+    long double scaled = (long double)value * scale;
+    if( !out || scaled != scaled || scaled <= 0.0 || scaled > INT_MAX )
+        return -1;
+    *out = (int)scaled;
+    return 0;
+}
+
+static int yadif_image_is_invalid( cli_image_t *img, const x264_cli_csp_t *csp, int depth_factor )
+{
+    if( !img || !csp || depth_factor <= 0 || img->width <= 0 || img->height <= 0 ||
+        img->planes != csp->planes )
+        return 1;
+    for( int i = 0; i < img->planes; i++ )
+    {
+        int width;
+        int height;
+        int stride = yadif_abs_stride( img->stride[i] );
+        if( yadif_scale_dimension( img->width, csp->width[i], &width ) ||
+            yadif_scale_dimension( img->height, csp->height[i], &height ) ||
+            height < 4 || width > INT_MAX / depth_factor ||
+            stride < width * depth_factor || !img->plane[i] )
+            return 1;
+    }
     return 0;
 }
 
@@ -249,6 +284,8 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame_out )
     int tff      = h->tff;
     int frame_in = (h->mode&1) ? frame_out/2 : frame_out;
     int parity   = (h->mode&1) ? (frame_out&1) ^ (1^tff) : (tff^1);
+    if( df <= 0 )
+        return -1;
 
     if( frame_in == 0 )
     {
@@ -267,6 +304,11 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame_out )
     }
     if( ret )
         return ret;
+    if( yadif_image_is_invalid( &prev.img, h->csp, df ) ||
+        yadif_image_is_invalid( &cur.img, h->csp, df ) ||
+        yadif_image_is_invalid( &next.img, h->csp, df ) ||
+        yadif_image_is_invalid( &h->buffer.img, h->csp, df ) )
+        return -1;
 
     if( cur.duration < 0 || h->pts > INT64_MAX - cur.duration )
         return -1;
@@ -279,9 +321,12 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame_out )
 
     for( int i = 0; i < cur.img.planes ; i++ )
     {
-        int width  = cur.img.width  * h->csp->width[i];
-        int height = cur.img.height * h->csp->height[i];
+        int width;
+        int height;
         int stride = cur.img.stride[i];
+        if( yadif_scale_dimension( cur.img.width, h->csp->width[i], &width ) ||
+            yadif_scale_dimension( cur.img.height, h->csp->height[i], &height ) )
+            return -1;
 
         int y = 0;
         if( (y^parity)&1 )

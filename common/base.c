@@ -924,10 +924,13 @@ REALIGN_STACK int x264_param_restrict_device( x264_param_t *param, int i_profile
     if( !param || !device )
         return -1;
     x264_param_t adjusted = *param;
-    char *tmp = x264_malloc( strlen( device ) + 1 );
+    size_t device_len = strlen( device );
+    if( device_len > INT64_MAX - 1 )
+        return -1;
+    char *tmp = x264_malloc( (int64_t)device_len + 1 );
     if( !tmp )
         return -1;
-    memcpy( tmp, device, strlen( device ) + 1 );
+    memcpy( tmp, device, device_len + 1 );
     char *s = tmp;
     if( !*s )
     {

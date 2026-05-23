@@ -367,7 +367,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     for( i = 0; i < csp->planes; i++ )
     {
         int64_t plane_size = x264_cli_pic_plane_size( updated_info.csp, updated_info.width, updated_info.height, i );
-        FAIL_IF_ERROR_CLEANUP( plane_size <= 0 || h->frame_size > INT64_MAX - plane_size, "invalid frame size\n" );
+        FAIL_IF_ERROR_CLEANUP( plane_size <= 0 || plane_size % pixel_depth ||
+                               h->frame_size > INT64_MAX - plane_size, "invalid frame size\n" );
         h->frame_size += plane_size;
         /* x264_cli_pic_plane_size returns the size in bytes, we need the value in pixels from here on */
         h->plane_size[i] = plane_size / pixel_depth;
@@ -392,10 +393,11 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         int64_t i_size = ftell( h->fh );
         FAIL_IF_ERROR_CLEANUP( i_size < 0, "unable to determine input file size\n" );
         FAIL_IF_ERROR_CLEANUP( fseek( h->fh, init_pos, SEEK_SET ), "unable to seek input file\n" );
+        FAIL_IF_ERROR_CLEANUP( i_size <= h->seq_header_len, "empty input file\n" );
         int64_t num_frames = (i_size - h->seq_header_len) / h->frame_size;
+        FAIL_IF_ERROR_CLEANUP( num_frames <= 0, "empty input file\n" );
         FAIL_IF_ERROR_CLEANUP( num_frames > INT_MAX, "too many frames\n" );
         updated_info.num_frames = (int)num_frames;
-        FAIL_IF_ERROR_CLEANUP( !updated_info.num_frames, "empty input file\n" );
 
         /* Attempt to use memory-mapped input frames if possible */
         if( !(h->bit_depth & 7) )
@@ -459,7 +461,8 @@ static int read_frame_internal( cli_pic_t *pic, y4m_hnd_t *h, int bit_depth_uc )
 
     for( i = 0; i < pic->img.planes; i++ )
     {
-        if( h->plane_size[i] < 0 )
+        if( h->plane_size[i] < 0 ||
+            (uint64_t)h->plane_size[i] > SIZE_MAX / (uint64_t)pixel_depth )
             return -1;
         if( h->use_mmap )
         {

@@ -219,21 +219,31 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
         add_payload_size( &i_size, p_nal[1].i_payload ) ||
         add_payload_size( &i_size, p_nal[2].i_payload ) )
         return -1;
+    for( int i = 0; i < 3; i++ )
+        if( p_nal[i].i_payload && !p_nal[i].p_payload )
+            return -1;
 
     c = h->video_stm->codec;
     if( !c )
         return -1;
     if( c->flags & AV_CODEC_FLAG_GLOBAL_HEADER )
     {
-        c->extradata_size = i_size - p_nal[2].i_payload;
-        if( c->extradata_size && !p_nal[0].p_payload )
+        int extradata_size = i_size - p_nal[2].i_payload;
+        uint8_t *extradata_pos;
+        if( extradata_size <= 0 || !p_nal[0].p_payload )
             return -1;
+        c->extradata_size = extradata_size;
         av_freep( &c->extradata );
         c->extradata = av_malloc( c->extradata_size );
         if( !c->extradata )
             return -1;
         /* Write the SPS/PPS to the extradata */
-        memcpy( c->extradata, p_nal[0].p_payload, c->extradata_size );
+        extradata_pos = c->extradata;
+        for( int i = 0; i < 2; i++ )
+        {
+            memcpy( extradata_pos, p_nal[i].p_payload, (size_t)p_nal[i].i_payload );
+            extradata_pos += p_nal[i].i_payload;
+        }
         /* Write the SEI as part of the first frame */
         if( write_buffer( h, p_nal[2].p_payload, p_nal[2].i_payload ) < 0 )
             return -1;
@@ -241,8 +251,11 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
             return -1;
     }
     else
-        if( write_buffer( h, p_nal[0].p_payload, i_size ) < 0 )
-            return -1;
+    {
+        for( int i = 0; i < 3; i++ )
+            if( write_buffer( h, p_nal[i].p_payload, p_nal[i].i_payload ) < 0 )
+                return -1;
+    }
 
     return i_size;
 }

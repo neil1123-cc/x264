@@ -164,7 +164,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     for( int i = 0; i < csp->planes; i++ )
     {
         int64_t plane_size = x264_cli_pic_plane_size( updated_info.csp, updated_info.width, updated_info.height, i );
-        FAIL_IF_ERROR_CLEANUP( plane_size <= 0 || h->frame_size > INT64_MAX - plane_size, "invalid frame size\n" );
+        FAIL_IF_ERROR_CLEANUP( plane_size <= 0 || plane_size % pixel_depth ||
+                               h->frame_size > INT64_MAX - plane_size, "invalid frame size\n" );
         h->frame_size += plane_size;
         /* x264_cli_pic_plane_size returns the size in bytes, we need the value in pixels from here on */
         h->plane_size[i] = plane_size / pixel_depth;
@@ -214,7 +215,8 @@ static int read_frame_internal( cli_pic_t *pic, raw_hnd_t *h, int bit_depth_uc )
 
     for( int i = 0; i < pic->img.planes; i++ )
     {
-        if( h->plane_size[i] < 0 )
+        if( h->plane_size[i] < 0 ||
+            (uint64_t)h->plane_size[i] > SIZE_MAX / (uint64_t)pixel_depth )
             return -1;
         if( h->use_mmap )
         {

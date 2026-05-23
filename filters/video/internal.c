@@ -38,19 +38,36 @@ void x264_cli_plane_copy( uint8_t *dst, int i_dst, uint8_t *src, int i_src, int 
     }
 }
 
+static int x264_cli_scale_dimension( int value, float scale, int *out )
+{
+    long double scaled = (long double)value * scale;
+    if( !out || scaled != scaled || scaled < 0.0 || scaled > INT_MAX )
+        return -1;
+    *out = (int)scaled;
+    return 0;
+}
+
 static int x264_cli_pic_plane_dims( cli_pic_t *pic, int csp, int plane, int *width, int *height )
 {
     if( !pic || !width || !height )
         return -1;
     int depth = x264_cli_csp_depth_factor( pic->img.csp );
-    int64_t plane_width = (int64_t)pic->img.width * x264_cli_csps[csp].width[plane];
-    int64_t plane_height = (int64_t)pic->img.height * x264_cli_csps[csp].height[plane];
-    if( depth <= 0 || plane_width < 0 || plane_height < 0 ||
-        plane_width > INT_MAX / depth || plane_height > INT_MAX )
+    int plane_width;
+    int plane_height;
+    if( x264_cli_scale_dimension( pic->img.width, x264_cli_csps[csp].width[plane], &plane_width ) ||
+        x264_cli_scale_dimension( pic->img.height, x264_cli_csps[csp].height[plane], &plane_height ) ||
+        depth <= 0 || plane_width > INT_MAX / depth )
         return -1;
-    *width = (int)(plane_width * depth);
-    *height = (int)plane_height;
+    *width = plane_width * depth;
+    *height = plane_height;
     return 0;
+}
+
+static int x264_cli_abs_stride( int stride )
+{
+    if( stride == INT_MIN )
+        return -1;
+    return stride < 0 ? -stride : stride;
 }
 
 int x264_cli_pic_copy( cli_pic_t *out, cli_pic_t *in )
@@ -66,8 +83,12 @@ int x264_cli_pic_copy( cli_pic_t *out, cli_pic_t *in )
     for( int i = 0; i < planes; i++ )
     {
         int width, height;
+        int in_stride = x264_cli_abs_stride( in->img.stride[i] );
+        int out_stride = x264_cli_abs_stride( out->img.stride[i] );
         FAIL_IF_ERROR( x264_cli_pic_plane_dims( in, csp, i, &width, &height ) ||
-                       (width && height && (!out->img.plane[i] || !in->img.plane[i])),
+                       in_stride < 0 || out_stride < 0 ||
+                       (width && height && (!out->img.plane[i] || !in->img.plane[i] ||
+                                            in_stride < width || out_stride < width)),
                        "invalid frame plane data\n" );
     }
 

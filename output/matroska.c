@@ -373,11 +373,14 @@ static int set_audio_track( mkv_hnd_t *p_mkv, x264_param_t *p_param )
             x264_cli_log( "mkv", X264_LOG_ERROR, "no extradata found!\n" );
             return -1;
         }
-        atrack.codec_private_size = (unsigned)info->extradata_size;
-        atrack.codec_private = malloc( (size_t)info->extradata_size );
+        size_t codec_private_size = (size_t)info->extradata_size;
+        if( codec_private_size > UINT_MAX )
+            return -1;
+        atrack.codec_private_size = (unsigned)codec_private_size;
+        atrack.codec_private = malloc( codec_private_size );
         if( !atrack.codec_private )
             return -1;
-        memcpy( atrack.codec_private, info->extradata, (size_t)info->extradata_size );
+        memcpy( atrack.codec_private, info->extradata, codec_private_size );
     }
 
     p_mkv->tracks[audio_track_id] = atrack;
@@ -430,8 +433,8 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     int pps_size = p_nal[1].i_payload - 4;
     int sei_size = p_nal[2].i_payload;
 
-    if( sei_size < 0 || sei_size > INT_MAX - sps_size - pps_size ||
-        sps_size > UINT16_MAX || pps_size > UINT16_MAX ||
+    if( sei_size < 0 || sps_size > UINT16_MAX || pps_size > UINT16_MAX ||
+        sei_size > INT_MAX - sps_size || sei_size + sps_size > INT_MAX - pps_size ||
         !p_nal[0].p_payload || !p_nal[1].p_payload || (sei_size && !p_nal[2].p_payload) )
         return -1;
 

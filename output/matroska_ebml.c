@@ -351,6 +351,8 @@ static int mk_write_track( mk_writer *w, mk_context *c, mk_track_t track )
 
     if( track.id == 0 || track.id >= MK_MAX_TRACKS || !track.codec_id )
         return -1;
+    if( track.codec_private_size && !track.codec_private )
+        return -1;
 
     if( !(ti = mk_create_context( w, c, 0xae )) ) // TrackEntry
         return -1;

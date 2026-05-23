@@ -329,9 +329,17 @@ do {\
 
 #define PREALLOC( var, size )\
 do {\
+    int64_t prealloc_requested_size = (int64_t)(size);\
+    int64_t prealloc_aligned_size;\
+    if( prealloc_idx >= PREALLOC_BUF_SIZE || prealloc_requested_size < 0 ||\
+        prealloc_requested_size > INT64_MAX - (NATIVE_ALIGN-1) )\
+        goto fail;\
+    prealloc_aligned_size = ALIGN( prealloc_requested_size, NATIVE_ALIGN );\
+    if( prealloc_aligned_size > INT64_MAX - prealloc_size )\
+        goto fail;\
     var = (void*)(intptr_t)prealloc_size;\
     preallocs[prealloc_idx++] = (uint8_t**)&var;\
-    prealloc_size += ALIGN((int64_t)(size), NATIVE_ALIGN);\
+    prealloc_size += prealloc_aligned_size;\
 } while( 0 )
 
 #define PREALLOC_END( ptr )\

@@ -190,7 +190,8 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
 
     unsigned long int framelen = samplesInput / h->info.channels;
     h->bufsize       = maxBytesOutput;
-    if( !framelen || framelen > INT_MAX || h->bufsize > INT_MAX )
+    if( samplesInput % (unsigned)h->info.channels ||
+        !framelen || framelen > INT_MAX || h->bufsize > INT_MAX )
     {
         x264_cli_log( "faac", X264_LOG_ERROR, "invalid encoder frame or buffer size\n" );
         goto error;
@@ -329,7 +330,7 @@ static audio_packet_t *get_next_packet( hnd_t handle )
             ((float *)h->samplebuffer)[i] *= 32768.0f;
 
         ret = faacEncEncode( h->faac, h->samplebuffer, input_samples, out->data, h->bufsize );
-        if( ret < 0 )
+        if( ret < 0 || (size_t)ret > h->bufsize )
         {
             x264_cli_log( "faac", X264_LOG_ERROR, "failed to encode audio\n" );
             goto error;
@@ -384,7 +385,7 @@ static audio_packet_t *finish( hnd_t encoder )
         goto error;
 
     ret = faacEncEncode( h->faac, NULL, 0, out->data, h->bufsize );
-    if( ret <= 0 )
+    if( ret <= 0 || (size_t)ret > h->bufsize )
         goto error;
     out->size = ret;
     int64_t staged_last_dts = h->last_dts == INVALID_DTS ? h->last_sample : h->last_dts;

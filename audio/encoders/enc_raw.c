@@ -111,16 +111,17 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     out->data        = NULL;
     out->samplecount = smp->samplecount;
     if( h->info.samplesize <= 0 ||
-        smp->samplecount > (unsigned)(INT_MAX / h->info.samplesize) ||
+        smp->samplecount > (uint64_t)INT_MAX / (uint64_t)h->info.samplesize ||
+        smp->samplecount > UINT32_MAX ||
         smp->samplecount > (uint64_t)(INT64_MAX - h->last_sample) )
         goto error;
     int64_t staged_last_sample = h->last_sample + smp->samplecount;
     out->data        = x264_af_interleave2( SMPFMT_S16, smp->samples, smp->channels, smp->samplecount );
     if( smp->samplecount && !out->data )
         goto error;
-    out->size        = smp->samplecount * h->info.samplesize;
+    out->size        = (int)((uint64_t)smp->samplecount * (uint64_t)h->info.samplesize);
     out->dts         = h->last_sample;
-    out->info.last_delta = smp->samplecount;
+    out->info.last_delta = (uint32_t)smp->samplecount;
     h->last_sample   = staged_last_sample;
     x264_af_free_packet( smp );
 

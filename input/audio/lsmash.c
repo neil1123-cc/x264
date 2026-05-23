@@ -1,11 +1,12 @@
-#include "audio/encoders.h"
-#include "filters/audio/internal.h"
 #include <stdio.h>
 #include <inttypes.h>
 #include <limits.h>
 
 #include <lsmash.h>
 #include <lsmash_importer.h>
+
+#include "audio/encoders.h"
+#include "filters/audio/internal.h"
 
 typedef struct lsmash_source_t
 {
@@ -305,6 +306,11 @@ static audio_packet_t *get_next_au( hnd_t handle )
         if( !sample.length )
             h->info.last_delta = lsmash_importer_get_last_delta( h->importer, 1 );
         free( sample.data );
+        x264_af_free_packet( out );
+        return NULL;
+    }
+    if( !sample.data )
+    {
         x264_af_free_packet( out );
         return NULL;
     }

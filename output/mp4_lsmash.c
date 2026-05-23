@@ -120,6 +120,16 @@ static int mp4_u64_mul_overflow( uint64_t a, uint64_t b, uint64_t *dst )
     return 0;
 }
 
+#if HAVE_ANY_AUDIO
+static int mp4_ldouble_to_duration( uint64_t *dst, long double duration )
+{
+    if( duration != duration || duration < 0.0L || duration > (long double)UINT64_MAX )
+        return -1;
+    *dst = (uint64_t)duration;
+    return 0;
+}
+#endif
+
 static int mp4_append_sample_owned( lsmash_root_t *root, uint32_t track, lsmash_sample_t **sample )
 {
     if( !sample || !*sample )
@@ -313,7 +323,7 @@ static int set_channel_layout( mp4_audio_hnd_t *p_audio )
     else if( !p_audio->b_copy )
     {
         temp.channelLayoutTag = QT_CHANNEL_LAYOUT_USE_CHANNEL_BITMAP;
-        temp.channelBitmap    = p_audio->info->chanlayout;
+        temp.channelBitmap    = (lsmash_channel_bitmap)p_audio->info->chanlayout;
         /* Avisynth input doesn't return channel order, so we guess it from the number of channels. */
         if( !p_audio->info->chanlayout && p_audio->info->channels <= 8 )
         {
@@ -351,7 +361,7 @@ static int set_channel_layout( mp4_audio_hnd_t *p_audio )
             { QT_CHANNEL_LAYOUT_AAC_7_1,        (lsmash_channel_bitmap)AV_CH_LAYOUT_7POINT1 },
             { QT_CHANNEL_LAYOUT_AAC_7_1,        (lsmash_channel_bitmap)AV_CH_LAYOUT_7POINT1_WIDE }
         };
-        for( int i = 0; i < sizeof(channel_table) / sizeof(lsmash_qt_audio_channel_layout_t); i++ )
+        for( size_t i = 0; i < sizeof(channel_table) / sizeof(lsmash_qt_audio_channel_layout_t); i++ )
             if( p_audio->info->chanlayout == channel_table[i].channelBitmap )
             {
                 temp.channelLayoutTag = channel_table[i].channelLayoutTag;
@@ -450,7 +460,7 @@ static int aac_init( mp4_audio_hnd_t *p_audio )
         lsmash_mp4sys_decoder_parameters_t *param = (lsmash_mp4sys_decoder_parameters_t *)specific->data.structured;
         param->objectTypeIndication = MP4SYS_OBJECT_TYPE_Audio_ISO_14496_3;
         param->streamType           = MP4SYS_STREAM_TYPE_AudioStream;
-        if( lsmash_set_mp4sys_decoder_specific_info( param, p_audio->info->extradata, p_audio->info->extradata_size ) )
+        if( lsmash_set_mp4sys_decoder_specific_info( param, p_audio->info->extradata, (uint32_t)p_audio->info->extradata_size ) )
         {
             lsmash_destroy_codec_specific_data( specific );
             MP4_LOG_ERROR( "failed to set up decoder specific info for MPEG-4 audio.\n" );
@@ -471,6 +481,8 @@ static int mpeg12_layer_init( mp4_audio_hnd_t *p_audio )
 {
     p_audio->codec_type = ISOM_CODEC_TYPE_MP4A_AUDIO;
     p_audio->b_mdct = !strcmp( p_audio->info->codec_name, "mp3" );
+    if( !(p_audio->info->extradata && p_audio->info->extradata_size > 0 && p_audio->info->extradata_type == EXTRADATA_TYPE_LIBAVCODEC) )
+        return 0;
     lsmash_codec_specific_t *specific = lsmash_create_codec_specific_data( LSMASH_CODEC_SPECIFIC_DATA_TYPE_MP4SYS_DECODER_CONFIG,
                                                                            LSMASH_CODEC_SPECIFIC_FORMAT_STRUCTURED );
     if( !specific )
@@ -484,7 +496,7 @@ static int mpeg12_layer_init( mp4_audio_hnd_t *p_audio )
     else
         param->objectTypeIndication = MP4SYS_OBJECT_TYPE_Audio_ISO_13818_3; /* Legacy Interface */
     param->streamType = MP4SYS_STREAM_TYPE_AudioStream;
-    if( lsmash_set_mp4sys_decoder_specific_info( param, p_audio->info->extradata, p_audio->info->extradata_size ) )
+    if( lsmash_set_mp4sys_decoder_specific_info( param, p_audio->info->extradata, (uint32_t)p_audio->info->extradata_size ) )
     {
         lsmash_destroy_codec_specific_data( specific );
         MP4_LOG_ERROR( "failed to set up decoder specific info for MPEG-1/2 layer audio.\n" );
@@ -515,7 +527,7 @@ static int als_init( mp4_audio_hnd_t *p_audio )
         lsmash_mp4sys_decoder_parameters_t *param = (lsmash_mp4sys_decoder_parameters_t *)specific->data.structured;
         param->objectTypeIndication = MP4SYS_OBJECT_TYPE_Audio_ISO_14496_3;
         param->streamType           = MP4SYS_STREAM_TYPE_AudioStream;
-        if( lsmash_set_mp4sys_decoder_specific_info( param, p_audio->info->extradata, p_audio->info->extradata_size ) )
+        if( lsmash_set_mp4sys_decoder_specific_info( param, p_audio->info->extradata, (uint32_t)p_audio->info->extradata_size ) )
         {
             lsmash_destroy_codec_specific_data( specific );
             MP4_LOG_ERROR( "failed to set up decoder specific info for Apple lossless audio.\n" );
@@ -545,7 +557,7 @@ static int alac_init( mp4_audio_hnd_t *p_audio )
             return -1;
         }
         specific->data.unstructured = p_audio->info->extradata;
-        specific->size              = p_audio->info->extradata_size;
+        specific->size              = (uint32_t)p_audio->info->extradata_size;
         int err = lsmash_add_codec_specific_data( (lsmash_summary_t *)p_audio->summary, specific );
         specific->data.unstructured = NULL; /* Avoid double freeing extradata. */
         lsmash_destroy_codec_specific_data( specific );
@@ -666,7 +678,7 @@ static int audio_init( hnd_t handle, cli_output_opt_t *opt, hnd_t filters, char 
                         goto error;
                     }
                     lsmash_ac3_specific_parameters_t *param = (lsmash_ac3_specific_parameters_t *)specific->data.structured;
-                    if( lsmash_setup_ac3_specific_parameters_from_syncframe( param, info->extradata, info->extradata_size ) )
+                    if( lsmash_setup_ac3_specific_parameters_from_syncframe( param, info->extradata, (uint32_t)info->extradata_size ) )
                     {
                         lsmash_destroy_codec_specific_data( specific );
                         MP4_LOG_ERROR( "failed to set up AC-3 specific info.\n" );
@@ -702,7 +714,7 @@ static int audio_init( hnd_t handle, cli_output_opt_t *opt, hnd_t filters, char 
                         goto error;
                     }
                     lsmash_eac3_specific_parameters_t *param = (lsmash_eac3_specific_parameters_t *)specific->data.structured;
-                    if( lsmash_setup_eac3_specific_parameters_from_frame( param, info->extradata, info->extradata_size ) )
+                    if( lsmash_setup_eac3_specific_parameters_from_frame( param, info->extradata, (uint32_t)info->extradata_size ) )
                     {
                         lsmash_destroy_codec_specific_data( specific );
                         MP4_LOG_ERROR( "failed to set up Enhanced AC-3 specific info.\n" );
@@ -741,7 +753,7 @@ static int audio_init( hnd_t handle, cli_output_opt_t *opt, hnd_t filters, char 
                         goto error;
                     }
                     lsmash_dts_specific_parameters_t *param = (lsmash_dts_specific_parameters_t *)specific->data.structured;
-                    if( lsmash_setup_dts_specific_parameters_from_frame( param, info->extradata, info->extradata_size ) )
+                    if( lsmash_setup_dts_specific_parameters_from_frame( param, info->extradata, (uint32_t)info->extradata_size ) )
                     {
                         lsmash_destroy_codec_specific_data( specific );
                         MP4_LOG_ERROR( "failed to parse DTS audio frame.\n" );
@@ -807,7 +819,7 @@ static int audio_init( hnd_t handle, cli_output_opt_t *opt, hnd_t filters, char 
                     { "pcm_u8",     QT_CODEC_TYPE_RAW_AUDIO,  { 0 } }
                 };
 
-                for( int i = 0; i < sizeof(qt_lpcm_table)/sizeof(qt_lpcm_detail); i++ )
+                for( size_t i = 0; i < sizeof(qt_lpcm_table)/sizeof(qt_lpcm_detail); i++ )
                     if( !strcmp( info->codec_name, qt_lpcm_table[i].name ) )
                     {
                         p_audio->codec_type = qt_lpcm_table[i].codec_type;
@@ -843,8 +855,8 @@ static int audio_init( hnd_t handle, cli_output_opt_t *opt, hnd_t filters, char 
     if( info->extradata_type == EXTRADATA_TYPE_LSMASH )
     {
         lsmash_codec_specific_t **extradata = (lsmash_codec_specific_t **)info->extradata;
-        uint32_t num_extensions = info->extradata_size / sizeof(lsmash_codec_specific_t *);
-        for( uint32_t i = 0; i < num_extensions; i++ )
+        size_t num_extensions = (size_t)info->extradata_size / sizeof(lsmash_codec_specific_t *);
+        for( size_t i = 0; i < num_extensions; i++ )
         {
             if( !extradata[i] )
             {
@@ -998,7 +1010,7 @@ static int write_audio_frames( mp4_hnd_t *p_mp4, double video_dts, int finish )
          * FIXME: I wonder if there's any way more effective.
          */
 
-        if( !video_dts && p_mp4->b_fragments && !finish )
+        if( video_dts == 0.0 && p_mp4->b_fragments && !finish )
         {
             lsmash_edit_t edit;
             edit.duration   = ISOM_EDIT_DURATION_UNKNOWN32;     /* QuickTime doesn't support 64bit duration. */
@@ -1008,7 +1020,7 @@ static int write_audio_frames( mp4_hnd_t *p_mp4, double video_dts, int finish )
                             "failed to set timeline map for audio.\n" );
         }
 
-        if( !finish && ((audio_timestamp / (double)p_audio->summary->frequency > video_dts) || !video_dts) )
+        if( !finish && (((double)audio_timestamp / (double)p_audio->summary->frequency > video_dts) || video_dts == 0.0) )
             break;
 
         /* read a audio frame */
@@ -1040,7 +1052,7 @@ static int write_audio_frames( mp4_hnd_t *p_mp4, double video_dts, int finish )
         if( frame->size )
             memcpy( p_sample->data, frame->data, (size_t)frame->size );
         x264_audio_free_frame( p_audio->encoder, frame );
-        p_sample->prop.pre_roll.distance = p_audio->b_mdct;
+        p_sample->prop.pre_roll.distance = (uint32_t)p_audio->b_mdct;
 #else
         uint32_t audio_last_delta = 0;
         /* FIXME: mp4sys_importer_get_access_unit() returns 1 if there're any changes in stream's properties.
@@ -1109,21 +1121,22 @@ static int close_file_audio( mp4_hnd_t* p_mp4, double actual_duration )
 #endif
     if( p_audio->i_numframe > 0 && !last_delta )
         return -1;
+    uint64_t audio_edit_duration = 0;
     if( p_audio->i_numframe > 0 )
     {
         MP4_CLOSE_LOG_IF_ERR( lsmash_flush_pooled_samples( p_mp4->p_root, p_audio->i_track, last_delta ),
                               "failed to flush the rest of audio samples.\n" );
-        long double audio_samples = (long double)(p_audio->i_numframe - 1) * p_audio->summary->samples_in_frame + last_delta;
-        actual_duration = audio_samples > p_audio->info->priming ? (double)(audio_samples - p_audio->info->priming) : 0;
-        if( actual_duration )
-            actual_duration *= (double)p_mp4->i_movie_timescale / p_audio->summary->frequency;
+        long double audio_samples = (long double)(p_audio->i_numframe - 1) * (long double)p_audio->summary->samples_in_frame + (long double)last_delta;
+        long double primed_samples = audio_samples > p_audio->info->priming ? audio_samples - p_audio->info->priming : 0.0L;
+        if( primed_samples != 0.0L )
+        {
+            long double edit_duration = primed_samples * (long double)p_mp4->i_movie_timescale / (long double)p_audio->summary->frequency;
+            MP4_CLOSE_LOG_IF_ERR( mp4_ldouble_to_duration( &audio_edit_duration, edit_duration ),
+                                  "audio edit duration is out of range.\n" );
+        }
     }
-    else
-        actual_duration = 0;
     lsmash_edit_t edit;
-    edit.duration   = 0;
-    MP4_CLOSE_LOG_IF_ERR( mp4_double_to_duration( &edit.duration, actual_duration ),
-                          "audio edit duration is out of range.\n" );
+    edit.duration   = audio_edit_duration;
     edit.start_time = p_audio->info->priming;
     edit.rate       = ISOM_EDIT_MODE_NORMAL;
     if( !p_mp4->b_fragments )
@@ -1546,7 +1559,8 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     mp4_hnd_t *p_mp4 = handle;
 
     if( !p_mp4 || !p_mp4->p_root || !p_mp4->summary || !p_mp4->i_track || !p_nal ||
-        p_nal[0].i_payload < H264_NALU_LENGTH_SIZE || p_nal[1].i_payload < H264_NALU_LENGTH_SIZE || p_nal[2].i_payload < 0 ||
+        p_nal[0].i_payload < H264_NALU_LENGTH_SIZE + 4 ||
+        p_nal[1].i_payload <= H264_NALU_LENGTH_SIZE || p_nal[2].i_payload < 0 ||
         !p_nal[0].p_payload || !p_nal[1].p_payload || (p_nal[2].i_payload && !p_nal[2].p_payload) )
         return -1;
 
@@ -1556,7 +1570,10 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
 
     if( sps_size > UINT16_MAX || pps_size > UINT16_MAX )
         return -1;
-    if( sps_size > (uint32_t)INT_MAX - pps_size || sei_size > (uint32_t)INT_MAX - sps_size - pps_size )
+    if( sps_size > (uint32_t)INT_MAX - pps_size )
+        return -1;
+    uint32_t header_size = sps_size + pps_size;
+    if( sei_size > (uint32_t)INT_MAX - header_size )
         return -1;
 
     uint8_t *sps = p_nal[0].p_payload + H264_NALU_LENGTH_SIZE;
@@ -1643,7 +1660,7 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     p_mp4->p_sei_buffer = sei_buffer;
     p_mp4->i_sei_size = sei_size;
 
-    return (int)(sei_size + sps_size + pps_size);
+    return (int)(header_size + sei_size);
 }
 
 static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_t *p_picture )
@@ -1812,7 +1829,7 @@ do\
     if( p_audio )
     {
         MP4_SAMPLE_FAIL_IF_ERR( !p_audio->i_video_timescale ||
-                                write_audio_frames( p_mp4, p_sample->dts / (double)p_audio->i_video_timescale, 0 ),
+                                write_audio_frames( p_mp4, (double)p_sample->dts / (double)p_audio->i_video_timescale, 0 ),
                                 "failed to write audio frame(s).\n" );
     }
 #endif

@@ -20,6 +20,7 @@
 
 #include <windows.h>
 #include <float.h>
+#include <limits.h>
 #include "x264cli.h"
 #include "subtitles.h"
 #include "video.h"
@@ -179,10 +180,37 @@ typedef struct
 	cli_vid_filter_t prev_filter;
 	void *subrenderinst;
 	int csp;
+	int width;
+	int height;
 	unsigned int fmt;
 	double scale_factor;
 	int vfr;
 } subtitles_hnd_t;
+
+static int subtitles_abs_stride( int stride )
+{
+	if( stride == INT_MIN )
+		return -1;
+	return stride < 0 ? -stride : stride;
+}
+
+static int subtitles_frame_is_invalid( subtitles_hnd_t *h, cli_pic_t *pic )
+{
+	if( !h || !pic || (pic->img.csp & X264_CSP_MASK) != h->csp ||
+	    pic->img.width != h->width || pic->img.height != h->height ||
+	    pic->img.planes != 3 )
+		return 1;
+
+	int luma_stride = subtitles_abs_stride( pic->img.stride[0] );
+	int chroma_stride1 = subtitles_abs_stride( pic->img.stride[1] );
+	int chroma_stride2 = subtitles_abs_stride( pic->img.stride[2] );
+	int chroma_width = h->width / 2;
+	if( luma_stride < h->width || chroma_stride1 < chroma_width || chroma_stride2 < chroma_width ||
+	    !pic->img.plane[0] || !pic->img.plane[1] || !pic->img.plane[2] )
+		return 1;
+
+	return 0;
+}
 
 static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x264_param_t *param, char *opt_string )
 {
@@ -258,6 +286,8 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
 		return -1;
 	}
 	h->fmt = fmt.pixfmt;
+	h->width = info->width;
+	h->height = info->height;
 	h->scale_factor = scale_factor;
 	h->vfr = info->vfr;
 
@@ -277,6 +307,11 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 		return -1;
 	if( h->prev_filter.get_frame( h->prev_hnd, output, frame ) )
 		return -1;
+	if( subtitles_frame_is_invalid( h, output ) )
+	{
+		h->prev_filter.release_frame( h->prev_hnd, output, frame );
+		return -1;
+	}
 	fr.planes[0] = output->img.plane[0];
 	fr.strides[0] = output->img.stride[0];
 	switch(h->csp)
@@ -289,7 +324,8 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 		fr.planes[1] = output->img.plane[1];
 		fr.planes[2] = output->img.plane[2];
 		L_YV12:
-		fr.strides[1] = fr.strides[2] = output->img.stride[1];
+		fr.strides[1] = output->img.stride[1];
+		fr.strides[2] = output->img.stride[2];
 		break;
 	case X264_CSP_NV12:
 		fr.planes[1] = output->img.plane[1];
@@ -307,7 +343,13 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 		return -1;
 	}
 	fr.pixfmt = h->fmt;
-	csri_render(h->subrenderinst, &fr, (h->vfr ? output->pts : frame) * h->scale_factor);
+	double render_time = (h->vfr ? output->pts : frame) * h->scale_factor;
+	if( !isfinite( render_time ) )
+	{
+		h->prev_filter.release_frame( h->prev_hnd, output, frame );
+		return -1;
+	}
+	csri_render( h->subrenderinst, &fr, render_time );
 	return 0;
 }
 

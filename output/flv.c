@@ -469,7 +469,7 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     int sps_size = p_nal[0].i_payload;
     int pps_size = p_nal[1].i_payload;
     int sei_size = p_nal[2].i_payload;
-    if( sps_size < 4 || pps_size < 4 || sei_size < 0 ||
+    if( sps_size < 8 || pps_size <= 4 || sei_size < 0 ||
         sps_size - 4 > UINT16_MAX || pps_size - 4 > UINT16_MAX ||
         sei_size > INT_MAX - sps_size || sei_size + sps_size > INT_MAX - pps_size )
         return -1;
@@ -596,7 +596,7 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
             }
 
             int err = lsmash_get_mp4sys_decoder_specific_info( param, &extradata, &extradata_size );
-            if( err )
+            if( err || !extradata || !extradata_size )
             {
                 x264_cli_log( "flv", X264_LOG_ERROR, "failed to get AAC specific info.\n" );
                 goto fail;
@@ -795,6 +795,10 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
         return -1;
     offset = cts - dts;
     if( offset < -0x800000 || offset > 0x7FFFFF )
+        return -1;
+    int sei_len = p_flv->sei ? p_flv->sei_len : 0;
+    int64_t frame_payload_size = (int64_t)i_size + sei_len;
+    if( sei_len < 0 || frame_payload_size > 0xFFFFFF - 5 )
         return -1;
 
     if( p_flv->i_framenum )

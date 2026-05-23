@@ -35,11 +35,34 @@ static int align_stride( int x, int align, int disalign )
     return x;
 }
 
-static int align_plane_size( int x, int disalign )
+static int64_t align_plane_size( int64_t x, int disalign )
 {
+    int align_pad = X264_MAX( 128, NATIVE_ALIGN ) / SIZEOF_PIXEL;
+    if( x < 0 )
+        return -1;
     if( !(x&(disalign-1)) )
-        x += X264_MAX( 128, NATIVE_ALIGN ) / SIZEOF_PIXEL;
+    {
+        if( x > INT64_MAX - align_pad )
+            return -1;
+        x += align_pad;
+    }
     return x;
+}
+
+static int frame_size_mul( int64_t a, int64_t b, int64_t *out )
+{
+    if( a < 0 || b < 0 || (b && a > INT64_MAX / b) )
+        return -1;
+    *out = a * b;
+    return 0;
+}
+
+static int frame_size_add( int64_t a, int64_t b, int64_t *out )
+{
+    if( a < 0 || b < 0 || a > INT64_MAX - b )
+        return -1;
+    *out = a + b;
+    return 0;
 }
 
 static int frame_internal_csp( int external_csp )
@@ -82,9 +105,21 @@ static x264_frame_t *frame_new( x264_t *h, int b_fdec )
     PREALLOC_INIT
 
     /* allocate frame data (+64 for extra data for me) */
-    i_width  = h->mb.i_mb_width*16;
-    i_lines  = h->mb.i_mb_height*16;
-    i_stride = align_stride( i_width + PADH2, align, disalign );
+    int64_t width;
+    int64_t lines;
+    int64_t stride_width;
+    int64_t row_int_size;
+    int64_t row_float_size;
+    if( frame_size_mul( h->mb.i_mb_width, 16, &width ) ||
+        frame_size_mul( h->mb.i_mb_height, 16, &lines ) ||
+        frame_size_add( width, PADH2, &stride_width ) ||
+        width > INT_MAX || lines > INT_MAX || stride_width > INT_MAX ||
+        frame_size_mul( lines / 16, sizeof(int), &row_int_size ) ||
+        frame_size_mul( lines / 16, sizeof(float), &row_float_size ) )
+        goto fail;
+    i_width  = (int)width;
+    i_lines  = (int)lines;
+    i_stride = align_stride( (int)stride_width, align, disalign );
 
     if( i_csp == X264_CSP_NV12 || i_csp == X264_CSP_NV16 )
     {
@@ -126,7 +161,7 @@ static x264_frame_t *frame_new( x264_t *h, int b_fdec )
 
     for( int i = 0; i < h->param.i_bframe + 2; i++ )
         for( int j = 0; j < h->param.i_bframe + 2; j++ )
-            PREALLOC( frame->i_row_satds[i][j], i_lines/16 * sizeof(int) );
+            PREALLOC( frame->i_row_satds[i][j], row_int_size );
 
     frame->i_poc = -1;
     frame->i_type = X264_TYPE_AUTO;
@@ -150,10 +185,14 @@ static x264_frame_t *frame_new( x264_t *h, int b_fdec )
     if( i_csp == X264_CSP_NV12 || i_csp == X264_CSP_NV16 )
     {
         int chroma_padv = i_padv >> (i_csp == X264_CSP_NV12);
-        int chroma_plane_size = (frame->i_stride[1] * (frame->i_lines[1] + 2*chroma_padv));
-        PREALLOC( frame->buffer[1], chroma_plane_size * SIZEOF_PIXEL );
+        int64_t chroma_plane_size;
+        int64_t chroma_buffer_size;
+        if( frame_size_mul( frame->i_stride[1], frame->i_lines[1] + 2*chroma_padv, &chroma_plane_size ) ||
+            frame_size_mul( chroma_plane_size, SIZEOF_PIXEL, &chroma_buffer_size ) )
+            goto fail;
+        PREALLOC( frame->buffer[1], chroma_buffer_size );
         if( PARAM_INTERLACED )
-            PREALLOC( frame->buffer_fld[1], chroma_plane_size * SIZEOF_PIXEL );
+            PREALLOC( frame->buffer_fld[1], chroma_buffer_size );
     }
 
     /* all 4 luma planes allocated together, since the cacheline split code
@@ -161,75 +200,94 @@ static x264_frame_t *frame_new( x264_t *h, int b_fdec )
 
     for( int p = 0; p < luma_plane_count; p++ )
     {
-        int64_t luma_plane_size = align_plane_size( frame->i_stride[p] * (frame->i_lines[p] + 2*i_padv), disalign );
-        if( h->param.analyse.i_subpel_refine && b_fdec )
-            luma_plane_size *= 4;
+        int64_t luma_plane_size;
+        int64_t luma_buffer_size;
+        if( frame_size_mul( frame->i_stride[p], frame->i_lines[p] + 2*i_padv, &luma_plane_size ) )
+            goto fail;
+        luma_plane_size = align_plane_size( luma_plane_size, disalign );
+        if( h->param.analyse.i_subpel_refine && b_fdec &&
+            frame_size_mul( luma_plane_size, 4, &luma_plane_size ) )
+            goto fail;
+        if( frame_size_mul( luma_plane_size, SIZEOF_PIXEL, &luma_buffer_size ) )
+            goto fail;
 
         /* FIXME: Don't allocate both buffers in non-adaptive MBAFF. */
-        PREALLOC( frame->buffer[p], luma_plane_size * SIZEOF_PIXEL );
+        PREALLOC( frame->buffer[p], luma_buffer_size );
         if( PARAM_INTERLACED )
-            PREALLOC( frame->buffer_fld[p], luma_plane_size * SIZEOF_PIXEL );
+            PREALLOC( frame->buffer_fld[p], luma_buffer_size );
     }
 
     frame->b_duplicate = 0;
 
     if( b_fdec ) /* fdec frame */
     {
-        PREALLOC( frame->mb_type, i_mb_count * sizeof(int8_t) );
-        PREALLOC( frame->mb_partition, i_mb_count * sizeof(uint8_t) );
-        PREALLOC( frame->mv[0], 2*16 * i_mb_count * sizeof(int16_t) );
-        PREALLOC( frame->mv16x16, 2*(i_mb_count+1) * sizeof(int16_t) );
-        PREALLOC( frame->ref[0], 4 * i_mb_count * sizeof(int8_t) );
+        PREALLOC( frame->mb_type, (int64_t)i_mb_count * (int64_t)sizeof(int8_t) );
+        PREALLOC( frame->mb_partition, (int64_t)i_mb_count * (int64_t)sizeof(uint8_t) );
+        PREALLOC( frame->mv[0], 2*16 * (int64_t)i_mb_count * (int64_t)sizeof(int16_t) );
+        PREALLOC( frame->mv16x16, 2 * ((int64_t)i_mb_count + 1) * (int64_t)sizeof(int16_t) );
+        PREALLOC( frame->ref[0], 4 * (int64_t)i_mb_count * (int64_t)sizeof(int8_t) );
         if( h->param.i_bframe )
         {
-            PREALLOC( frame->mv[1], 2*16 * i_mb_count * sizeof(int16_t) );
-            PREALLOC( frame->ref[1], 4 * i_mb_count * sizeof(int8_t) );
+            PREALLOC( frame->mv[1], 2*16 * (int64_t)i_mb_count * (int64_t)sizeof(int16_t) );
+            PREALLOC( frame->ref[1], 4 * (int64_t)i_mb_count * (int64_t)sizeof(int8_t) );
         }
         else
         {
             frame->mv[1]  = NULL;
             frame->ref[1] = NULL;
         }
-        PREALLOC( frame->i_row_bits, i_lines/16 * sizeof(int) );
-        PREALLOC( frame->f_row_qp, i_lines/16 * sizeof(float) );
-        PREALLOC( frame->f_row_qscale, i_lines/16 * sizeof(float) );
+        PREALLOC( frame->i_row_bits, row_int_size );
+        PREALLOC( frame->f_row_qp, row_float_size );
+        PREALLOC( frame->f_row_qscale, row_float_size );
         if( h->param.analyse.i_me_method >= X264_ME_ESA )
-            PREALLOC( frame->buffer[3], frame->i_stride[0] * (frame->i_lines[0] + 2*i_padv) * sizeof(uint16_t) << h->frames.b_have_sub8x8_esa );
+        {
+            int64_t integral_size;
+            if( frame_size_mul( frame->i_stride[0], frame->i_lines[0] + 2*i_padv, &integral_size ) ||
+                frame_size_mul( integral_size, sizeof(uint16_t) << h->frames.b_have_sub8x8_esa, &integral_size ) )
+                goto fail;
+            PREALLOC( frame->buffer[3], integral_size );
+        }
         if( PARAM_INTERLACED )
-            PREALLOC( frame->field, i_mb_count * sizeof(uint8_t) );
+            PREALLOC( frame->field, (int64_t)i_mb_count * (int64_t)sizeof(uint8_t) );
         if( h->param.analyse.b_mb_info )
-            PREALLOC( frame->effective_qp, i_mb_count * sizeof(uint8_t) );
+            PREALLOC( frame->effective_qp, (int64_t)i_mb_count * (int64_t)sizeof(uint8_t) );
     }
     else /* fenc frame */
     {
         if( h->frames.b_have_lowres )
         {
-            int64_t luma_plane_size = align_plane_size( frame->i_stride_lowres * (frame->i_lines[0]/2 + 2*PADV), disalign );
+            int64_t luma_plane_size;
+            int64_t lowres_buffer_size;
+            if( frame_size_mul( frame->i_stride_lowres, frame->i_lines[0]/2 + 2*PADV, &luma_plane_size ) )
+                goto fail;
+            luma_plane_size = align_plane_size( luma_plane_size, disalign );
+            if( frame_size_mul( luma_plane_size, 4 * SIZEOF_PIXEL, &lowres_buffer_size ) )
+                goto fail;
 
-            PREALLOC( frame->buffer_lowres, 4 * luma_plane_size * SIZEOF_PIXEL );
+            PREALLOC( frame->buffer_lowres, lowres_buffer_size );
 
             for( int j = 0; j <= !!h->param.i_bframe; j++ )
                 for( int i = 0; i <= h->param.i_bframe; i++ )
                 {
-                    PREALLOC( frame->lowres_mvs[j][i], 2*i_mb_count*sizeof(int16_t) );
-                    PREALLOC( frame->lowres_mv_costs[j][i], i_mb_count*sizeof(int) );
+                    PREALLOC( frame->lowres_mvs[j][i], 2 * (int64_t)i_mb_count * (int64_t)sizeof(int16_t) );
+                    PREALLOC( frame->lowres_mv_costs[j][i], (int64_t)i_mb_count * (int64_t)sizeof(int) );
                 }
-            PREALLOC( frame->i_propagate_cost, i_mb_count * sizeof(uint16_t) );
+            PREALLOC( frame->i_propagate_cost, (int64_t)i_mb_count * (int64_t)sizeof(uint16_t) );
             for( int j = 0; j <= h->param.i_bframe+1; j++ )
                 for( int i = 0; i <= h->param.i_bframe+1; i++ )
-                    PREALLOC( frame->lowres_costs[j][i], i_mb_count * sizeof(uint16_t) );
+                    PREALLOC( frame->lowres_costs[j][i], (int64_t)i_mb_count * (int64_t)sizeof(uint16_t) );
         }
         if( h->param.rc.i_aq_mode )
         {
-            PREALLOC( frame->f_qp_offset, i_mb_count * sizeof(float) );
-            PREALLOC( frame->f_qp_offset_aq, i_mb_count * sizeof(float) );
+            PREALLOC( frame->f_qp_offset, (int64_t)i_mb_count * (int64_t)sizeof(float) );
+            PREALLOC( frame->f_qp_offset_aq, (int64_t)i_mb_count * (int64_t)sizeof(float) );
             if( h->frames.b_have_lowres )
-                PREALLOC( frame->i_inv_qscale_factor, i_mb_count * sizeof(uint16_t) );
+                PREALLOC( frame->i_inv_qscale_factor, (int64_t)i_mb_count * (int64_t)sizeof(uint16_t) );
         }
         if( h->param.rc.i_aq3_mode )
         {
-            PREALLOC( frame->f_qp_offset3, i_mb_count * sizeof(float) );
-            PREALLOC( frame->f_qp_offset_aq3, i_mb_count * sizeof(float) );
+            PREALLOC( frame->f_qp_offset3, (int64_t)i_mb_count * (int64_t)sizeof(float) );
+            PREALLOC( frame->f_qp_offset_aq3, (int64_t)i_mb_count * (int64_t)sizeof(float) );
         }
     }
 
@@ -245,7 +303,7 @@ static x264_frame_t *frame_new( x264_t *h, int b_fdec )
 
     for( int p = 0; p < luma_plane_count; p++ )
     {
-        int64_t luma_plane_size = align_plane_size( frame->i_stride[p] * (frame->i_lines[p] + 2*i_padv), disalign );
+        int64_t luma_plane_size = align_plane_size( (int64_t)frame->i_stride[p] * (frame->i_lines[p] + 2*i_padv), disalign );
         if( h->param.analyse.i_subpel_refine && b_fdec )
         {
             for( int i = 0; i < 4; i++ )
@@ -277,20 +335,20 @@ static x264_frame_t *frame_new( x264_t *h, int b_fdec )
     {
         if( h->frames.b_have_lowres )
         {
-            int64_t luma_plane_size = align_plane_size( frame->i_stride_lowres * (frame->i_lines[0]/2 + 2*PADV), disalign );
+            int64_t luma_plane_size = align_plane_size( (int64_t)frame->i_stride_lowres * (frame->i_lines[0]/2 + 2*PADV), disalign );
             for( int i = 0; i < 4; i++ )
                 frame->lowres[i] = frame->buffer_lowres + frame->i_stride_lowres * PADV + PADH_ALIGN + i * luma_plane_size;
 
             for( int j = 0; j <= !!h->param.i_bframe; j++ )
                 for( int i = 0; i <= h->param.i_bframe; i++ )
-                    memset( frame->lowres_mvs[j][i], 0, 2*i_mb_count*sizeof(int16_t) );
+                    memset( frame->lowres_mvs[j][i], 0, 2 * (size_t)i_mb_count * sizeof(int16_t) );
 
             frame->i_intra_cost = frame->lowres_costs[0][0];
-            memset( frame->i_intra_cost, -1, i_mb_count * sizeof(uint16_t) );
+            memset( frame->i_intra_cost, -1, (size_t)i_mb_count * sizeof(uint16_t) );
 
             if( h->param.rc.i_aq_mode )
                 /* shouldn't really be initialized, just silences a valgrind false-positive in x264_mbtree_propagate_cost_sse2 */
-                memset( frame->i_inv_qscale_factor, 0, i_mb_count * sizeof(uint16_t) );
+                memset( frame->i_inv_qscale_factor, 0, (size_t)i_mb_count * sizeof(uint16_t) );
         }
     }
 
@@ -344,6 +402,8 @@ static int get_plane_ptr( x264_t *h, x264_picture_t *src, uint8_t **pix, int *st
 {
     int width = h->param.i_width >> xshift;
     int height = h->param.i_height >> yshift;
+    if( !src->img.plane[plane] || src->img.i_stride[plane] == INT_MIN )
+        return -1;
     *pix = src->img.plane[plane];
     *stride = src->img.i_stride[plane];
     if( src->img.i_csp & X264_CSP_VFLIP )
@@ -351,7 +411,8 @@ static int get_plane_ptr( x264_t *h, x264_picture_t *src, uint8_t **pix, int *st
         *pix += (height-1) * *stride;
         *stride = -*stride;
     }
-    if( width > abs(*stride) )
+    int abs_stride = *stride < 0 ? -*stride : *stride;
+    if( width > abs_stride )
     {
         x264_log( h, X264_LOG_ERROR, "Input picture width (%d) is greater than stride (%d)\n", width, *stride );
         return -1;

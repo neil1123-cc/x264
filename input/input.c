@@ -66,16 +66,33 @@ int x264_cli_csp_depth_factor( int csp )
     return (csp & X264_CSP_HIGH_DEPTH) ? 2 : 1;
 }
 
+static int cli_pic_scale_dimension( int value, float scale, int *out )
+{
+    long double scaled = (long double)value * scale;
+    if( !out || scaled != scaled || scaled < 0.0 || scaled > INT_MAX )
+        return -1;
+    *out = (int)scaled;
+    return 0;
+}
+
 int64_t x264_cli_pic_plane_size( int csp, int width, int height, int plane )
 {
     int csp_mask = csp & X264_CSP_MASK;
     if( x264_cli_csp_is_invalid( csp ) || width <= 0 || height <= 0 ||
         plane < 0 || plane >= x264_cli_csps[csp_mask].planes )
         return 0;
-    int64_t size = (int64_t)width * height;
-    size *= x264_cli_csps[csp_mask].width[plane] * x264_cli_csps[csp_mask].height[plane];
-    size *= x264_cli_csp_depth_factor( csp );
-    return size;
+    int depth = x264_cli_csp_depth_factor( csp );
+    int plane_width;
+    int plane_height;
+    if( cli_pic_scale_dimension( width, x264_cli_csps[csp_mask].width[plane], &plane_width ) ||
+        cli_pic_scale_dimension( height, x264_cli_csps[csp_mask].height[plane], &plane_height ) ||
+        depth <= 0 || plane_width <= 0 || plane_height <= 0 ||
+        plane_width > INT64_MAX / plane_height )
+        return 0;
+    int64_t samples = (int64_t)plane_width * plane_height;
+    if( samples <= 0 || samples > INT64_MAX / depth )
+        return 0;
+    return samples * depth;
 }
 
 int64_t x264_cli_pic_size( int csp, int width, int height )
@@ -100,9 +117,11 @@ static int cli_pic_plane_alloc_size( int csp, int csp_mask, int width, int heigh
     if( !stride || !size )
         return -1;
     int depth = x264_cli_csp_depth_factor( csp );
-    int64_t plane_width = (int64_t)width * x264_cli_csps[csp_mask].width[plane];
-    int64_t plane_height = (int64_t)height * x264_cli_csps[csp_mask].height[plane];
-    if( depth <= 0 || align <= 0 || plane_width <= 0 || plane_height <= 0 ||
+    int plane_width;
+    int plane_height;
+    if( cli_pic_scale_dimension( width, x264_cli_csps[csp_mask].width[plane], &plane_width ) ||
+        cli_pic_scale_dimension( height, x264_cli_csps[csp_mask].height[plane], &plane_height ) ||
+        depth <= 0 || align <= 0 || plane_width <= 0 || plane_height <= 0 ||
         plane_width > INT_MAX / depth )
         return -1;
     int64_t byte_width = plane_width * depth;
@@ -113,6 +132,8 @@ static int cli_pic_plane_alloc_size( int csp, int csp_mask, int width, int heigh
         return -1;
     *stride = aligned_stride;
     *size = plane_height * aligned_stride;
+    if( (uint64_t)*size > SIZE_MAX )
+        return -1;
     return 0;
 }
 
@@ -180,6 +201,11 @@ const x264_cli_csp_t *x264_cli_get_csp( int csp )
     return x264_cli_csps + (csp&X264_CSP_MASK);
 }
 
+static int mmap_alignment_is_valid( int64_t size )
+{
+    return size > 0 && size <= INT_MAX && !( size & (size - 1) );
+}
+
 /* Functions for handling memory-mapped input frames */
 int x264_cli_mmap_init( cli_mmap_t *h, FILE *fh )
 {
@@ -203,8 +229,8 @@ int x264_cli_mmap_init( cli_mmap_t *h, FILE *fh )
         return -1;
     SYSTEM_INFO si;
     GetSystemInfo( &si );
-    if( !si.dwPageSize || !si.dwAllocationGranularity ||
-        si.dwPageSize > INT_MAX || si.dwAllocationGranularity > INT_MAX )
+    if( !mmap_alignment_is_valid( si.dwPageSize ) ||
+        !mmap_alignment_is_valid( si.dwAllocationGranularity ) )
         return -1;
     h->page_mask = (int)si.dwPageSize - 1;
     h->align_mask = (int)si.dwAllocationGranularity - 1;
@@ -214,7 +240,7 @@ int x264_cli_mmap_init( cli_mmap_t *h, FILE *fh )
     return !h->map_handle;
 #elif HAVE_MMAP && defined(_SC_PAGESIZE)
     long page_size = sysconf( _SC_PAGESIZE );
-    if( page_size <= 0 || page_size > INT_MAX )
+    if( !mmap_alignment_is_valid( page_size ) )
         return -1;
     h->align_mask = (int)page_size - 1;
     h->fd = fd;

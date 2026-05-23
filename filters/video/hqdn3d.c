@@ -21,6 +21,7 @@
  *****************************************************************************/
 
 #include <errno.h>
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -65,15 +66,27 @@ static void help(int longhelp)
     PARAM3_DEFAULT * PARAM2_DEFAULT / PARAM1_DEFAULT);
 }
 
-static void precalc_coefs(int *ct, double dist25)
+static int precalc_coefs(int *ct, double dist25)
 {
-    double c, simil, gamma_d = log(0.25) / log(1.0 - dist25/255.0 - 0.00001);
+    if( !ct || !isfinite( dist25 ) || dist25 < 0.0 )
+        return -1;
+    double log_base = 1.0 - dist25/255.0 - 0.00001;
+    if( log_base <= 0.0 )
+        return -1;
+    double c, simil, gamma_d = log(0.25) / log( log_base );
+    if( !isfinite( gamma_d ) )
+        return -1;
     for(int i = -256*16; i < 256*16; i++) {
         simil = 1.0 - ABS(i) / (16*255.0);
+        if( simil < 0.0 )
+            simil = 0.0;
         c = pow(simil, gamma_d) * 65536.0 * (double)i / 16.0;
+        if( !isfinite( c ) || c < (double)INT_MIN || c > (double)INT_MAX )
+            return -1;
         ct[16*256+i] = (int)((c<0) ? (c-0.5) : (c+0.5));
     }
     ct[0] = (dist25 != 0);
+    return 0;
 }
 
 static int parse_strength( const char *arg, char **end, double *strength )
@@ -225,10 +238,14 @@ static int init(hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info,
             goto fail;
     }
 
-    precalc_coefs(h->coefs[0], lum_spac);
-    precalc_coefs(h->coefs[1], lum_tmp);
-    precalc_coefs(h->coefs[2], chrom_spac);
-    precalc_coefs(h->coefs[3], chrom_tmp);
+    if( precalc_coefs(h->coefs[0], lum_spac) ||
+        precalc_coefs(h->coefs[1], lum_tmp) ||
+        precalc_coefs(h->coefs[2], chrom_spac) ||
+        precalc_coefs(h->coefs[3], chrom_tmp) )
+    {
+        x264_cli_log( NAME, X264_LOG_ERROR, "filter strength is out of range\n" );
+        goto fail;
+    }
 
     x264_cli_log(NAME, X264_LOG_INFO,
         "using strengths %.1lf,%.1lf,%.1lf,%.1lf\n",
@@ -367,6 +384,33 @@ static void init_data(uint8_t *source, unsigned short *dest,
             dest[y*width+x] = (unsigned)source[y*stride+x] << 8;
 }
 
+static int hqdn3d_abs_stride( int stride )
+{
+    if( stride == INT_MIN )
+        return -1;
+    return stride < 0 ? -stride : stride;
+}
+
+static int hqdn3d_plane_dims( cli_image_t *img, const x264_cli_csp_t *csp, int plane,
+                              int *width, int *height )
+{
+    int64_t plane_width;
+    int64_t plane_height;
+
+    if( !img || !csp || !width || !height || plane < 0 || plane >= img->planes )
+        return -1;
+
+    plane_width = (int64_t)img->width * csp->width[plane];
+    plane_height = (int64_t)img->height * csp->height[plane];
+    if( plane_width <= 0 || plane_height <= 0 ||
+        plane_width > INT_MAX || plane_height > INT_MAX )
+        return -1;
+
+    *width = (int)plane_width;
+    *height = (int)plane_height;
+    return 0;
+}
+
 static int get_frame(hnd_t handle, cli_pic_t *out, int frame)
 {
     hqdn3d_hnd_t *h = handle;
@@ -383,18 +427,25 @@ static int get_frame(hnd_t handle, cli_pic_t *out, int frame)
     if( ret )
         return -1;
 
-    if( h->buffer.img.planes < 0 || h->buffer.img.planes > 3 )
+    if( h->buffer.img.planes != h->csp->planes || h->buffer.img.planes < 0 ||
+        h->buffer.img.planes > 3 )
         return -1;
 
     for(int i = 0; i < h->buffer.img.planes; i++)
-        if( !h->frame[i] || !h->buffer.img.plane[i] )
+    {
+        int width, height;
+        int stride = hqdn3d_abs_stride( h->buffer.img.stride[i] );
+        if( hqdn3d_plane_dims( &h->buffer.img, h->csp, i, &width, &height ) ||
+            stride < width || !h->frame[i] || !h->buffer.img.plane[i] )
             return -1;
+    }
 
     *out = h->buffer;
     for(int i = 0; i < out->img.planes; i++) {
-        int width = out->img.width * h->csp->width[i];
-        int height = out->img.height * h->csp->height[i];
+        int width, height;
         int stride = out->img.stride[i];
+        if( hqdn3d_plane_dims( &out->img, h->csp, i, &width, &height ) )
+            return -1;
         if(h->first_frame)
             init_data(out->img.plane[i], h->frame[i], width, height, stride);
         denoise(out->img.plane[i], h->line, h->frame[i], width, height, stride,

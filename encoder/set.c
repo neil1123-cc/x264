@@ -112,6 +112,14 @@ static int sei_version_add_len( int *length, size_t add )
     return 0;
 }
 
+static int sei_version_add_strlen( int *length, const char *str, size_t extra )
+{
+    size_t len = strlen( str );
+    if( len > SIZE_MAX - extra )
+        return -1;
+    return sei_version_add_len( length, len + extra );
+}
+
 static int sei_version_append( char *payload, int length, int *offset, const char *fmt, ... )
 {
     int written;
@@ -653,26 +661,26 @@ int x264_sei_version_write( x264_t *h, bs_t *s )
     if( h->param.i_opts_write )
     {
         if( (h->param.i_opts_write & X264_OPTS_PREINFO) &&
-            (!h->param.psz_opts[0] || sei_version_add_len( &length, strlen( h->param.psz_opts[0] ) +
-                                                           !!(h->param.i_opts_write & X264_OPTS_INFO) )) )
+            (!h->param.psz_opts[0] || sei_version_add_strlen( &length, h->param.psz_opts[0],
+                                                              !!(h->param.i_opts_write & X264_OPTS_INFO) )) )
             goto fail;
         if( (h->param.i_opts_write & X264_OPTS_INFO) &&
             sei_version_add_len( &length, strlen( "x264 "X264_COREVER" - H.264/MPEG-4 AVC codec" ) ) )
             goto fail;
         if( (h->param.i_opts_write & X264_OPTS_POSTINFO) &&
-            (!h->param.psz_opts[1] || sei_version_add_len( &length, strlen( h->param.psz_opts[1] ) + 1 )) )
+            (!h->param.psz_opts[1] || sei_version_add_strlen( &length, h->param.psz_opts[1], 1 )) )
             goto fail;
         if( (h->param.i_opts_write & ( X264_OPTS_PREOPT | X264_OPTS_SETTING | X264_OPTS_POSTOPT )) &&
             sei_version_add_len( &length, strlen( " - options:" ) ) )
             goto fail;
         if( (h->param.i_opts_write & X264_OPTS_PREOPT) &&
-            (!h->param.psz_opts[2] || sei_version_add_len( &length, strlen( h->param.psz_opts[2] ) + 1 )) )
+            (!h->param.psz_opts[2] || sei_version_add_strlen( &length, h->param.psz_opts[2], 1 )) )
             goto fail;
         if( (h->param.i_opts_write & X264_OPTS_SETTING) &&
-            sei_version_add_len( &length, strlen( opts ) + 1 ) )
+            sei_version_add_strlen( &length, opts, 1 ) )
             goto fail;
         if( (h->param.i_opts_write & X264_OPTS_POSTOPT) &&
-            (!h->param.psz_opts[3] || sei_version_add_len( &length, strlen( h->param.psz_opts[3] ) + 1 )) )
+            (!h->param.psz_opts[3] || sei_version_add_strlen( &length, h->param.psz_opts[3], 1 )) )
             goto fail;
     }
     CHECKED_MALLOC( payload, length );
@@ -954,9 +962,10 @@ int x264_sei_avcintra_vanc_write( x264_t *h, bs_t *s, int len )
 {
     uint8_t data[6000];
     const char *msg = "VANC";
-    if( len < 0 || (unsigned)len > sizeof(data) )
+    enum { VANC_MIN_LEN = 20 };
+    if( len < VANC_MIN_LEN || (unsigned)len > sizeof(data) )
     {
-        x264_log( h, X264_LOG_ERROR, "AVC-Intra SEI is too large (%d)\n", len );
+        x264_log( h, X264_LOG_ERROR, "invalid AVC-Intra SEI size (%d)\n", len );
         return -1;
     }
 

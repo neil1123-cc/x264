@@ -16,9 +16,9 @@ static void x264_af_free_packet_default( audio_packet_t *pkt )
     free( pkt );
 }
 
-static int x264_af_validate_sample_packet( audio_hnd_t *h, audio_packet_t *pkt, uint64_t requested )
+static int x264_af_validate_sample_packet( audio_hnd_t *h, audio_packet_t *pkt, int64_t first_sample, uint64_t requested )
 {
-    if( pkt->size < 0 || pkt->samplecount > requested )
+    if( pkt->dts != first_sample || pkt->size < 0 || pkt->samplecount > requested )
         return -1;
     if( pkt->samplecount )
     {
@@ -72,7 +72,7 @@ audio_packet_t *x264_af_get_samples( hnd_t handle, int64_t first_sample, int64_t
     if( out )
     {
         out->owner = h;
-        if( x264_af_validate_sample_packet( h, out, requested ) )
+        if( x264_af_validate_sample_packet( h, out, first_sample, requested ) )
         {
             x264_af_free_packet( out );
             return NULL;

@@ -119,6 +119,14 @@ void x264_opencl_close_library( x264_opencl_function_t *ocl )
 
 static int detect_switchable_graphics( void );
 
+static int opencl_array_alloc_size( cl_uint count, size_t elem_size, int64_t *out )
+{
+    if( elem_size && (uint64_t)count > X264_MIN( (uint64_t)INT64_MAX, (uint64_t)SIZE_MAX ) / elem_size )
+        return -1;
+    *out = (uint64_t)count * elem_size;
+    return 0;
+}
+
 /* Try to load the cached compiled program binary, verify the device context is
  * still valid before reuse */
 static cl_program opencl_cache_load( x264_t *h, const char *dev_name, const char *dev_vendor, const char *driver_version )
@@ -196,7 +204,7 @@ static void opencl_cache_save( x264_t *h, cl_program program, const char *dev_na
 
     size_t size = 0;
     cl_int status = ocl->clGetProgramInfo( program, CL_PROGRAM_BINARY_SIZES, sizeof(size_t), &size, NULL );
-    if( status != CL_SUCCESS || !size )
+    if( status != CL_SUCCESS || !size || size > (size_t)INT64_MAX )
     {
         x264_log( h, X264_LOG_INFO, "OpenCL: Unable to query program binary size, no cache file generated\n" );
         goto fail;
@@ -301,7 +309,7 @@ static cl_program opencl_compile( x264_t *h )
 
     size_t build_log_len = 0;
     status = ocl->clGetProgramBuildInfo( program, h->opencl.device, CL_PROGRAM_BUILD_LOG, 0, NULL, &build_log_len );
-    if( status != CL_SUCCESS || !build_log_len )
+    if( status != CL_SUCCESS || !build_log_len || build_log_len > (size_t)INT64_MAX )
     {
         x264_log( h, X264_LOG_WARNING, "OpenCL: Compilation failed, unable to query build log\n" );
         goto fail;
@@ -442,7 +450,13 @@ int x264_opencl_lookahead_init( x264_t *h )
         x264_log( h, X264_LOG_WARNING, "OpenCL: Unable to query installed platforms\n" );
         goto fail;
     }
-    platforms = (cl_platform_id*)x264_malloc( sizeof(cl_platform_id) * numPlatforms );
+    int64_t alloc_size;
+    if( opencl_array_alloc_size( numPlatforms, sizeof(*platforms), &alloc_size ) )
+    {
+        x264_log( h, X264_LOG_WARNING, "OpenCL: installed platforms buffer too large\n" );
+        goto fail;
+    }
+    platforms = (cl_platform_id*)x264_malloc( alloc_size );
     if( !platforms )
     {
         x264_log( h, X264_LOG_WARNING, "OpenCL: malloc of installed platforms buffer failed\n" );
@@ -465,7 +479,12 @@ int x264_opencl_lookahead_init( x264_t *h )
             continue;
 
         x264_free( devices );
-        devices = x264_malloc( sizeof(cl_device_id) * gpu_count );
+        if( opencl_array_alloc_size( gpu_count, sizeof(*devices), &alloc_size ) )
+        {
+            x264_log( h, X264_LOG_WARNING, "OpenCL: GPU devices buffer too large\n" );
+            continue;
+        }
+        devices = x264_malloc( alloc_size );
         if( !devices )
             continue;
 
@@ -501,7 +520,12 @@ int x264_opencl_lookahead_init( x264_t *h )
                 continue;
 
             x264_free( imageType );
-            imageType = x264_malloc( sizeof(cl_image_format) * imagecount );
+            if( opencl_array_alloc_size( imagecount, sizeof(*imageType), &alloc_size ) )
+            {
+                x264_log( h, X264_LOG_WARNING, "OpenCL: image formats buffer too large\n" );
+                continue;
+            }
+            imageType = x264_malloc( alloc_size );
             if( !imageType )
                 continue;
 

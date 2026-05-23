@@ -3372,6 +3372,14 @@ void x264_cli_log( const char *name, int i_level, const char *fmt, ... )
 
 #include "output/mp4.c"
 
+static uint32_t test_timescale = 1;
+static uint64_t test_duration = 1;
+static uint32_t test_sample_count;
+static uint32_t test_sample_length;
+static uint64_t test_sample_dts_step = 2;
+static int esd_deleted;
+static GF_DecoderConfig test_decoder_config;
+
 GF_ISOFile *gf_isom_open( const char *name, int mode, void *tmp )
 {
     (void)name; (void)mode; (void)tmp;
@@ -3431,16 +3439,25 @@ int gf_isom_add_sample( GF_ISOFile *file, int track, uint32_t descidx, GF_ISOSam
 GF_ESD *gf_isom_get_esd( GF_ISOFile *file, int track, int descidx )
 {
     (void)file; (void)track; (void)descidx;
-    return NULL;
+    GF_ESD *esd = calloc( 1, sizeof(*esd) );
+    if( !esd )
+        return NULL;
+    esd->decoderConfig = &test_decoder_config;
+    return esd;
 }
-uint32_t gf_isom_get_media_timescale( GF_ISOFile *file, int track ) { (void)file; (void)track; return 1; }
-uint32_t gf_isom_get_sample_count( GF_ISOFile *file, int track ) { (void)file; (void)track; return 0; }
+uint32_t gf_isom_get_media_timescale( GF_ISOFile *file, int track ) { (void)file; (void)track; return test_timescale; }
+uint32_t gf_isom_get_sample_count( GF_ISOFile *file, int track ) { (void)file; (void)track; return test_sample_count; }
 GF_ISOSample *gf_isom_get_sample_info( GF_ISOFile *file, int track, uint32_t sample, uint32_t *descidx, uint64_t *offset )
 {
-    (void)file; (void)track; (void)sample; (void)descidx; (void)offset;
-    return NULL;
+    (void)file; (void)track; (void)descidx; (void)offset;
+    GF_ISOSample *s = calloc( 1, sizeof(*s) );
+    if( !s )
+        return NULL;
+    s->dataLength = test_sample_length;
+    s->DTS = sample * test_sample_dts_step;
+    return s;
 }
-uint64_t gf_isom_get_media_duration( GF_ISOFile *file, int track ) { (void)file; (void)track; return 0; }
+uint64_t gf_isom_get_media_duration( GF_ISOFile *file, int track ) { (void)file; (void)track; return test_duration; }
 uint64_t gf_isom_get_sample_dts( GF_ISOFile *file, int track, int sample ) { (void)file; (void)track; (void)sample; return 0; }
 uint32_t gf_isom_get_timescale( GF_ISOFile *file ) { (void)file; return 1; }
 void gf_isom_set_last_sample_duration( GF_ISOFile *file, int track, uint32_t duration ) { (void)file; (void)track; (void)duration; }
@@ -3456,7 +3473,11 @@ void gf_isom_change_mpeg4_description( GF_ISOFile *file, int track, int descidx,
 {
     (void)file; (void)track; (void)descidx; (void)esd;
 }
-void gf_odf_desc_del( GF_Descriptor *desc ) { (void)desc; }
+void gf_odf_desc_del( GF_Descriptor *desc )
+{
+    esd_deleted++;
+    free( desc );
+}
 void gf_isom_set_pl_indication( GF_ISOFile *file, int indication, int value ) { (void)file; (void)indication; (void)value; }
 void gf_isom_set_storage_mode( GF_ISOFile *file, int mode ) { (void)file; (void)mode; }
 int gf_list_add( void *list, void *item ) { (void)list; (void)item; return 0; }
@@ -3490,6 +3511,21 @@ static int expect_set_param_rejected( x264_param_t *p )
     free( h->p_sample );
     free( h );
     return ret;
+}
+
+static int expect_recompute_bitrate( uint32_t timescale, uint64_t duration, uint32_t sample_count,
+                                     uint32_t sample_length, uint32_t expected_avg )
+{
+    memset( &test_decoder_config, 0, sizeof(test_decoder_config) );
+    test_timescale = timescale;
+    test_duration = duration;
+    test_sample_count = sample_count;
+    test_sample_length = sample_length;
+    test_sample_dts_step = timescale ? (uint64_t)timescale + 1 : 2;
+    esd_deleted = 0;
+    GF_ISOFile file = { 0 };
+    recompute_bitrate_mp4( &file, 1 );
+    return esd_deleted != 1 || test_decoder_config.avgBitrate != expected_avg;
 }
 
 int main( void )
@@ -3545,6 +3581,16 @@ int main( void )
         return 6;
     }
     close_file( h, 0, 0 );
+
+    if( expect_recompute_bitrate( 0, 1, 1, 1, 0 ) )
+        return 7;
+    if( expect_recompute_bitrate( 1, 0, 1, 1, 0 ) )
+        return 8;
+    if( expect_recompute_bitrate( 1000, 1000, 2, 500, 8000 ) )
+        return 9;
+    if( expect_recompute_bitrate( 1000000, 1, 2, UINT32_MAX, UINT32_MAX ) )
+        return 10;
+
     return 0;
 }
 GPAC_MP4_C

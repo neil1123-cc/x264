@@ -100,7 +100,7 @@ typedef struct audio_aac_info_t
     int has_sbr;
 } audio_aac_info_t;
 
-#if HAVE_LSMASH
+#if HAVE_LSMASH || defined(LSMASH_H)
 typedef struct audio_dts_info_t
 {
     lsmash_codec_type_t coding_name;

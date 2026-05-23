@@ -24,6 +24,7 @@
  *****************************************************************************/
 
 #include <errno.h>
+#include <limits.h>
 #include <math.h>
 #include "video.h"
 
@@ -45,6 +46,7 @@ static int full_check( video_info_t *info, x264_param_t *param )
 #if HAVE_SWSCALE
 #undef DECLARE_ALIGNED
 #include <libswscale/swscale.h>
+#include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
 
@@ -181,6 +183,22 @@ static int pix_number_of_planes( const AVPixFmtDescriptor *pix_desc )
     return num_planes;
 }
 
+static int resize_abs_stride( int stride )
+{
+    if( stride == INT_MIN )
+        return -1;
+    return stride < 0 ? -stride : stride;
+}
+
+static int resize_scale_dimension( int value, float scale, int *out )
+{
+    long double scaled = (long double)value * scale;
+    if( !out || scaled != scaled || scaled <= 0.0 || scaled > INT_MAX )
+        return -1;
+    *out = (int)scaled;
+    return 0;
+}
+
 static int resize_image_is_invalid( const cli_image_t *img )
 {
     if( !img || img->width <= 0 || img->height <= 0 ||
@@ -197,8 +215,12 @@ static int resize_image_is_invalid( const cli_image_t *img )
         if( planes <= 0 || img->planes < planes )
             return 1;
         for( int i = 0; i < planes; i++ )
-            if( !img->plane[i] )
+        {
+            int row_size = av_image_get_linesize( convert_csp_to_pix_fmt( img->csp ), img->width, i );
+            int stride = resize_abs_stride( img->stride[i] );
+            if( row_size <= 0 || stride < row_size || !img->plane[i] )
                 return 1;
+        }
         return 0;
     }
 
@@ -209,8 +231,15 @@ static int resize_image_is_invalid( const cli_image_t *img )
     if( img->planes != x264_cli_csps[csp_mask].planes )
         return 1;
     for( int i = 0; i < img->planes; i++ )
-        if( x264_cli_pic_plane_size( img->csp, img->width, img->height, i ) && !img->plane[i] )
+    {
+        int depth = x264_cli_csp_depth_factor( img->csp );
+        int width;
+        int stride = resize_abs_stride( img->stride[i] );
+        if( resize_scale_dimension( img->width, x264_cli_csps[csp_mask].width[i], &width ) ||
+            depth <= 0 || width > INT_MAX / depth ||
+            stride < width * depth || !img->plane[i] )
             return 1;
+    }
 
     return 0;
 }
@@ -291,11 +320,12 @@ static int parse_resize_ratio( const char *arg, uint32_t *w, uint32_t *h )
 
 static int resize_round_mod( int *dst, double value, int mod )
 {
-    if( !dst || mod <= 0 || value != value || value < 0.0 || value > (double)(INT_MAX / mod) )
+    if( !dst || mod <= 0 || !isfinite( value ) || value < 0.0 || value > (double)(INT_MAX / mod) )
         return -1;
-    int rounded = (int)round( value );
-    if( rounded > INT_MAX / mod )
+    double rounded_value = round( value );
+    if( !isfinite( rounded_value ) || rounded_value < 0.0 || rounded_value > (double)(INT_MAX / mod) )
         return -1;
+    int rounded = (int)rounded_value;
     *dst = rounded * mod;
     return 0;
 }

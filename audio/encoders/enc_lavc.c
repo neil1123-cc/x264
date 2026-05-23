@@ -195,7 +195,8 @@ static int encode_audio( AVCodecContext *ctx, audio_packet_t *out, int out_size,
     ret = avcodec_receive_packet( ctx, avpkt );
     if( ret == 0 )
     {
-        if( avpkt->size < 0 || avpkt->size > out_size )
+        if( avpkt->size < 0 || avpkt->size > out_size ||
+            (avpkt->size && !avpkt->data) )
         {
             av_packet_free( &avpkt );
             return -1;
@@ -251,6 +252,11 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     h->info.opaque = NULL;
     char **opts = NULL;
     AVDictionary *avopts = NULL;
+    if( h->info.channels <= 0 || h->info.samplerate <= 0 )
+    {
+        x264_cli_log( "lavc", X264_LOG_ERROR, "invalid input audio format\n" );
+        goto error;
+    }
 
     static const char * const optlist[] = { AUDIO_CODEC_COMMON_OPTIONS, "profile", "cutoff", NULL };
     opts = x264_split_options( opt_str, optlist );
@@ -606,11 +612,12 @@ static audio_packet_t *get_next_packet( hnd_t handle )
             }
         }
 
-        if( smp->samplecount > (uint64_t)(INT64_MAX - h->last_sample) )
+        if( smp->samplecount > INT_MAX ||
+            smp->samplecount > (uint64_t)(INT64_MAX - h->last_sample) )
             goto error;
         int64_t staged_last_sample = h->last_sample + smp->samplecount;
         h->ctx->frame_size = staged_frame_size;
-        h->frame->nb_samples  = smp->samplecount;
+        h->frame->nb_samples  = (int)smp->samplecount;
 
         if( resample_audio( h->avr, h->frame, smp ) < 0 )
         {

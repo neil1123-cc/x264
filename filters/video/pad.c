@@ -73,6 +73,8 @@ typedef struct {
     cli_vid_filter_t prev_filter;
     int width;
     int height;
+    int input_width;
+    int input_height;
     int cols;
     int rows;
     uint16_t color[3];
@@ -164,11 +166,34 @@ static int get_colors( int *rgb, pad_handle_t *h, x264_param_t *param )
     return 0;
 }
 
-static void set_frame_colors( cli_pic_t *pic, uint16_t *color )
+static int pad_mul_int( int *out, int a, int b );
+static int pad_scale_dimension( int value, double scale, int *out );
+
+static int pad_plane_count_int( int *out, int height, int stride, double height_scale, int divisor )
 {
+    int scaled_height;
+    int byte_count;
+    if( !out || divisor <= 0 ||
+        pad_scale_dimension( height, height_scale, &scaled_height ) ||
+        pad_mul_int( &byte_count, scaled_height, stride ) ||
+        byte_count % divisor )
+        return -1;
+    *out = byte_count / divisor;
+    return 0;
+}
+
+static int set_frame_colors( cli_pic_t *pic, uint16_t *color )
+{
+    if( !pic || !color )
+        return -1;
     const x264_cli_csp_t *csp = x264_cli_get_csp( pic->img.csp );
     uint16_t *plane;
     int i, i_max, j, j_max;
+    if( !csp || pic->img.planes != csp->planes )
+        return -1;
+    for( i = 0; i < pic->img.planes; i++ )
+        if( !pic->img.plane[i] )
+            return -1;
     switch( pic->img.csp )
     {
 /* 16-bit colors */
@@ -180,7 +205,8 @@ static void set_frame_colors( cli_pic_t *pic, uint16_t *color )
             for( i = 0; i < pic->img.planes; i++ )
             {
                 plane = (uint16_t *)pic->img.plane[i];
-                j_max = pic->img.height * csp->height[i] * pic->img.stride[i]/2;
+                if( pad_plane_count_int( &j_max, pic->img.height, pic->img.stride[i], csp->height[i], 2 ) )
+                    return -1;
                 for( j = 0; j < j_max; j++ )
                     plane[j] = color[i];
             }
@@ -189,7 +215,8 @@ static void set_frame_colors( cli_pic_t *pic, uint16_t *color )
         case X264_CSP_HIGH_DEPTH|X264_CSP_BGRA:
         case X264_CSP_HIGH_DEPTH|X264_CSP_RGB:
             plane = (uint16_t *)pic->img.plane[0];
-            i_max = pic->img.height * pic->img.stride[0]/2;
+            if( pad_plane_count_int( &i_max, pic->img.height, pic->img.stride[0], 1.0, 2 ) )
+                return -1;
             for( i = 0; i < i_max; i += csp->width[0] )
             {
                 plane[i]   = color[0];
@@ -199,11 +226,13 @@ static void set_frame_colors( cli_pic_t *pic, uint16_t *color )
             break;
         case X264_CSP_HIGH_DEPTH|X264_CSP_NV12:
             plane = (uint16_t *)pic->img.plane[0];
-            i_max = pic->img.height * pic->img.stride[0]/2;
+            if( pad_plane_count_int( &i_max, pic->img.height, pic->img.stride[0], 1.0, 2 ) )
+                return -1;
             for( i = 0; i < i_max; i++ )
                 plane[i] = color[0];
             plane = (uint16_t *)pic->img.plane[1];
-            i_max = pic->img.stride[0] * pic->img.height / 4;
+            if( pad_plane_count_int( &i_max, pic->img.height, pic->img.stride[1], csp->height[1], 2 ) )
+                return -1;
             for( i = 0; i < i_max; i += 2 )
             {
                 plane[i]   = color[1];
@@ -212,18 +241,24 @@ static void set_frame_colors( cli_pic_t *pic, uint16_t *color )
             break;
 /* 8-bit colors */
         case X264_CSP_I400:
-		case X264_CSP_I420:
+        case X264_CSP_I420:
         case X264_CSP_I422:
         case X264_CSP_I444:
         case X264_CSP_YV12:
             for( i = 0; i < pic->img.planes; i++ )
+            {
+                int byte_count;
+                if( pad_plane_count_int( &byte_count, pic->img.height, pic->img.stride[i], csp->height[i], 1 ) )
+                    return -1;
                 memset( pic->img.plane[i], color[i],
-                        pic->img.height * csp->height[i] * pic->img.stride[i] );
+                        byte_count );
+            }
             break;
         case X264_CSP_BGR:
         case X264_CSP_BGRA:
         case X264_CSP_RGB:
-            i_max = pic->img.stride[0] * pic->img.height;
+            if( pad_plane_count_int( &i_max, pic->img.height, pic->img.stride[0], 1.0, 1 ) )
+                return -1;
             for( i = 0; i < i_max; i += csp->width[0] )
             {
                 pic->img.plane[0][i]   = color[0];
@@ -232,16 +267,25 @@ static void set_frame_colors( cli_pic_t *pic, uint16_t *color )
             }
             break;
         case X264_CSP_NV12:
+        {
+            int byte_count;
+            if( pad_plane_count_int( &byte_count, pic->img.height, pic->img.stride[0], 1.0, 1 ) )
+                return -1;
             memset( pic->img.plane[0], color[0],
-                    pic->img.height * pic->img.stride[0] );
-            i_max = pic->img.stride[0] * pic->img.height / 2;
+                    byte_count );
+            if( pad_plane_count_int( &i_max, pic->img.height, pic->img.stride[1], csp->height[1], 1 ) )
+                return -1;
             for( i = 0; i < i_max; i += 2 )
             {
                 pic->img.plane[1][i]   = color[1];
                 pic->img.plane[1][i+1] = color[2];
             }
             break;
+        }
+        default:
+            return -1;
     }
+    return 0;
 }
 
 static int handle_opts(int *arg, const x264_cli_csp_t *csp, video_info_t *info, char **opts, const char * const *optlist )
@@ -326,6 +370,34 @@ static int pad_plane_copy_params( int *offset, int *width, int *height,
         return -1;
     *width = byte_width;
     *height = scaled_input_height;
+    return 0;
+}
+
+static int pad_validate_input_frame( const pad_handle_t *h, const cli_pic_t *pic )
+{
+    if( !h || !h->csp || !pic ||
+        pic->img.csp != h->buffer.img.csp ||
+        pic->img.width != h->input_width ||
+        pic->img.height != h->input_height ||
+        pic->img.planes != h->csp->planes )
+        return -1;
+
+    int depth_factor = x264_cli_csp_depth_factor( pic->img.csp );
+    if( depth_factor <= 0 )
+        return -1;
+
+    for( int i = 0; i < pic->img.planes; i++ )
+    {
+        int offset;
+        int width, height;
+        if( pad_plane_copy_params( &offset, &width, &height,
+                                   pic->img.width, pic->img.height, pic->img.stride[i],
+                                   0, 0, h->csp->width[i], h->csp->height[i],
+                                   depth_factor ) ||
+            (width && height && !pic->img.plane[i]) )
+            return -1;
+    }
+
     return 0;
 }
 
@@ -428,6 +500,9 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info,
         return 0;
     }
 
+    h->input_width = info->width;
+    h->input_height = info->height;
+
     if( x264_cli_pic_alloc( &h->buffer, info->csp, h->width, h->height ) )
     {
         free( h );
@@ -442,7 +517,13 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info,
         return -1;
     }
 
-    set_frame_colors( &h->buffer, h->color );
+    if( set_frame_colors( &h->buffer, h->color ) )
+    {
+        x264_cli_log( NAME, X264_LOG_ERROR, "invalid frame buffer dimensions\n" );
+        x264_cli_pic_clean( &h->buffer );
+        free( h );
+        return -1;
+    }
 
     x264_cli_log( NAME, X264_LOG_INFO,
                   "expanding frame to %dx%d, picture starting at (%d,%d)\n",
@@ -474,6 +555,12 @@ static int get_frame( hnd_t handle, cli_pic_t *out, int frame )
         return -1;
     if( h->prev_filter.get_frame( h->prev_handle, &in, frame ) )
         return -1;
+
+    if( pad_validate_input_frame( h, &in ) )
+    {
+        h->prev_filter.release_frame( h->prev_handle, &in, frame );
+        return -1;
+    }
 
     depth_factor = x264_cli_csp_depth_factor( in.img.csp );
 

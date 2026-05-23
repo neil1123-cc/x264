@@ -422,9 +422,15 @@ static audio_packet_t *convert_to_audio_packet( hnd_t handle, AVPacket *pkt, uin
         return NULL;
     }
 
-    out->dts = x264_convert_timebase( pkt->dts != AV_NOPTS_VALUE ? pkt->dts :
-                                      pkt->pts != AV_NOPTS_VALUE ? pkt->pts : INVALID_DTS,
-                                      h->origtb, h->info.timebase );
+    int64_t packet_dts = pkt->dts != AV_NOPTS_VALUE ? pkt->dts :
+                         pkt->pts != AV_NOPTS_VALUE ? pkt->pts : INVALID_DTS;
+    out->dts = x264_convert_timebase( packet_dts, h->origtb, h->info.timebase );
+    if( packet_dts != INVALID_DTS && (out->dts == INT64_MAX || out->dts == INT64_MIN) )
+    {
+        free_avpacket( pkt );
+        free( out );
+        return NULL;
+    }
     out->info        = h->info;
     out->info.last_delta = last_delta;
     out->channels    = (unsigned)h->info.channels;
@@ -558,11 +564,14 @@ static int decode_audio_frame( lavf_source_t *h, uint8_t *buf, intptr_t buflen )
         return ret;
     }
 
-    int planar = av_sample_fmt_is_planar( h->ctx->sample_fmt );
-    int channels = h->ctx->ch_layout.nb_channels;
+    int planar = av_sample_fmt_is_planar( h->decode_frame->format );
+    int channels = h->decode_frame->ch_layout.nb_channels;
     int data_size = av_samples_get_buffer_size( NULL, channels, h->decode_frame->nb_samples,
-                                                  h->ctx->sample_fmt, 1 );
-    if( channels <= 0 || data_size <= 0 || data_size > buflen )
+                                                  h->decode_frame->format, 1 );
+    if( h->decode_frame->format != h->ctx->sample_fmt ||
+        channels != h->ctx->ch_layout.nb_channels ||
+        h->decode_frame->nb_samples <= 0 ||
+        channels <= 0 || data_size <= 0 || data_size > buflen )
         return -1;
     if( !h->decode_frame->extended_data || !h->decode_frame->extended_data[0] )
         return -1;
@@ -570,6 +579,8 @@ static int decode_audio_frame( lavf_source_t *h, uint8_t *buf, intptr_t buflen )
         return -1;
 
     int plane_size = data_size / (planar ? channels : 1);
+    if( h->decode_frame->linesize[0] < plane_size )
+        return -1;
 
     memcpy( buf, h->decode_frame->extended_data[0], (size_t)plane_size );
 
@@ -786,6 +797,8 @@ static struct audio_packet_t *get_samples( hnd_t handle, int64_t first_sample, i
         return NULL;
 
     int64_t samples = last_sample - first_sample;
+    if( samples > INT64_MAX / h->info.samplesize )
+        return NULL;
     int64_t size = samples * h->info.samplesize;
     if( samples > UINT_MAX || size > INT_MAX )
         return NULL;

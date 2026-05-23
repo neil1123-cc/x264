@@ -79,6 +79,21 @@ static void *opencl_alloc_locked( x264_t *h, int bytes )
     return ptr;
 }
 
+static int opencl_size_mul_size( size_t count, size_t elem_size, int *out )
+{
+    if( elem_size && count > (size_t)INT_MAX / elem_size )
+        return -1;
+    *out = count * elem_size;
+    return 0;
+}
+
+static int opencl_size_mul( int count, int elem_size, int *out )
+{
+    if( count < 0 || elem_size < 0 )
+        return -1;
+    return opencl_size_mul_size( count, elem_size, out );
+}
+
 int x264_opencl_lowres_init( x264_t *h, x264_frame_t *fenc, int lambda )
 {
     if( fenc->b_intra_calculated )
@@ -86,7 +101,12 @@ int x264_opencl_lowres_init( x264_t *h, x264_frame_t *fenc, int lambda )
     fenc->b_intra_calculated = 1;
 
     x264_opencl_function_t *ocl = h->opencl.ocl;
-    int luma_length = fenc->i_stride[0] * fenc->i_lines[0];
+    int luma_length;
+    int mb_size;
+    int mb_mv_size;
+    int row_satd_size;
+    int frame_mb_size;
+    int frame_mb_mv_size;
 
 #define CREATEBUF( out, flags, size )\
     out = ocl->clCreateBuffer( h->opencl.context, (flags), (size), NULL, &status );\
@@ -97,6 +117,19 @@ int x264_opencl_lowres_init( x264_t *h, x264_frame_t *fenc, int lambda )
 
     int mb_count = h->mb.i_mb_count;
     cl_int status;
+
+    if( h->param.i_bframe == INT_MAX ||
+        opencl_size_mul( fenc->i_stride[0], fenc->i_lines[0], &luma_length ) ||
+        opencl_size_mul( mb_count, sizeof(int16_t), &mb_size ) ||
+        opencl_size_mul( mb_count, 2 * sizeof(int16_t), &mb_mv_size ) ||
+        opencl_size_mul( h->mb.i_mb_height, sizeof(int), &row_satd_size ) ||
+        opencl_size_mul( h->param.i_bframe + 1, mb_size, &frame_mb_size ) ||
+        opencl_size_mul( h->param.i_bframe + 1, mb_mv_size, &frame_mb_mv_size ) )
+    {
+        h->param.b_opencl = 0;
+        x264_log( h, X264_LOG_ERROR, "OpenCL buffer size overflow\n" );
+        return -1;
+    }
 
     if( !h->opencl.lowres_mv_costs )
     {
@@ -118,16 +151,16 @@ int x264_opencl_lowres_init( x264_t *h, x264_frame_t *fenc, int lambda )
             height >>= 1;
         }
 
-        CREATEBUF( h->opencl.lowres_mv_costs,     CL_MEM_READ_WRITE, mb_count * sizeof(int16_t) );
-        CREATEBUF( h->opencl.lowres_costs[0],     CL_MEM_READ_WRITE, mb_count * sizeof(int16_t) );
-        CREATEBUF( h->opencl.lowres_costs[1],     CL_MEM_READ_WRITE, mb_count * sizeof(int16_t) );
-        CREATEBUF( h->opencl.mv_buffers[0],       CL_MEM_READ_WRITE, mb_count * sizeof(int16_t) * 2 );
-        CREATEBUF( h->opencl.mv_buffers[1],       CL_MEM_READ_WRITE, mb_count * sizeof(int16_t) * 2 );
-        CREATEBUF( h->opencl.mvp_buffer,          CL_MEM_READ_WRITE, mb_count * sizeof(int16_t) * 2 );
+        CREATEBUF( h->opencl.lowres_mv_costs,     CL_MEM_READ_WRITE, mb_size );
+        CREATEBUF( h->opencl.lowres_costs[0],     CL_MEM_READ_WRITE, mb_size );
+        CREATEBUF( h->opencl.lowres_costs[1],     CL_MEM_READ_WRITE, mb_size );
+        CREATEBUF( h->opencl.mv_buffers[0],       CL_MEM_READ_WRITE, mb_mv_size );
+        CREATEBUF( h->opencl.mv_buffers[1],       CL_MEM_READ_WRITE, mb_mv_size );
+        CREATEBUF( h->opencl.mvp_buffer,          CL_MEM_READ_WRITE, mb_mv_size );
         CREATEBUF( h->opencl.frame_stats[0],      CL_MEM_WRITE_ONLY, 4 * sizeof(int) );
         CREATEBUF( h->opencl.frame_stats[1],      CL_MEM_WRITE_ONLY, 4 * sizeof(int) );
-        CREATEBUF( h->opencl.row_satds[0],        CL_MEM_WRITE_ONLY, h->mb.i_mb_height * sizeof(int) );
-        CREATEBUF( h->opencl.row_satds[1],        CL_MEM_WRITE_ONLY, h->mb.i_mb_height * sizeof(int) );
+        CREATEBUF( h->opencl.row_satds[0],        CL_MEM_WRITE_ONLY, row_satd_size );
+        CREATEBUF( h->opencl.row_satds[1],        CL_MEM_WRITE_ONLY, row_satd_size );
         CREATEBUF( h->opencl.luma_16x16_image[0], CL_MEM_READ_ONLY,  luma_length );
         CREATEBUF( h->opencl.luma_16x16_image[1], CL_MEM_READ_ONLY,  luma_length );
     }
@@ -151,12 +184,12 @@ int x264_opencl_lowres_init( x264_t *h, x264_frame_t *fenc, int lambda )
             width >>= 1;
             height >>= 1;
         }
-        CREATEBUF( fenc->opencl.inv_qscale_factor, CL_MEM_READ_ONLY,  mb_count * sizeof(int16_t) );
-        CREATEBUF( fenc->opencl.intra_cost,        CL_MEM_WRITE_ONLY, mb_count * sizeof(int16_t) );
-        CREATEBUF( fenc->opencl.lowres_mvs0,       CL_MEM_READ_WRITE, mb_count * 2 * sizeof(int16_t) * (h->param.i_bframe + 1) );
-        CREATEBUF( fenc->opencl.lowres_mvs1,       CL_MEM_READ_WRITE, mb_count * 2 * sizeof(int16_t) * (h->param.i_bframe + 1) );
-        CREATEBUF( fenc->opencl.lowres_mv_costs0,  CL_MEM_READ_WRITE, mb_count * sizeof(int16_t) * (h->param.i_bframe + 1) );
-        CREATEBUF( fenc->opencl.lowres_mv_costs1,  CL_MEM_READ_WRITE, mb_count * sizeof(int16_t) * (h->param.i_bframe + 1) );
+        CREATEBUF( fenc->opencl.inv_qscale_factor, CL_MEM_READ_ONLY,  mb_size );
+        CREATEBUF( fenc->opencl.intra_cost,        CL_MEM_WRITE_ONLY, mb_size );
+        CREATEBUF( fenc->opencl.lowres_mvs0,       CL_MEM_READ_WRITE, frame_mb_mv_size );
+        CREATEBUF( fenc->opencl.lowres_mvs1,       CL_MEM_READ_WRITE, frame_mb_mv_size );
+        CREATEBUF( fenc->opencl.lowres_mv_costs0,  CL_MEM_READ_WRITE, frame_mb_size );
+        CREATEBUF( fenc->opencl.lowres_mv_costs1,  CL_MEM_READ_WRITE, frame_mb_size );
     }
 #undef CREATEBUF
 #undef CREATEIMAGE
@@ -170,7 +203,7 @@ int x264_opencl_lowres_init( x264_t *h, x264_frame_t *fenc, int lambda )
     size_t gdim[2];
     if( h->param.rc.i_aq_mode && fenc->i_inv_qscale_factor )
     {
-        int size = h->mb.i_mb_count * sizeof(int16_t);
+        int size = mb_size;
         locked = opencl_alloc_locked( h, size );
         memcpy( locked, fenc->i_inv_qscale_factor, size );
         OCLCHECK( clEnqueueWriteBuffer, h->opencl.queue, fenc->opencl.inv_qscale_factor, CL_FALSE, 0, size, locked, 0, NULL, NULL );
@@ -251,7 +284,7 @@ int x264_opencl_lowres_init( x264_t *h, x264_frame_t *fenc, int lambda )
     if( h->opencl.num_copies >= MAX_FINISH_COPIES - 4 )
         x264_opencl_flush( h );
 
-    int size = h->mb.i_mb_count * sizeof(int16_t);
+    int size = mb_size;
     locked = opencl_alloc_locked( h, size );
     OCLCHECK( clEnqueueReadBuffer, h->opencl.queue, fenc->opencl.intra_cost, CL_FALSE, 0, size, locked, 0, NULL, NULL );
     h->opencl.copies[h->opencl.num_copies].dest = fenc->lowres_costs[0][0];
@@ -259,7 +292,7 @@ int x264_opencl_lowres_init( x264_t *h, x264_frame_t *fenc, int lambda )
     h->opencl.copies[h->opencl.num_copies].bytes = size;
     h->opencl.num_copies++;
 
-    size = h->mb.i_mb_height * sizeof(int);
+    size = row_satd_size;
     locked = opencl_alloc_locked( h, size );
     OCLCHECK( clEnqueueReadBuffer, h->opencl.queue, h->opencl.row_satds[h->opencl.last_buf], CL_FALSE, 0, size, locked, 0, NULL, NULL );
     h->opencl.copies[h->opencl.num_copies].dest = fenc->i_row_satds[0][0];
@@ -430,9 +463,14 @@ int x264_opencl_motionsearch( x264_t *h, x264_frame_t **frames, int b, int ref, 
         gdims[0] <<= 2;
         optimal_launch_dims( h, gdims, ldims, h->opencl.hme_kernel, h->opencl.device );
 
-        mb_per_group = (ldims[0] >> 2) * ldims[1];
-        cost_local_size = 4 * mb_per_group * sizeof(int16_t);
-        mvc_local_size = 4 * mb_per_group * sizeof(int16_t) * 2;
+        if( opencl_size_mul_size( (ldims[0] >> 2) * ldims[1], 1, &mb_per_group ) ||
+            opencl_size_mul( mb_per_group, 4 * sizeof(int16_t), &cost_local_size ) ||
+            opencl_size_mul( mb_per_group, 4 * sizeof(int16_t) * 2, &mvc_local_size ) )
+        {
+            h->param.b_opencl = 0;
+            x264_log( h, X264_LOG_ERROR, "OpenCL buffer size overflow\n" );
+            return -1;
+        }
         int scaled_me_range = h->param.analyse.i_me_range >> scale;
         int b_shift_index = 1;
 
@@ -475,7 +513,14 @@ int x264_opencl_motionsearch( x264_t *h, x264_frame_t **frames, int b, int ref, 
         }
     }
 
-    int satd_local_size = mb_per_group * sizeof(uint32_t) * 16;
+    int satd_local_size;
+    if( opencl_size_mul( mb_per_group, 16 * sizeof(uint32_t), &satd_local_size ) )
+    {
+        h->param.b_opencl = 0;
+        x264_log( h, X264_LOG_ERROR, "OpenCL buffer size overflow\n" );
+        return -1;
+    }
+
     cl_uint arg = 0;
     OCLCHECK( clSetKernelArg, h->opencl.subpel_refine_kernel, arg++, sizeof(cl_mem), &fenc->opencl.scaled_image2Ds[0] );
     OCLCHECK( clSetKernelArg, h->opencl.subpel_refine_kernel, arg++, sizeof(cl_mem), &ref_luma_hpel );
@@ -511,7 +556,13 @@ int x264_opencl_motionsearch( x264_t *h, x264_frame_t **frames, int b, int ref, 
 
     OCLCHECK( clEnqueueNDRangeKernel, h->opencl.queue, h->opencl.subpel_refine_kernel, 2, NULL, gdims, ldims, 0, NULL, NULL );
 
-    int mvlen = 2 * sizeof(int16_t) * h->mb.i_mb_count;
+    int mvlen;
+    if( opencl_size_mul( h->mb.i_mb_count, 2 * sizeof(int16_t), &mvlen ) )
+    {
+        h->param.b_opencl = 0;
+        x264_log( h, X264_LOG_ERROR, "OpenCL buffer size overflow\n" );
+        return -1;
+    }
 
     if( h->opencl.num_copies >= MAX_FINISH_COPIES - 1 )
         x264_opencl_flush( h );
@@ -522,13 +573,25 @@ int x264_opencl_motionsearch( x264_t *h, x264_frame_t **frames, int b, int ref, 
 
     if( b_islist1 )
     {
-        int mvs_offset = mvlen * (ref - b - 1);
+        int mvs_offset;
+        if( opencl_size_mul( ref - b - 1, mvlen, &mvs_offset ) )
+        {
+            h->param.b_opencl = 0;
+            x264_log( h, X264_LOG_ERROR, "OpenCL buffer size overflow\n" );
+            return -1;
+        }
         OCLCHECK( clEnqueueReadBuffer, h->opencl.queue, fenc->opencl.lowres_mvs1, CL_FALSE, mvs_offset, mvlen, locked, 0, NULL, NULL );
         h->opencl.copies[h->opencl.num_copies].dest = fenc->lowres_mvs[1][ref - b - 1];
     }
     else
     {
-        int mvs_offset = mvlen * (b - ref - 1);
+        int mvs_offset;
+        if( opencl_size_mul( b - ref - 1, mvlen, &mvs_offset ) )
+        {
+            h->param.b_opencl = 0;
+            x264_log( h, X264_LOG_ERROR, "OpenCL buffer size overflow\n" );
+            return -1;
+        }
         OCLCHECK( clEnqueueReadBuffer, h->opencl.queue, fenc->opencl.lowres_mvs0, CL_FALSE, mvs_offset, mvlen, locked, 0, NULL, NULL );
         h->opencl.copies[h->opencl.num_copies].dest = fenc->lowres_mvs[0][b - ref - 1];
     }
@@ -564,9 +627,15 @@ int x264_opencl_finalize_cost( x264_t *h, int lambda, x264_frame_t **frames, int
         ldims = ldim_bidir;
         gdims[0] <<= 2;
         optimal_launch_dims( h, gdims, ldims, h->opencl.mode_select_kernel, h->opencl.device );
-        int mb_per_group = (ldims[0] >> 2) * ldims[1];
-        cost_local_size = 4 * mb_per_group * sizeof(int16_t);
-        satd_local_size = 16 * mb_per_group * sizeof(uint32_t);
+        int mb_per_group;
+        if( opencl_size_mul_size( (ldims[0] >> 2) * ldims[1], 1, &mb_per_group ) ||
+            opencl_size_mul( mb_per_group, 4 * sizeof(int16_t), &cost_local_size ) ||
+            opencl_size_mul( mb_per_group, 16 * sizeof(uint32_t), &satd_local_size ) )
+        {
+            h->param.b_opencl = 0;
+            x264_log( h, X264_LOG_ERROR, "OpenCL buffer size overflow\n" );
+            return -1;
+        }
     }
 
     cl_uint arg = 0;
@@ -611,7 +680,16 @@ int x264_opencl_finalize_cost( x264_t *h, int lambda, x264_frame_t **frames, int
     if( h->opencl.num_copies >= MAX_FINISH_COPIES - 4 )
         x264_opencl_flush( h );
 
-    int size =  h->mb.i_mb_count * sizeof(int16_t);
+    int size;
+    int row_satd_size;
+    if( opencl_size_mul( h->mb.i_mb_count, sizeof(int16_t), &size ) ||
+        opencl_size_mul( h->mb.i_mb_height, sizeof(int), &row_satd_size ) )
+    {
+        h->param.b_opencl = 0;
+        x264_log( h, X264_LOG_ERROR, "OpenCL buffer size overflow\n" );
+        return -1;
+    }
+
     char *locked = opencl_alloc_locked( h, size );
     h->opencl.copies[h->opencl.num_copies].src = locked;
     h->opencl.copies[h->opencl.num_copies].dest = fenc->lowres_costs[b - p0][p1 - b];
@@ -619,7 +697,7 @@ int x264_opencl_finalize_cost( x264_t *h, int lambda, x264_frame_t **frames, int
     OCLCHECK( clEnqueueReadBuffer, h->opencl.queue, h->opencl.lowres_costs[h->opencl.last_buf], CL_FALSE, 0, size, locked, 0, NULL, NULL );
     h->opencl.num_copies++;
 
-    size =  h->mb.i_mb_height * sizeof(int);
+    size = row_satd_size;
     locked = opencl_alloc_locked( h, size );
     h->opencl.copies[h->opencl.num_copies].src = locked;
     h->opencl.copies[h->opencl.num_copies].dest = fenc->i_row_satds[b - p0][p1 - b];

@@ -75,6 +75,22 @@ static int csp_num_interleaved( int csp, int plane )
            1;
 }
 
+static int depth_abs_stride( int stride )
+{
+    if( stride == INT_MIN )
+        return -1;
+    return stride < 0 ? -stride : stride;
+}
+
+static int depth_scale_dimension( int value, float scale, int *out )
+{
+    long double scaled = (long double)value * scale;
+    if( !out || scaled != scaled || scaled <= 0.0 || scaled > INT_MAX )
+        return -1;
+    *out = (int)scaled;
+    return 0;
+}
+
 static int depth_image_is_invalid( const cli_image_t *img )
 {
     if( !img || x264_cli_csp_is_invalid( img->csp ) ||
@@ -87,9 +103,21 @@ static int depth_image_is_invalid( const cli_image_t *img )
         img->planes != x264_cli_csps[csp_mask].planes )
         return 1;
 
+    int depth = x264_cli_csp_depth_factor( img->csp );
+    if( depth <= 0 )
+        return 1;
+
     for( int i = 0; i < img->planes; i++ )
-        if( x264_cli_pic_plane_size( img->csp, img->width, img->height, i ) && !img->plane[i] )
+    {
+        int plane_width;
+        int plane_height;
+        int stride = depth_abs_stride( img->stride[i] );
+        if( depth_scale_dimension( img->width, x264_cli_csps[csp_mask].width[i], &plane_width ) ||
+            depth_scale_dimension( img->height, x264_cli_csps[csp_mask].height[i], &plane_height ) ||
+            plane_width > INT_MAX / depth || stride < 0 ||
+            plane_width * depth > stride || !img->plane[i] )
             return 1;
+    }
 
     return 0;
 }
@@ -130,8 +158,12 @@ static void dither_image( cli_image_t *out, cli_image_t *img, int16_t *error_buf
     for( int i = 0; i < img->planes; i++ )
     {
         int num_interleaved = csp_num_interleaved( img->csp, i );
-        int height = x264_cli_csps[csp_mask].height[i] * img->height;
-        int width = x264_cli_csps[csp_mask].width[i] * img->width / num_interleaved;
+        int height;
+        int width;
+        if( depth_scale_dimension( img->height, x264_cli_csps[csp_mask].height[i], &height ) ||
+            depth_scale_dimension( img->width, x264_cli_csps[csp_mask].width[i], &width ) )
+            return;
+        width /= num_interleaved;
 
 #define CALL_DITHER_PLANE( pitch, off ) \
         dither_plane_##pitch( ((pixel*)out->plane[i])+off, out->stride[i]/SIZEOF_PIXEL, \
@@ -170,8 +202,11 @@ static void scale_image( cli_image_t *output, cli_image_t *img )
     {
         uint8_t *src = img->plane[i];
         uint16_t *dst = (uint16_t*)output->plane[i];
-        int height = x264_cli_csps[csp_mask].height[i] * img->height;
-        int width = x264_cli_csps[csp_mask].width[i] * img->width;
+        int height;
+        int width;
+        if( depth_scale_dimension( img->height, x264_cli_csps[csp_mask].height[i], &height ) ||
+            depth_scale_dimension( img->width, x264_cli_csps[csp_mask].width[i], &width ) )
+            return;
 
         for( int j = 0; j < height; j++ )
         {
@@ -287,7 +322,13 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info,
     if( change_fmt || bit_depth != 8 * x264_cli_csp_depth_factor( csp ) )
     {
         FAIL_IF_ERROR( !depth_filter_csp_is_supported(csp), "unsupported colorspace.\n" );
-        depth_hnd_t *h = x264_malloc( sizeof(depth_hnd_t) + (info->width+1)*sizeof(int16_t) );
+        uint64_t error_buf_count = (uint64_t)info->width + 1;
+        FAIL_IF_ERROR( info->width < 0 ||
+                       error_buf_count > (SIZE_MAX - sizeof(depth_hnd_t)) / sizeof(int16_t) ||
+                       error_buf_count > ((uint64_t)INT64_MAX - sizeof(depth_hnd_t)) / sizeof(int16_t),
+                       "input width is too large\n" );
+        size_t error_buf_size = (size_t)error_buf_count * sizeof(int16_t);
+        depth_hnd_t *h = x264_malloc( (int64_t)(sizeof(depth_hnd_t) + error_buf_size) );
 
         if( !h )
             return -1;

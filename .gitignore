@@ -50,3 +50,5 @@ common/oclobj.h
 x264_lookahead.clbin
 build/
 /Status.md
+.vscode
+.claude

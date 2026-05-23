@@ -259,17 +259,19 @@ static int mp3len( uint8_t *data )
     int layer_id          = 3 - ((header >> 17) & 0x03);
     int bitrate_id        = ((header >> 12) & 0x0f);
     int samplerate_id     = ((header >> 10) & 0x03);
-    int bits_per_slot     = bits_per_slot_tab[layer_id];
     int mode              = mode_tab[(header >> 19) & 0x03];
     int mpeg_id           = !!(mode > 0) ;
     int is_pad            = ((header >> 9) & 0x01);
+
+    if ( (( header >> 21 ) & 0x7ff) != 0x7ff || mode == 3 || layer_id == 3 ||
+         bitrate_id == 0 || bitrate_id == 15 || samplerate_id == 3 ) {
+        return -1;
+    }
+
+    int bits_per_slot     = bits_per_slot_tab[layer_id];
     int samplerate        = samplerates_tab[samplerate_id]>>mode;
     int samples_per_frame = samples_per_frame_tab[mpeg_id][layer_id];
     int bitrate           = bitrate_tab[mpeg_id][layer_id][bitrate_id]*1000;
-
-    if ( (( header >> 21 ) & 0x7ff) != 0x7ff || mode == 3 || layer_id == 3 || samplerate_id == 3 ) {
-        return -1;
-    }
 
     return samples_per_frame * bitrate / (bits_per_slot * samplerate) + is_pad;
 }
@@ -337,7 +339,8 @@ static audio_packet_t *get_next_packet( hnd_t handle )
             !h->in->samples || !h->in->samples[0] ||
             (h->info.channels > 1 && !h->in->samples[1]) )
             goto error;
-        if( h->in->samplecount > (uint64_t)(INT64_MAX - h->last_sample) )
+        if( h->in->samplecount > INT_MAX ||
+            h->in->samplecount > (uint64_t)(INT64_MAX - h->last_sample) )
             goto error;
         int64_t staged_last_sample = h->last_sample + h->in->samplecount;
         float *right = h->info.channels > 1 ? h->in->samples[1] : h->in->samples[0];

@@ -159,6 +159,24 @@ static int crop_scale_dimension( int value, double scale, int *out )
     return 0;
 }
 
+static int crop_abs_stride( int stride )
+{
+    if( stride == INT_MIN )
+        return -1;
+    return stride < 0 ? -stride : stride;
+}
+
+static int crop_plane_row_width( int *row_width, int width, double width_scale, int depth_factor )
+{
+    int scaled_width;
+    if( !row_width ||
+        crop_scale_dimension( width, width_scale, &scaled_width ) ||
+        depth_factor <= 0 || scaled_width > INT_MAX / depth_factor )
+        return -1;
+    *row_width = scaled_width * depth_factor;
+    return 0;
+}
+
 static int crop_plane_offset( intptr_t *offset, int stride, int top, double height_scale,
                               int left, double width_scale, int depth_factor )
 {
@@ -206,8 +224,12 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
     for( int i = 0; i < img.planes; i++ )
     {
         int depth_factor = x264_cli_csp_depth_factor( img.csp );
+        int stride = crop_abs_stride( img.stride[i] );
+        int row_width;
         intptr_t offset;
-        if( crop_plane_offset( &offset, img.stride[i], h->dims[1], h->csp->height[i],
+        if( crop_plane_row_width( &row_width, img.width, h->csp->width[i], depth_factor ) ||
+            stride < row_width ||
+            crop_plane_offset( &offset, img.stride[i], h->dims[1], h->csp->height[i],
                                h->dims[0], h->csp->width[i], depth_factor ) )
         {
             h->prev_filter.release_frame( h->prev_hnd, output, frame );

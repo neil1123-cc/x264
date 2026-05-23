@@ -117,6 +117,15 @@ static int update_clip( avs_source_t *h, const AVS_VideoInfo **vi, AVS_Value *re
     return 0;
 }
 
+static void avs_release_value_if_defined( avs_source_t *h, AVS_Value *v )
+{
+    if( h && h->func.avs_release_value && avs_defined( *v ) )
+    {
+        h->func.avs_release_value( *v );
+        *v = avs_void;
+    }
+}
+
 #if !USE_AVXSYNTH
 static AVS_Value check_avisource( hnd_t handle, const char *filename, int track )
 {
@@ -330,6 +339,7 @@ static int init( hnd_t *handle, const char *opt_str )
     const char *filename_ext = NULL;
 #endif
     int track;
+    AVS_Value res = avs_void;
 
     GOTO_IF( avs_parse_audio_track( x264_get_option( "track", opts ), &track ),
              fail2, "no valid track requested ('any', 0 or a positive integer)\n" )
@@ -355,11 +365,10 @@ static int init( hnd_t *handle, const char *opt_str )
 
 #if USE_AVXSYNTH
     AVS_Value arg = avs_new_value_string( filename );
-    AVS_Value res = h->func.avs_invoke( h->env, "Import", arg, NULL );
+    res = h->func.avs_invoke( h->env, "Import", arg, NULL );
     h->func.avs_release_value( arg );
     GOTO_IF( avs_is_error( res ), error, "%s\n", avs_as_string( res ) )
 #else
-    AVS_Value res = avs_void;
     if( !strcmp( filename_ext, "avs" ) )
     {
         // normal avs script
@@ -380,6 +389,7 @@ static int init( hnd_t *handle, const char *opt_str )
             res = filters[i]( h, filename, track );
             if( !avs_is_error( res ) )
                 break;
+            avs_release_value_if_defined( h, &res );
         }
         GOTO_IF( !filters[i], error, "no working input filter is found for audio input\n" )
     }
@@ -392,7 +402,9 @@ static int init( hnd_t *handle, const char *opt_str )
     GOTO_IF( !avs_has_audio( vi ), error, "no valid audio track is found\n" )
 
     // video is unneeded, so disable it if any
-    res = h->func.avs_invoke( h->env, "KillVideo", res, NULL );
+    AVS_Value next_res = h->func.avs_invoke( h->env, "KillVideo", res, NULL );
+    avs_release_value_if_defined( h, &res );
+    res = next_res;
     GOTO_IF( update_clip( h, &vi, &res ), error, "failed to update audio clip\n" )
 
     switch( avs_sample_type( vi ) )
@@ -418,13 +430,15 @@ static int init( hnd_t *handle, const char *opt_str )
     if( h->sample_fmt == SMPFMT_NONE )
     {
         x264_cli_log( "avs", X264_LOG_INFO, "detected %dbit sample format, converting to float\n", avs_bytes_per_channel_sample( vi )*8 );
-        res = h->func.avs_invoke( h->env, "ConvertAudioToFloat", res, NULL );
+        next_res = h->func.avs_invoke( h->env, "ConvertAudioToFloat", res, NULL );
+        avs_release_value_if_defined( h, &res );
+        res = next_res;
         GOTO_IF( avs_is_error( res ), error, "failed to convert audio sample format\n" )
         GOTO_IF( update_clip( h, &vi, &res ), error, "failed to update audio clip\n" )
         h->sample_fmt = SMPFMT_FLT;
     }
 
-    h->func.avs_release_value( res );
+    avs_release_value_if_defined( h, &res );
 
     int samplerate         = avs_samples_per_second( vi );
     int channels           = avs_audio_channels( vi );
@@ -452,6 +466,7 @@ static int init( hnd_t *handle, const char *opt_str )
 
 error:
     AF_LOG_ERR( h, "error opening audio\n" );
+    avs_release_value_if_defined( h, &res );
 fail:
     if( h )
     {

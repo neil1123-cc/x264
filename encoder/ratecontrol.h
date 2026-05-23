@@ -37,7 +37,7 @@
 #define MAX_FRAME_DURATION (1.00f / ((h->param.i_frame_packing == 5)+1))
 #define MIN_FRAME_DURATION (0.01f / ((h->param.i_frame_packing == 5)+1))
 
-#define CLIP_DURATION(f) x264_clip3f(f,MIN_FRAME_DURATION,MAX_FRAME_DURATION)
+#define CLIP_DURATION(f) x264_clip3f((double)(f),(double)MIN_FRAME_DURATION,(double)MAX_FRAME_DURATION)
 
 #define x264_ratecontrol_new x264_template(ratecontrol_new)
 int  x264_ratecontrol_new   ( x264_t * );

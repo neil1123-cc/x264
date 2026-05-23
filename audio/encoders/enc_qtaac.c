@@ -889,9 +889,11 @@ static OSStatus pcmInputDataProc( ComponentInstance ci,
     int64_t staged_last_sample = h->last_sample + in->samplecount;
 
     if( h->info.samplesize <= 0 ||
-        in->samplecount > UINT32_MAX / (unsigned)h->info.samplesize )
+        in->samplecount > UINT32_MAX ||
+        in->samplecount > UINT32_MAX / (uint64_t)h->info.samplesize )
         goto error;
-    UInt32 data_size = in->samplecount * h->info.samplesize;
+    UInt32 packet_count = (UInt32)in->samplecount;
+    UInt32 data_size = (UInt32)(in->samplecount * (uint64_t)h->info.samplesize);
 
     samplebuffer = x264_af_interleave3( SMPFMT_FLT, in->samples, h->info.channels, in->samplecount, qt_channel_map[h->info.channels-1] );
     if( in->samplecount && !samplebuffer )
@@ -910,7 +912,7 @@ static OSStatus pcmInputDataProc( ComponentInstance ci,
     ioData->mBuffers[0].mDataByteSize = data_size;
     ioData->mBuffers[0].mData = h->samplebuffer;
 
-    *ioNumberDataPackets = h->in->samplecount;
+    *ioNumberDataPackets = packet_count;
 
     return noErr;
 
@@ -967,7 +969,7 @@ static audio_packet_t *fill_buffer( enc_qtaac_t *h )
     }
     if( desc.mDataByteSize == 0 || npackets == 0 )
         return NULL;
-    if( desc.mDataByteSize > INT_MAX )
+    if( desc.mDataByteSize > INT_MAX || desc.mDataByteSize > (UInt32)h->bufsize )
     {
         h->finishing = 1;
         return NULL;

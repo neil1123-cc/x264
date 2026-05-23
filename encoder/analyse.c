@@ -68,6 +68,27 @@ X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_list_t*)0)->mvc) == 32, "anal
 X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_list_t*)0)->mvc[0]) == 6, "analysis MVC candidate count must match partition candidates" );
 X264_STATIC_ASSERT( ARRAY_ELEMS(((x264_mb_analysis_list_t*)0)->mvc[0][0]) == 2, "analysis MVC vector size must match motion vector components" );
 
+static int analyse_mv_range_scale( int mv_range, int scale, int *out )
+{
+    if( mv_range < 0 || scale < 0 || (scale && mv_range > INT_MAX / scale) )
+        return -1;
+    *out = mv_range * scale;
+    return 0;
+}
+
+static int analyse_mv_cost_alloc_size( int mv_radius, size_t elem_size, size_t *out )
+{
+    size_t count;
+
+    if( mv_radius < 0 || mv_radius == INT_MAX )
+        return -1;
+    count = (size_t)mv_radius + 1;
+    if( elem_size && count > SIZE_MAX / elem_size )
+        return -1;
+    *out = count * elem_size;
+    return 0;
+}
+
 typedef struct
 {
     /* conduct the analysis using this lamda and QP */
@@ -183,10 +204,20 @@ static int init_costs( x264_t *h, float *logs, int qp )
 
     int mv_range = h->param.analyse.i_mv_range << PARAM_INTERLACED;
     int lambda = x264_lambda_tab[qp];
+    int cost_mv_radius;
+    int fpel_radius;
+    size_t cost_mv_size;
+    size_t fpel_size;
+    if( analyse_mv_range_scale( mv_range, 16, &cost_mv_radius ) ||
+        analyse_mv_range_scale( mv_range, 4, &fpel_radius ) ||
+        analyse_mv_cost_alloc_size( cost_mv_radius, sizeof(uint16_t), &cost_mv_size ) ||
+        analyse_mv_cost_alloc_size( fpel_radius, sizeof(uint16_t), &fpel_size ) )
+        return -1;
+
     /* factor of 4 from qpel, 2 from sign, and 2 because mv can be opposite from mvp */
-    CHECKED_MALLOC( h->cost_mv[qp], (4*4*mv_range + 1) * sizeof(uint16_t) );
-    h->cost_mv[qp] += 2*4*mv_range;
-    for( int i = 0; i <= 2*4*mv_range; i++ )
+    CHECKED_MALLOC( h->cost_mv[qp], cost_mv_size );
+    h->cost_mv[qp] += cost_mv_radius / 2;
+    for( int i = 0; i <= cost_mv_radius / 2; i++ )
     {
         h->cost_mv[qp][-i] =
         h->cost_mv[qp][i]  = X264_MIN( (int)(lambda * logs[i] + .5f), UINT16_MAX );
@@ -198,9 +229,9 @@ static int init_costs( x264_t *h, float *logs, int qp )
     {
         for( int j = 0; j < 4; j++ )
         {
-            CHECKED_MALLOC( h->cost_mv_fpel[qp][j], (4*mv_range + 1) * sizeof(uint16_t) );
-            h->cost_mv_fpel[qp][j] += 2*mv_range;
-            for( int i = -2*mv_range; i < 2*mv_range; i++ )
+            CHECKED_MALLOC( h->cost_mv_fpel[qp][j], fpel_size );
+            h->cost_mv_fpel[qp][j] += fpel_radius / 2;
+            for( int i = -fpel_radius / 2; i < fpel_radius / 2; i++ )
                 h->cost_mv_fpel[qp][j][i] = h->cost_mv[qp][i*4+j];
         }
     }
@@ -215,12 +246,17 @@ fail:
 int x264_analyse_init_costs( x264_t *h )
 {
     int mv_range = h->param.analyse.i_mv_range << PARAM_INTERLACED;
-    float *logs = x264_malloc( (2*4*mv_range+1) * sizeof(float) );
+    int logs_radius;
+    size_t logs_size;
+    if( analyse_mv_range_scale( mv_range, 8, &logs_radius ) ||
+        analyse_mv_cost_alloc_size( logs_radius, sizeof(float), &logs_size ) )
+        return -1;
+    float *logs = x264_malloc( logs_size );
     if( !logs )
         return -1;
 
     logs[0] = 0.718f;
-    for( int i = 1; i <= 2*4*mv_range; i++ )
+    for( int i = 1; i <= logs_radius; i++ )
 		logs[i] = log2f( i+1 ) * 2.0f + 1.718f;
 
 	for( int qp = X264_MIN( h->param.rc.i_qp_min[h->sh.i_type], QP_MAX_SPEC ); qp <= h->param.rc.i_qp_max[h->sh.i_type]; qp++ )
@@ -240,14 +276,19 @@ fail:
 void x264_analyse_free_costs( x264_t *h )
 {
     int mv_range = h->param.analyse.i_mv_range << PARAM_INTERLACED;
+    int cost_mv_radius;
+    int fpel_radius;
+    if( analyse_mv_range_scale( mv_range, 16, &cost_mv_radius ) ||
+        analyse_mv_range_scale( mv_range, 4, &fpel_radius ) )
+        return;
     for( int i = 0; i < QP_MAX+1; i++ )
     {
         if( h->cost_mv[i] )
-            x264_free( h->cost_mv[i] - 2*4*mv_range );
+            x264_free( h->cost_mv[i] - cost_mv_radius / 2 );
         for( int j = 0; j < 4; j++ )
         {
             if( h->cost_mv_fpel[i][j] )
-                x264_free( h->cost_mv_fpel[i][j] - 2*mv_range );
+                x264_free( h->cost_mv_fpel[i][j] - fpel_radius / 2 );
         }
     }
 }

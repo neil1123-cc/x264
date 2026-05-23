@@ -69,8 +69,13 @@ REALIGN_STACK static void *threadpool_thread( x264_threadpool_t *pool )
 
 int x264_threadpool_init( x264_threadpool_t **p_pool, int threads )
 {
+    size_t thread_handle_size;
     if( threads <= 0 )
         return -1;
+    if( (uint64_t)threads > SIZE_MAX / sizeof(x264_pthread_t) ||
+        (uint64_t)threads > (uint64_t)INT64_MAX / sizeof(x264_pthread_t) )
+        return -1;
+    thread_handle_size = (size_t)threads * sizeof(x264_pthread_t);
 
     if( x264_threading_init() < 0 )
         return -1;
@@ -81,7 +86,7 @@ int x264_threadpool_init( x264_threadpool_t **p_pool, int threads )
 
     pool->threads   = threads;
 
-    CHECKED_MALLOC( pool->thread_handle, pool->threads * sizeof(x264_pthread_t) );
+    CHECKED_MALLOC( pool->thread_handle, (int64_t)thread_handle_size );
 
     if( x264_sync_frame_list_init( &pool->uninit, pool->threads ) ||
         x264_sync_frame_list_init( &pool->run, pool->threads ) ||

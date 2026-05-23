@@ -261,7 +261,7 @@ static audio_packet_t *get_next_packet( hnd_t handle )
 
     out->size = E_IF_encode( h->amrwb_3gpp, h->mode, samplebuffer, out->data, h->dtx );
     free( samplebuffer );
-    if( out->size == 0 )
+    if( out->size <= 0 || (size_t)out->size > h->bufsize )
     {
         x264_cli_log( "amrwb_3gpp", X264_LOG_ERROR, "failed to encode audio.\n" );
         goto error;

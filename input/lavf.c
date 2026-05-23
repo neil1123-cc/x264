@@ -31,9 +31,11 @@
 #include <libavcodec/avcodec.h>
 #include <libavutil/dict.h>
 #include <libavutil/error.h>
+#include <libavutil/imgutils.h>
 #include <libavutil/mem.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/version.h>
+#include <limits.h>
 #include <math.h>
 
 #if HAVE_AUDIO
@@ -54,6 +56,38 @@ do\
 static inline int invalid_dimensions( int width, int height )
 {
     return width <= 0 || height <= 0 || width > MAX_RESOLUTION || height > MAX_RESOLUTION;
+}
+
+static int required_pixel_planes( int csp )
+{
+    const AVPixFmtDescriptor *pix_desc = av_pix_fmt_desc_get( csp );
+    if( !pix_desc )
+        return -1;
+    int planes = 0;
+    for( int i = 0; i < pix_desc->nb_components; i++ )
+    {
+        int plane = pix_desc->comp[i].plane + 1;
+        planes = X264_MAX( planes, plane );
+    }
+    return planes > 0 && planes <= 4 ? planes : -1;
+}
+
+static int decoded_video_planes_are_invalid( int pix_fmt, int width, uint8_t *data[4], int linesize[4], int planes )
+{
+    if( planes <= 0 || planes > 4 )
+        return 1;
+
+    for( int i = 0; i < planes; i++ )
+    {
+        int stride = linesize[i];
+        int row_size = av_image_get_linesize( pix_fmt, width, i );
+        if( stride == INT_MIN )
+            return 1;
+        stride = stride < 0 ? -stride : stride;
+        if( row_size <= 0 || stride < row_size || !data[i] )
+            return 1;
+    }
+    return 0;
 }
 
 static int set_avdict_option( AVDictionary **dict, const char *key, const char *value )
@@ -171,9 +205,15 @@ static int read_frame_internal( cli_pic_t *p_pic, lavf_hnd_t *h, int i_frame, vi
     memcpy( p_pic->img.stride, h->frame->linesize, sizeof(p_pic->img.stride) );
     memcpy( p_pic->img.plane, h->frame->data, sizeof(p_pic->img.plane) );
     int is_fullrange   = 0;
+    int csp            = handle_jpeg( h->lavc->pix_fmt, &is_fullrange );
+    int planes         = required_pixel_planes( csp );
+    FAIL_IF_ERROR( planes < 0, "invalid pixel format\n" );
+    FAIL_IF_ERROR( decoded_video_planes_are_invalid( csp, h->lavc->width, h->frame->data,
+                                                     h->frame->linesize, planes ),
+                   "invalid frame plane data\n" );
     p_pic->img.width   = h->lavc->width;
     p_pic->img.height  = h->lavc->height;
-    p_pic->img.csp     = handle_jpeg( h->lavc->pix_fmt, &is_fullrange ) | X264_CSP_OTHER;
+    p_pic->img.csp     = csp | X264_CSP_OTHER;
 
     if( info )
     {
@@ -360,7 +400,9 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
 
     /* show video info */
     double duration = s->duration > 0 ? (double)s->duration * av_q2d(s->time_base) : 0;
-    int duration_log = duration > INT_MAX ? INT_MAX : (int)X264_MAX( duration, 0 );
+    int duration_log = isfinite( duration ) && duration > 0.0
+                     ? duration > INT_MAX ? INT_MAX : (int)duration
+                     : 0;
     const AVPixFmtDescriptor *pix_desc = av_pix_fmt_desc_get(h->lavc->pix_fmt);
     const char *format_name = format ? format->name : (h->lavf->iformat ? h->lavf->iformat->name : "unknown");
     const char *codec_name = p->name ? p->name : "unknown";

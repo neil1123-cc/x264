@@ -66,6 +66,19 @@ static size_t gop_frame_digits( int frame )
     return digits > GOP_FRAME_DIGITS_MIN ? digits : GOP_FRAME_DIGITS_MIN;
 }
 
+static char *gop_alloc_copy( const char *src, size_t len )
+{
+    size_t size = len;
+    if( !src || gop_add_size( &size, 1 ) )
+        return NULL;
+    char *dst = malloc( size );
+    if( !dst )
+        return NULL;
+    memcpy( dst, src, len );
+    dst[len] = '\0';
+    return dst;
+}
+
 static char *gop_alloc_prefixed_filename( gop_hnd_t *hnd, const char *suffix )
 {
     if( !hnd || !hnd->filename_prefix || !suffix )
@@ -227,20 +240,18 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
             return -1;
         }
         size_t dir_len = (size_t)dir_diff;
-        hnd->dir_prefix = malloc( dir_len + 1 );
+        hnd->dir_prefix = gop_alloc_copy( psz_filename, dir_len );
         if( !hnd->dir_prefix )
         {
             gop_clean_up( hnd );
             free( hnd );
             return -1;
         }
-        memcpy( hnd->dir_prefix, psz_filename, dir_len );
-        hnd->dir_prefix[dir_len] = '\0';
         psz_filename = last_slash + 1;
     }
     else
     {
-        hnd->dir_prefix = strdup( "" );
+        hnd->dir_prefix = gop_alloc_copy( "", 0 );
         if( !hnd->dir_prefix )
         {
             gop_clean_up( hnd );
@@ -259,15 +270,13 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
         return -1;
     }
 
-    hnd->filename_prefix = malloc( prefix_len + 1 );
+    hnd->filename_prefix = gop_alloc_copy( psz_filename, prefix_len );
     if( !hnd->filename_prefix )
     {
         gop_clean_up( hnd );
         free( hnd );
         return -1;
     }
-    memcpy( hnd->filename_prefix, psz_filename, prefix_len );
-    hnd->filename_prefix[prefix_len] = '\0';
 
     hnd->i_numframe = 0;
     hnd->b_fail = 0;

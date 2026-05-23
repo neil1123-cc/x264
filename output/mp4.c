@@ -105,22 +105,56 @@ static int mp4_display_size_to_fixed( uint32_t *dst, double size )
     return 0;
 }
 
+static uint32_t mp4_u64_to_u32_sat( uint64_t value )
+{
+    return value > UINT32_MAX ? UINT32_MAX : (uint32_t)value;
+}
+
+static uint64_t mp4_u64_add_sat( uint64_t a, uint64_t b )
+{
+    return a > UINT64_MAX - b ? UINT64_MAX : a + b;
+}
+
+static uint32_t mp4_bitrate_to_u32_sat( uint64_t bytes, uint32_t timescale, uint64_t duration )
+{
+    long double bits_per_second;
+
+    if( !duration )
+        return 0;
+    bits_per_second = (long double)bytes * (long double)timescale * 8.0L / (long double)duration;
+    if( bits_per_second != bits_per_second || bits_per_second <= 0.0L )
+        return 0;
+    if( bits_per_second >= (long double)UINT32_MAX + 1.0L )
+        return UINT32_MAX;
+    return (uint32_t)bits_per_second;
+}
+
 static void recompute_bitrate_mp4( GF_ISOFile *p_file, int i_track )
 {
-    u32 count, di, timescale, time_wnd, rate;
+    u32 count, di, timescale;
     u64 offset;
-    Double br;
+    uint64_t time_wnd, rate, avg_bitrate, max_bitrate;
     GF_ESD *esd;
 
     esd = gf_isom_get_esd( p_file, i_track, 1 );
     if( !esd )
         return;
+    if( !esd->decoderConfig )
+    {
+        gf_odf_desc_del( (GF_Descriptor*)esd );
+        return;
+    }
 
     esd->decoderConfig->avgBitrate = 0;
     esd->decoderConfig->maxBitrate = 0;
-    rate = time_wnd = 0;
+    avg_bitrate = max_bitrate = rate = time_wnd = 0;
 
     timescale = gf_isom_get_media_timescale( p_file, i_track );
+    if( !timescale )
+    {
+        gf_odf_desc_del( (GF_Descriptor*)esd );
+        return;
+    }
     count = gf_isom_get_sample_count( p_file, i_track );
     for( u32 i = 0; i < count; i++ )
     {
@@ -134,12 +168,12 @@ static void recompute_bitrate_mp4( GF_ISOFile *p_file, int i_track )
         if( esd->decoderConfig->bufferSizeDB < samp->dataLength )
             esd->decoderConfig->bufferSizeDB = samp->dataLength;
 
-        esd->decoderConfig->avgBitrate += samp->dataLength;
-        rate += samp->dataLength;
-        if( samp->DTS > time_wnd + timescale )
+        avg_bitrate = mp4_u64_add_sat( avg_bitrate, samp->dataLength );
+        rate = mp4_u64_add_sat( rate, samp->dataLength );
+        if( samp->DTS > time_wnd && samp->DTS - time_wnd > timescale )
         {
-            if( rate > esd->decoderConfig->maxBitrate )
-                esd->decoderConfig->maxBitrate = rate;
+            if( rate > max_bitrate )
+                max_bitrate = rate;
             time_wnd = samp->DTS;
             rate = 0;
         }
@@ -147,12 +181,14 @@ static void recompute_bitrate_mp4( GF_ISOFile *p_file, int i_track )
         gf_isom_sample_del( &samp );
     }
 
-    br = (Double)(s64)gf_isom_get_media_duration( p_file, i_track );
-    br /= timescale;
-    esd->decoderConfig->avgBitrate = (u32)(esd->decoderConfig->avgBitrate / br);
-    /*move to bps*/
-    esd->decoderConfig->avgBitrate *= 8;
-    esd->decoderConfig->maxBitrate *= 8;
+    uint64_t duration = gf_isom_get_media_duration( p_file, i_track );
+    if( !duration )
+    {
+        gf_odf_desc_del( (GF_Descriptor*)esd );
+        return;
+    }
+    esd->decoderConfig->avgBitrate = mp4_bitrate_to_u32_sat( avg_bitrate, timescale, duration );
+    esd->decoderConfig->maxBitrate = mp4_u64_to_u32_sat( max_bitrate > UINT64_MAX / 8 ? UINT64_MAX : max_bitrate * 8 );
 
     gf_isom_change_mpeg4_description( p_file, i_track, 1, esd );
     gf_odf_desc_del( (GF_Descriptor*)esd );
@@ -408,7 +444,10 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
 
     if( sps_size > UINT16_MAX || pps_size > UINT16_MAX )
         return -1;
-    if( sps_size > (uint32_t)INT_MAX - pps_size || sei_size > (uint32_t)INT_MAX - sps_size - pps_size )
+    if( sps_size > (uint32_t)INT_MAX - pps_size )
+        return -1;
+    uint32_t header_size = sps_size + pps_size;
+    if( sei_size > (uint32_t)INT_MAX - header_size )
         return -1;
 
     uint8_t *sps = p_nal[0].p_payload + H264_NALU_LENGTH_SIZE;
@@ -448,7 +487,7 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     if( append_sample_data( p_mp4, sei, sei_size ) )
         return -1;
 
-    return (int)(sei_size + sps_size + pps_size);
+    return (int)(header_size + sei_size);
 }
 
 static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_t *p_picture )
@@ -468,9 +507,9 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
 
     if( !p_mp4->i_numframe )
     {
-        if( p_picture->i_dts == INT64_MIN )
+        if( p_picture->i_dts > 0 || p_picture->i_dts == INT64_MIN )
             return -1;
-        delay_time = p_picture->i_dts * -1;
+        delay_time = -p_picture->i_dts;
     }
 
     if( p_mp4->b_dts_compress )
