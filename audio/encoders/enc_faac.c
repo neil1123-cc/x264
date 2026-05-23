@@ -196,7 +196,8 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
         x264_cli_log( "faac", X264_LOG_ERROR, "invalid encoder frame or buffer size\n" );
         goto error;
     }
-    h->info.framelen = (int)framelen;
+    int frame_length = (int)framelen;
+    h->info.framelen = frame_length;
 
     faacEncConfigurationPtr config = faacEncGetCurrentConfiguration( h->faac );
 
@@ -210,11 +211,22 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     config->inputFormat   = FAAC_INPUT_FLOAT;
     if ( is_vbr )
     {
-        config->quantqual = x264_clip3( brval, 10, 500 );
+        float quantqual = x264_clip3( brval, 10.0f, 500.0f );
+        int encoder_quality = (int)quantqual;
+        config->quantqual = encoder_quality;
         config->bitRate   = 0;
     }
     else
-        config->bitRate   = 1000.0f * brval / h->info.channels; /* bitrate per channel */
+    {
+        long double bitrate_per_channel = 1000.0L * (long double)brval / h->info.channels;
+        if( !(bitrate_per_channel >= 0.0L && bitrate_per_channel <= (long double)ULONG_MAX) )
+        {
+            x264_cli_log( "faac", X264_LOG_ERROR, "invalid bitrate option\n" );
+            goto error;
+        }
+        unsigned long encoder_bitrate = (unsigned long)bitrate_per_channel;
+        config->bitRate = encoder_bitrate; /* bitrate per channel */
+    }
 
     config->useLfe        = !!(h->info.channels > 5);
     if( h->info.channels > 3 )
@@ -238,10 +250,15 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
         goto error;
     }
     h->info.extradata       = asc;
-    h->info.extradata_size  = asc_size;
+    int extradata_size      = (int)asc_size;
+    h->info.extradata_size  = extradata_size;
 
     h->info.chansize   = 4;
-    h->info.samplesize = 4 * h->info.channels;
+    int64_t samplesize64 = (int64_t)h->info.chansize * h->info.channels;
+    if( h->info.chansize <= 0 || h->info.chansize > INT_MAX / 8 || samplesize64 > INT_MAX )
+        goto error;
+    int samplesize = (int)samplesize64;
+    h->info.samplesize = samplesize;
     if( set_framesize( &h->info, "faac" ) )
         goto error;
     h->info.depth      = 32;
@@ -319,7 +336,10 @@ static audio_packet_t *get_next_packet( hnd_t handle )
             h->in->samplecount > (uint64_t)(INT64_MAX - h->last_sample) )
             goto error;
         int64_t staged_last_sample = h->last_sample + h->in->samplecount;
-        int input_samples = h->in->samplecount * h->info.channels;
+        int64_t input_samples64 = h->in->samplecount * h->info.channels;
+        if( input_samples64 > INT_MAX )
+            goto error;
+        int input_samples = (int)input_samples64;
 
         free( h->samplebuffer );
         h->samplebuffer = NULL;

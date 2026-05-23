@@ -1,7 +1,17 @@
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wsign-conversion"
+#pragma clang diagnostic ignored "-Wimplicit-int-conversion"
+#endif
+
 #undef DECLARE_ALIGNED
 #include "libavformat/avformat.h"
 #include "libavcodec/avcodec.h"
 #include "libavcodec/bsf.h"
+
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 #include <stdio.h>
 #include <inttypes.h>
 
@@ -180,29 +190,41 @@ static int init( hnd_t *handle, const char *opt_str )
 
     AVRational stream_timebase = stream->time_base;
     int bytes_per_sample = av_get_bytes_per_sample( h->samplefmt );
-    if( channels <= 0 || bytes_per_sample <= 0 || h->ctx->sample_rate <= 0 ||
+    if( channels <= 0 || bytes_per_sample <= 0 || bytes_per_sample > INT_MAX / 8 ||
+        h->ctx->sample_rate <= 0 ||
         h->ctx->frame_size < 0 || h->ctx->extradata_size < 0 ||
         stream_timebase.num <= 0 || stream_timebase.den <= 0 ||
-        chanlayout_mask > (uint64_t)INT64_MAX ||
-        bytes_per_sample > INT_MAX / channels )
+        chanlayout_mask > (uint64_t)INT64_MAX )
         goto codecfail;
-    int samplesize = bytes_per_sample * channels;
+    int64_t samplesize64 = (int64_t)bytes_per_sample * channels;
+    if( samplesize64 > INT_MAX )
+        goto codecfail;
+    int samplesize = (int)samplesize64;
+    int samplerate = h->ctx->sample_rate;
+    int frame_length = h->ctx->frame_size;
+    int extradata_size = h->ctx->extradata_size;
+    int64_t channel_layout = (int64_t)chanlayout_mask;
+    uint32_t last_delta = (uint32_t)h->ctx->frame_size;
+    size_t decoded_frame_size;
+    if( (uint64_t)h->ctx->frame_size > SIZE_MAX / sizeof(float) )
+        goto codecfail;
+    decoded_frame_size = (size_t)h->ctx->frame_size * sizeof(float);
 
     h->info = (audio_info_t)
     {
         .codec_name     = h->codec->name,
-        .samplerate     = h->ctx->sample_rate,
+        .samplerate     = samplerate,
         .channels       = channels,
-        .chanlayout     = (int64_t)chanlayout_mask,
-        .framelen       = h->ctx->frame_size,
-        .framesize      = (size_t)h->ctx->frame_size * sizeof( float ),
+        .chanlayout     = channel_layout,
+        .framelen       = frame_length,
+        .framesize      = decoded_frame_size,
         .chansize       = bytes_per_sample,
         .samplesize     = samplesize,
         .depth          = h->ctx->bits_per_coded_sample,
-        .timebase       = /* {1, 1000}, /*/ { 1, h->ctx->sample_rate },
+        .timebase       = /* {1, 1000}, /*/ { 1, samplerate },
         .extradata      = h->ctx->extradata,
-        .extradata_size = h->ctx->extradata_size,
-        .last_delta     = (uint32_t)h->ctx->frame_size
+        .extradata_size = extradata_size,
+        .last_delta     = last_delta
     };
     h->origtb = (timebase_t) { stream_timebase.num, stream_timebase.den };
 
@@ -393,7 +415,10 @@ static int copy_packet_payload( lavf_source_t *h, audio_packet_t *out, const uin
         return -1;
     out->samplecount = last_delta;
     if( !out->samplecount && h->info.framelen > 0 )
-        out->samplecount = (unsigned)h->info.framelen;
+    {
+        unsigned frame_samplecount = (unsigned)h->info.framelen;
+        out->samplecount = frame_samplecount;
+    }
     out->size        = size;
     out->data        = NULL;
     if( size )
@@ -433,7 +458,8 @@ static audio_packet_t *convert_to_audio_packet( hnd_t handle, AVPacket *pkt, uin
     }
     out->info        = h->info;
     out->info.last_delta = last_delta;
-    out->channels    = (unsigned)h->info.channels;
+    unsigned packet_channels = (unsigned)h->info.channels;
+    out->channels    = packet_channels;
 
     if( h->bsfs )
     {
@@ -508,7 +534,10 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     {
         int64_t duration_delta = x264_from_timebase( pkt->duration, h->origtb, h->info.timebase.den );
         if( h->info.framelen != duration_delta )
-            last_delta = duration_delta > 0 && duration_delta <= UINT32_MAX ? (uint32_t)duration_delta : 0;
+        {
+            uint32_t packet_last_delta = duration_delta > 0 && duration_delta <= UINT32_MAX ? (uint32_t)duration_delta : 0;
+            last_delta = packet_last_delta;
+        }
     }
     audio_packet_t *out = convert_to_audio_packet( h, pkt, last_delta );
     if( out )
@@ -806,10 +835,13 @@ static struct audio_packet_t *get_samples( hnd_t handle, int64_t first_sample, i
     audio_packet_t *pkt = calloc( 1, sizeof( audio_packet_t ) );
     if( !pkt )
         return NULL;
+    int packet_size      = (int)size;
+    unsigned packet_channels = (unsigned)h->info.channels;
+    unsigned packet_samplecount = (unsigned)samples;
     pkt->info           = h->info;
-    pkt->channels       = (unsigned)h->info.channels;
-    pkt->samplecount    = (unsigned)samples;
-    pkt->size           = (int)size;
+    pkt->channels       = packet_channels;
+    pkt->samplecount    = packet_samplecount;
+    pkt->size           = packet_size;
     pkt->dts            = first_sample;
 
     if( h->surplus > h->bufsize || (intptr_t)pkt->size > h->bufsize - h->surplus )
@@ -819,7 +851,12 @@ static struct audio_packet_t *get_samples( hnd_t handle, int64_t first_sample, i
         int64_t pivot = first_sample + ( h->bufsize - h->surplus * 2 ) / h->info.samplesize;
         if( pivot <= first_sample || pivot >= last_sample )
             goto fail;
-        int64_t expected_size = ( pivot - first_sample ) * h->info.samplesize;
+        int64_t chunk_samples = pivot - first_sample;
+        if( chunk_samples <= 0 || chunk_samples > INT64_MAX / h->info.samplesize )
+            goto fail;
+        int64_t expected_size = chunk_samples * h->info.samplesize;
+        if( expected_size > INT_MAX )
+            goto fail;
 
         audio_packet_t *prev = get_samples( h, first_sample, pivot );
         if( !prev )
@@ -859,8 +896,10 @@ static struct audio_packet_t *get_samples( hnd_t handle, int64_t first_sample, i
             x264_af_free_packet( next );
             goto fail;
         }
-        pkt->samplecount = prev->samplecount + next->samplecount;
-        pkt->size        = prev->size + next->size;
+        unsigned merged_samplecount = prev->samplecount + next->samplecount;
+        int merged_size = prev->size + next->size;
+        pkt->samplecount = merged_samplecount;
+        pkt->size        = merged_size;
 
         x264_af_free_packet( prev );
         x264_af_free_packet( next );
@@ -890,13 +929,17 @@ static struct audio_packet_t *get_samples( hnd_t handle, int64_t first_sample, i
             if( available_size > INT_MAX ||
                 available_size / (uint64_t)h->info.samplesize > UINT_MAX )
                 goto fail;
-            pkt->size        = (int)available_size;
-            pkt->samplecount = (unsigned)( pkt->size / h->info.samplesize );
+            int available_packet_size = (int)available_size;
+            unsigned available_samples = (unsigned)( available_packet_size / h->info.samplesize );
+            pkt->size        = available_packet_size;
+            pkt->samplecount = available_samples;
             pkt->flags       = AUDIO_FLAG_EOF;
         }
         if( start > h->bufsize || pkt->size > h->bufsize - start )
             goto fail;
         pkt->samples = x264_af_deinterleave2( h->buffer + start, h->samplefmt, pkt->channels, pkt->samplecount );
+        if( !pkt->samples )
+            goto fail;
     }
 
     return pkt;

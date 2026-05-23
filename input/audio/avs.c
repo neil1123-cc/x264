@@ -429,7 +429,11 @@ static int init( hnd_t *handle, const char *opt_str )
 
     if( h->sample_fmt == SMPFMT_NONE )
     {
-        x264_cli_log( "avs", X264_LOG_INFO, "detected %dbit sample format, converting to float\n", avs_bytes_per_channel_sample( vi )*8 );
+        int input_chansize = avs_bytes_per_channel_sample( vi );
+        GOTO_IF( input_chansize <= 0 || input_chansize > INT_MAX / 8,
+                 error, "invalid audio sample format\n" )
+        int input_sample_bits = input_chansize * 8;
+        x264_cli_log( "avs", X264_LOG_INFO, "detected %dbit sample format, converting to float\n", input_sample_bits );
         next_res = h->func.avs_invoke( h->env, "ConvertAudioToFloat", res, NULL );
         avs_release_value_if_defined( h, &res );
         res = next_res;
@@ -443,17 +447,20 @@ static int init( hnd_t *handle, const char *opt_str )
     int samplerate         = avs_samples_per_second( vi );
     int channels           = avs_audio_channels( vi );
     int chansize           = avs_bytes_per_channel_sample( vi );
-    GOTO_IF( samplerate <= 0 || channels <= 0 || chansize <= 0 ||
-             channels > INT_MAX / chansize || vi->num_audio_samples < 0,
+    GOTO_IF( samplerate <= 0 || channels <= 0 || chansize <= 0 || chansize > INT_MAX / 8 ||
+             vi->num_audio_samples < 0,
              error, "invalid audio parameters\n" )
 
     h->info.samplerate     = samplerate;
     h->info.channels       = channels;
     h->info.framelen       = 1;
     h->info.chansize       = chansize;
-    h->info.samplesize     = chansize * channels;
+    int64_t samplesize64   = (int64_t)chansize * channels;
+    GOTO_IF( samplesize64 > INT_MAX, error, "invalid audio parameters\n" )
+    int samplesize         = (int)samplesize64;
+    h->info.samplesize     = samplesize;
     h->info.framesize      = h->info.samplesize;
-    h->info.depth          = h->info.chansize;
+    h->info.depth          = h->info.chansize * 8;
     h->info.timebase       = (timebase_t){ 1, h->info.samplerate };
 
     h->num_samples = vi->num_audio_samples;
@@ -520,7 +527,12 @@ static struct audio_packet_t *get_samples( hnd_t handle, int64_t first_sample, i
     if( nsamples <= 0 || nsamples > UINT_MAX ||
         nsamples > INT_MAX / h->info.samplesize )
         return NULL;
-    int size = (int)nsamples * h->info.samplesize;
+    int64_t size64 = nsamples * h->info.samplesize;
+    if( size64 > INT_MAX )
+        return NULL;
+    int size = (int)size64;
+    unsigned packet_channels = (unsigned)h->info.channels;
+    unsigned packet_samplecount = (unsigned)nsamples;
     if( size > h->bufsize )
         return NULL;
 
@@ -529,8 +541,8 @@ static struct audio_packet_t *get_samples( hnd_t handle, int64_t first_sample, i
         return NULL;
     pkt->info           = h->info;
     pkt->dts            = first_sample;
-    pkt->channels       = (unsigned)h->info.channels;
-    pkt->samplecount    = (unsigned)nsamples;
+    pkt->channels       = packet_channels;
+    pkt->samplecount    = packet_samplecount;
     pkt->size           = size;
 
     if( h->func.avs_get_audio( h->clip, h->buffer, first_sample, nsamples ) )

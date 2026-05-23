@@ -144,26 +144,37 @@ static int lsmash_init( hnd_t *handle, const char *opt_str )
         h->summary->frequency > (uint32_t)INT_MAX ||
         h->summary->channels > (uint32_t)INT_MAX ||
         h->summary->samples_in_frame > (uint32_t)INT_MAX ||
-        h->summary->sample_size > (uint32_t)INT_MAX ||
-        (chansize && h->summary->channels > (uint32_t)INT_MAX / chansize) )
+        h->summary->sample_size > (uint32_t)INT_MAX )
     {
         AF_LOG_ERR( h, "audio stream parameters are too large.\n" );
         goto error;
     }
-    uint32_t samplesize = chansize * h->summary->channels;
-    if( h->summary->samples_in_frame && samplesize > SIZE_MAX / h->summary->samples_in_frame )
+    uint64_t samplesize64 = (uint64_t)chansize * h->summary->channels;
+    if( chansize > (uint32_t)(INT_MAX / 8) || samplesize64 > (uint64_t)INT_MAX )
     {
         AF_LOG_ERR( h, "audio stream parameters are too large.\n" );
         goto error;
     }
+    int channel_size = (int)chansize;
+    int samplesize = (int)samplesize64;
+    int samplerate = (int)h->summary->frequency;
+    int channels = (int)h->summary->channels;
+    int frame_length = (int)h->summary->samples_in_frame;
+    int sample_size = (int)h->summary->sample_size;
+    if( h->summary->samples_in_frame && (size_t)samplesize > SIZE_MAX / h->summary->samples_in_frame )
+    {
+        AF_LOG_ERR( h, "audio stream parameters are too large.\n" );
+        goto error;
+    }
+    size_t framesize = (size_t)h->summary->samples_in_frame * (size_t)samplesize;
 
-    h->info.samplerate     = (int)h->summary->frequency;
-    h->info.channels       = (int)h->summary->channels;
-    h->info.framelen       = (int)h->summary->samples_in_frame;
-    h->info.chansize       = (int)chansize;
-    h->info.samplesize     = (int)samplesize;
-    h->info.framesize      = (size_t)h->summary->samples_in_frame * samplesize;
-    h->info.depth          = (int)h->summary->sample_size;
+    h->info.samplerate     = samplerate;
+    h->info.channels       = channels;
+    h->info.framelen       = frame_length;
+    h->info.chansize       = channel_size;
+    h->info.samplesize     = samplesize;
+    h->info.framesize      = framesize;
+    h->info.depth          = sample_size;
     h->info.timebase       = (timebase_t){ 1, h->summary->frequency };
     h->info.last_delta     = h->summary->samples_in_frame;
     h->info.priming        = 0;     /* No one can detect this. */
@@ -177,6 +188,7 @@ static int lsmash_init( hnd_t *handle, const char *opt_str )
             goto error;
         }
         size_t extradata_size = (size_t)num_extensions * sizeof(lsmash_codec_specific_t *);
+        int extradata_size_int = (int)extradata_size;
         h->info.extradata_type = EXTRADATA_TYPE_LSMASH;
         h->info.extradata = calloc( num_extensions, sizeof(lsmash_codec_specific_t *) );
         if( !h->info.extradata )
@@ -184,7 +196,7 @@ static int lsmash_init( hnd_t *handle, const char *opt_str )
             AF_LOG_ERR( h, "malloc failed!\n" );
             goto error;
         }
-        h->info.extradata_size = (int)extradata_size;
+        h->info.extradata_size = extradata_size_int;
         for( uint32_t i = 0; i < num_extensions; i++ )
         {
             lsmash_codec_specific_t **extradata = (lsmash_codec_specific_t **)h->info.extradata;
@@ -281,9 +293,11 @@ static audio_packet_t *get_next_au( hnd_t handle )
 
     if( !out )
         return NULL;
+    unsigned packet_channels = (unsigned)h->info.channels;
+    unsigned packet_samplecount = (unsigned)h->info.framelen;
     out->info        = h->info;
-    out->channels    = (unsigned)h->info.channels;
-    out->samplecount = (unsigned)h->info.framelen;
+    out->channels    = packet_channels;
+    out->samplecount = packet_samplecount;
 
     lsmash_sample_t sample = {0};
     lsmash_sample_t *psample = &sample;
@@ -320,7 +334,8 @@ static audio_packet_t *get_next_au( hnd_t handle )
         x264_af_free_packet( out );
         return NULL;
     }
-    out->size = (int)sample.length;
+    int sample_size = (int)sample.length;
+    out->size = sample_size;
     out->data = sample.data;
 
     int64_t staged_last_dts = h->last_dts;

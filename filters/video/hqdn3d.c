@@ -406,8 +406,10 @@ static int hqdn3d_plane_dims( cli_image_t *img, const x264_cli_csp_t *csp, int p
         plane_width > INT_MAX || plane_height > INT_MAX )
         return -1;
 
-    *width = (int)plane_width;
-    *height = (int)plane_height;
+    int plane_width_int = (int)plane_width;
+    int plane_height_int = (int)plane_height;
+    *width = plane_width_int;
+    *height = plane_height_int;
     return 0;
 }
 

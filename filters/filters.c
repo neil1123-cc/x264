@@ -137,7 +137,7 @@ fail:
 
 char *x264_get_option( const char *name, char **split_options )
 {
-    if( split_options )
+    if( name && split_options )
     {
         size_t last_i = SIZE_MAX;
         for( size_t i = 0; split_options[i]; i += 2 )
@@ -224,7 +224,8 @@ static int x264_parse_filter_int( const char *str, int *dst )
     if( end == str || *end != '\0' || errno == ERANGE || ret < INT_MIN || ret > INT_MAX )
         return -1;
 
-    *dst = (int)ret;
+    int parsed_value = (int)ret;
+    *dst = parsed_value;
     return 0;
 }
 

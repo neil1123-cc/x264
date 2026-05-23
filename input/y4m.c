@@ -110,7 +110,8 @@ static int parse_depth_suffix( const char *tokstart, int *bit_depth )
     if( parse_uint32_token( tokstart, &tokend, &depth ) || !y4m_is_token_end( *tokend ) || depth > INT_MAX )
         return -1;
 
-    *bit_depth = (int)depth;
+    int parsed_depth = (int)depth;
+    *bit_depth = parsed_depth;
     return 0;
 }
 
@@ -225,7 +226,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
                 uint32_t width;
                 FAIL_IF_ERROR_CLEANUP( parse_uint32_token( tokstart, &tokend, &width ) || !y4m_is_token_end( *tokend ) ||
                                        !width || width > MAX_RESOLUTION, "invalid width `%s'\n", tokstart );
-                updated_info.width = (int)width;
+                int parsed_width = (int)width;
+                updated_info.width = parsed_width;
                 tokstart=tokend;
                 break;
             }
@@ -234,7 +236,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
                 uint32_t height;
                 FAIL_IF_ERROR_CLEANUP( parse_uint32_token( tokstart, &tokend, &height ) || !y4m_is_token_end( *tokend ) ||
                                        !height || height > MAX_RESOLUTION, "invalid height `%s'\n", tokstart );
-                updated_info.height = (int)height;
+                int parsed_height = (int)height;
+                updated_info.height = parsed_height;
                 tokstart=tokend;
                 break;
             }
@@ -322,7 +325,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
                     tokstart += 7;
                     FAIL_IF_ERROR_CLEANUP( parse_uint32_token( tokstart, &tokend, &num_frames ) || !y4m_is_token_end( *tokend ) ||
                                            num_frames > INT_MAX, "invalid frame count `%s'\n", tokstart );
-                    updated_info.num_frames = (int)num_frames;
+                    int parsed_num_frames = (int)num_frames;
+                    updated_info.num_frames = parsed_num_frames;
                     tokstart = tokend;
                 }
                 tokstart = strchr( tokstart, 0x20 );
@@ -385,7 +389,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         while( len <= Y4M_MAX_HEADER && (c = fgetc( h->fh )) != '\n' && c != EOF )
             len++;
         FAIL_IF_ERROR_CLEANUP( len > Y4M_MAX_HEADER || len < sizeof(Y4M_FRAME_MAGIC) || c == EOF, "bad frame header length\n" );
-        h->frame_header_len = (int)len;
+        int frame_header_len = (int)len;
+        h->frame_header_len = frame_header_len;
         FAIL_IF_ERROR_CLEANUP( h->frame_size > INT64_MAX - (int64_t)len, "invalid frame size\n" );
         h->frame_size += (int64_t)len;
 
@@ -397,7 +402,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         int64_t num_frames = (i_size - h->seq_header_len) / h->frame_size;
         FAIL_IF_ERROR_CLEANUP( num_frames <= 0, "empty input file\n" );
         FAIL_IF_ERROR_CLEANUP( num_frames > INT_MAX, "too many frames\n" );
-        updated_info.num_frames = (int)num_frames;
+        int detected_num_frames = (int)num_frames;
+        updated_info.num_frames = detected_num_frames;
 
         /* Attempt to use memory-mapped input frames if possible */
         if( !(h->bit_depth & 7) )

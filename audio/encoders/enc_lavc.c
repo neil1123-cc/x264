@@ -111,6 +111,24 @@ static int parse_float_option( const char *opt, double def, float *dst )
     return 0;
 }
 
+static int get_channel_layout_mask( const AVChannelLayout *layout, int64_t *mask )
+{
+    if( !layout || !mask )
+        return -1;
+
+    uint64_t layout_mask = 0;
+    if( layout->order == AV_CHANNEL_ORDER_NATIVE )
+        layout_mask = layout->u.mask;
+    else if( layout->order == AV_CHANNEL_ORDER_UNSPEC )
+        layout_mask = av_channel_layout_subset( layout, UINT64_MAX );
+
+    if( layout_mask > (uint64_t)INT64_MAX )
+        return -1;
+
+    *mask = (int64_t)layout_mask;
+    return 0;
+}
+
 static int set_avdict_option( AVDictionary **dict, const char *key, const char *value )
 {
     return av_dict_set( dict, key, value, 0 ) < 0;
@@ -336,7 +354,14 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
         }
     }
     else
+    {
         av_channel_layout_default( &h->ctx->ch_layout, h->info.channels );
+        if( get_channel_layout_mask( &h->ctx->ch_layout, &h->info.chanlayout ) )
+        {
+            x264_cli_log( "lavc", X264_LOG_ERROR, "invalid audio channel layout\n" );
+            goto error;
+        }
+    }
 
     h->ctx->time_base       = (AVRational){ 1, h->ctx->sample_rate };
 
@@ -410,7 +435,14 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
         x264_cli_log( "lavc", X264_LOG_ERROR, "invalid quality option\n" );
         goto error;
     }
-    h->ctx->compression_level = compression_level;
+    double compression_level_value = compression_level;
+    if( !(compression_level_value >= INT_MIN && compression_level_value <= INT_MAX) )
+    {
+        x264_cli_log( "lavc", X264_LOG_ERROR, "invalid quality option\n" );
+        goto error;
+    }
+    int codec_compression_level = (int)compression_level;
+    h->ctx->compression_level = codec_compression_level;
 
     free( opts );
     opts = NULL;
@@ -422,10 +454,26 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
             x264_cli_log( "lavc", X264_LOG_ERROR, "failed to set encoder options\n" );
             goto error;
         }
-        h->ctx->global_quality = FF_QP2LAMBDA * brval;
+        double global_quality_value = (double)FF_QP2LAMBDA * (double)brval;
+        if( !(global_quality_value >= INT_MIN && global_quality_value <= INT_MAX) )
+        {
+            x264_cli_log( "lavc", X264_LOG_ERROR, "invalid bitrate option\n" );
+            goto error;
+        }
+        int codec_global_quality = (int)global_quality_value;
+        h->ctx->global_quality = codec_global_quality;
     }
     else
-        h->ctx->bit_rate = lrintf( brval * 1000.0f );
+    {
+        long double bit_rate_value = (long double)brval * 1000.0L;
+        if( !(bit_rate_value >= INT64_MIN && bit_rate_value <= INT64_MAX) )
+        {
+            x264_cli_log( "lavc", X264_LOG_ERROR, "invalid bitrate option\n" );
+            goto error;
+        }
+        int64_t codec_bit_rate = llrintl( bit_rate_value );
+        h->ctx->bit_rate = codec_bit_rate;
+    }
 
     if( avcodec_open2( h->ctx, codec, &avopts ) )
     {
@@ -489,20 +537,28 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
 
     h->info.framelen        = h->ctx->frame_size;
     h->info.timebase        = (timebase_t) { 1, h->ctx->sample_rate };
-    h->info.last_delta      = h->info.framelen;
     h->info.depth           = av_get_bits_per_sample( h->ctx->codec->id );
     h->info.chansize        = IS_LPCM_CODEC_ID( h->ctx->codec->id )
                             ? h->info.depth / 8
                             : av_get_bytes_per_sample( h->ctx->sample_fmt );
-    if( h->info.chansize <= 0 || h->ctx->ch_layout.nb_channels <= 0 ||
-        h->ctx->ch_layout.nb_channels > INT_MAX / h->info.chansize )
+    if( h->info.chansize <= 0 || h->info.chansize > INT_MAX / 8 ||
+        h->ctx->ch_layout.nb_channels <= 0 )
     {
         x264_cli_log( "lavc", X264_LOG_ERROR, "invalid audio sample size\n" );
         goto error;
     }
-    h->info.samplesize      = h->info.chansize * h->ctx->ch_layout.nb_channels;
+    int64_t samplesize64 = (int64_t)h->info.chansize * h->ctx->ch_layout.nb_channels;
+    if( samplesize64 > INT_MAX )
+    {
+        x264_cli_log( "lavc", X264_LOG_ERROR, "invalid audio sample size\n" );
+        goto error;
+    }
+    int samplesize = (int)samplesize64;
+    h->info.samplesize      = samplesize;
     if( set_framesize( &h->info, "lavc" ) )
         goto error;
+    uint32_t initial_last_delta = (uint32_t)h->info.framelen;
+    h->info.last_delta      = initial_last_delta;
 
     int buf_size = av_samples_get_buffer_size( NULL, h->ctx->ch_layout.nb_channels, h->ctx->frame_size, h->ctx->sample_fmt, 0 );
     int64_t scaled_buf_size = (int64_t)buf_size * 3 / 2;
@@ -511,14 +567,22 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
         x264_cli_log( "lavc", X264_LOG_ERROR, "invalid audio buffer size\n" );
         goto error;
     }
-    h->buf_size = (int)scaled_buf_size;
+    int scaled_output_buf_size = (int)scaled_buf_size;
+    h->buf_size = scaled_output_buf_size;
     h->last_dts = INVALID_DTS;
 
+    if( h->ctx->extradata_size < 0 )
+    {
+        x264_cli_log( "lavc", X264_LOG_ERROR, "invalid audio extradata size\n" );
+        goto error;
+    }
+    int extradata_size = h->ctx->extradata_size;
     h->info.extradata       = h->ctx->extradata;
-    h->info.extradata_size  = h->ctx->extradata_size;
+    h->info.extradata_size  = extradata_size;
 
+    int sample_bits = h->info.chansize * 8;
     x264_cli_log( "audio", X264_LOG_INFO, "opened libavcodec's %s encoder (%s%.1f%s, %dbits, %dch, %dhz)\n", codec->name,
-                  is_vbr ? "V" : "", brval, is_vbr ? "" : "kbps", h->info.chansize * 8, h->info.channels, h->info.samplerate );
+                  is_vbr ? "V" : "", brval, is_vbr ? "" : "kbps", sample_bits, h->info.channels, h->info.samplerate );
     return h;
 
 error:

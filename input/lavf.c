@@ -200,19 +200,19 @@ static int read_frame_internal( cli_pic_t *p_pic, lavf_hnd_t *h, int i_frame, vi
         h->next_frame++;
     }
 
-    FAIL_IF_ERROR( invalid_dimensions( h->lavc->width, h->lavc->height ),
+    FAIL_IF_ERROR( invalid_dimensions( h->frame->width, h->frame->height ),
                    "invalid video dimensions\n" );
     memcpy( p_pic->img.stride, h->frame->linesize, sizeof(p_pic->img.stride) );
     memcpy( p_pic->img.plane, h->frame->data, sizeof(p_pic->img.plane) );
     int is_fullrange   = 0;
-    int csp            = handle_jpeg( h->lavc->pix_fmt, &is_fullrange );
+    int csp            = handle_jpeg( h->frame->format, &is_fullrange );
     int planes         = required_pixel_planes( csp );
     FAIL_IF_ERROR( planes < 0, "invalid pixel format\n" );
-    FAIL_IF_ERROR( decoded_video_planes_are_invalid( csp, h->lavc->width, h->frame->data,
+    FAIL_IF_ERROR( decoded_video_planes_are_invalid( csp, h->frame->width, h->frame->data,
                                                      h->frame->linesize, planes ),
                    "invalid frame plane data\n" );
-    p_pic->img.width   = h->lavc->width;
-    p_pic->img.height  = h->lavc->height;
+    p_pic->img.width   = h->frame->width;
+    p_pic->img.height  = h->frame->height;
     p_pic->img.csp     = csp | X264_CSP_OTHER;
 
     if( info )
@@ -365,7 +365,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     updated_info.height     = h->lavc->height;
     updated_info.csp        = h->first_pic->img.csp;
     FAIL_IF_ERROR_CLEANUP( s->nb_frames < 0 || s->nb_frames > INT_MAX, "invalid frame count\n" );
-    updated_info.num_frames = s->nb_frames > 0 ? (int)s->nb_frames : 0;
+    int num_frames = s->nb_frames > 0 ? (int)s->nb_frames : 0;
+    updated_info.num_frames = num_frames;
     if( updated_info.num_frames == 0 && s->duration > 0 && s->avg_frame_rate.den )
     {
         double fps = (double)s->avg_frame_rate.num / s->avg_frame_rate.den;
@@ -375,7 +376,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
             double frame_est = duration_est * fps + 0.5;
             FAIL_IF_ERROR_CLEANUP( !isfinite( frame_est ) || frame_est > INT_MAX,
                                    "too many estimated frames\n" );
-            updated_info.num_frames = (int)frame_est;
+            int estimated_num_frames = (int)frame_est;
+            updated_info.num_frames = estimated_num_frames;
         }
     }
     int64_t sar_width = h->lavc->sample_aspect_ratio.num;
@@ -400,9 +402,12 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
 
     /* show video info */
     double duration = s->duration > 0 ? (double)s->duration * av_q2d(s->time_base) : 0;
-    int duration_log = isfinite( duration ) && duration > 0.0
-                     ? duration > INT_MAX ? INT_MAX : (int)duration
-                     : 0;
+    int duration_log = 0;
+    if( isfinite( duration ) && duration > 0.0 )
+    {
+        int duration_seconds = duration > INT_MAX ? INT_MAX : (int)duration;
+        duration_log = duration_seconds;
+    }
     const AVPixFmtDescriptor *pix_desc = av_pix_fmt_desc_get(h->lavc->pix_fmt);
     const char *format_name = format ? format->name : (h->lavf->iformat ? h->lavf->iformat->name : "unknown");
     const char *codec_name = p->name ? p->name : "unknown";

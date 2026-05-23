@@ -244,7 +244,8 @@ static void set_recovery_param( mp4_hnd_t *p_mp4, x264_param_t *p_param )
         max_frame_num <<= 1;
     if( max_frame_num > (uint32_t)INT_MAX )
         max_frame_num = INT_MAX;
-    p_mp4->i_max_frame_num = (int)max_frame_num;
+    int max_frame_num_int = (int)max_frame_num;
+    p_mp4->i_max_frame_num = max_frame_num_int;
 }
 
 #if HAVE_AUDIO
@@ -1480,18 +1481,23 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
     {
         if( !p_mp4->b_force_display_size )
         {
-            double sar = (double)p_param->vui.i_sar_width / p_param->vui.i_sar_height;
-            if( sar > 1.0 )
+            uint64_t sar_num = (uint64_t)p_param->vui.i_sar_width;
+            uint64_t sar_den = (uint64_t)p_param->vui.i_sar_height;
+            if( sar_num > sar_den )
             {
-                double display_width = (double)p_mp4->i_display_width * sar;
-                MP4_FAIL_IF_ERR( display_width > UINT32_MAX, "display width is out of range.\n" );
-                p_mp4->i_display_width = (uint32_t)display_width;
+                uint64_t scaled_width;
+                MP4_FAIL_IF_ERR( mp4_u64_mul_overflow( p_mp4->i_display_width, sar_num, &scaled_width ) ||
+                                 scaled_width / sar_den > UINT32_MAX,
+                                 "display width is out of range.\n" );
+                p_mp4->i_display_width = (uint32_t)(scaled_width / sar_den);
             }
             else
             {
-                double display_height = (double)p_mp4->i_display_height / sar;
-                MP4_FAIL_IF_ERR( display_height > UINT32_MAX, "display height is out of range.\n" );
-                p_mp4->i_display_height = (uint32_t)display_height;
+                uint64_t scaled_height;
+                MP4_FAIL_IF_ERR( mp4_u64_mul_overflow( p_mp4->i_display_height, sar_den, &scaled_height ) ||
+                                 scaled_height / sar_num > UINT32_MAX,
+                                 "display height is out of range.\n" );
+                p_mp4->i_display_height = (uint32_t)(scaled_height / sar_num);
             }
         }
         if( !p_mp4->b_no_pasp )
@@ -1660,7 +1666,8 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     p_mp4->p_sei_buffer = sei_buffer;
     p_mp4->i_sei_size = sei_size;
 
-    return (int)(header_size + sei_size);
+    int total_header_size = (int)(header_size + sei_size);
+    return total_header_size;
 }
 
 static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_t *p_picture )

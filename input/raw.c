@@ -63,7 +63,8 @@ static int raw_parse_dimension( const char *p, char **end, int *dst )
     if( *end == p || errno == ERANGE || value <= 0 || value > MAX_RESOLUTION )
         return -1;
 
-    *dst = (int)value;
+    int parsed_value = (int)value;
+    *dst = parsed_value;
     return 0;
 }
 
@@ -179,7 +180,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         FAIL_IF_ERROR_CLEANUP( fseek( h->fh, 0, SEEK_SET ), "unable to seek input file\n" );
         int64_t num_frames = size / h->frame_size;
         FAIL_IF_ERROR_CLEANUP( num_frames > INT_MAX, "too many frames\n" );
-        updated_info.num_frames = (int)num_frames;
+        int detected_num_frames = (int)num_frames;
+        updated_info.num_frames = detected_num_frames;
         FAIL_IF_ERROR_CLEANUP( !updated_info.num_frames, "empty input file\n" );
 
         /* Attempt to use memory-mapped input frames if possible */

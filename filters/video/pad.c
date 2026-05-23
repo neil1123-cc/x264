@@ -343,8 +343,16 @@ static int pad_scale_dimension( int value, double scale, int *out )
     double scaled = value * scale;
     if( !out || !isfinite( scaled ) || scaled < 0.0 || scaled > (double)INT_MAX || scaled != floor( scaled ) )
         return -1;
-    *out = (int)scaled;
+    int scaled_value = (int)scaled;
+    *out = scaled_value;
     return 0;
+}
+
+static int pad_abs_stride( int stride )
+{
+    if( stride == INT_MIN )
+        return -1;
+    return stride < 0 ? -stride : stride;
 }
 
 static int pad_plane_copy_params( int *offset, int *width, int *height,
@@ -390,11 +398,13 @@ static int pad_validate_input_frame( const pad_handle_t *h, const cli_pic_t *pic
     {
         int offset;
         int width, height;
+        int stride = pad_abs_stride( pic->img.stride[i] );
         if( pad_plane_copy_params( &offset, &width, &height,
                                    pic->img.width, pic->img.height, pic->img.stride[i],
                                    0, 0, h->csp->width[i], h->csp->height[i],
                                    depth_factor ) ||
-            (width && height && !pic->img.plane[i]) )
+            stride < 0 ||
+            (width && height && (!pic->img.plane[i] || stride < width)) )
             return -1;
     }
 

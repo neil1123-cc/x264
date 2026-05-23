@@ -53,13 +53,19 @@ static hnd_t init( hnd_t filter_chain, const char *opts )
     h->info.framelen       = h->info.framelen ? h->info.framelen : 1;
     h->info.depth          = 16;
     h->info.chansize       = h->info.depth / 8;
-    if( h->info.channels <= 0 || h->info.samplerate <= 0 ||
-        h->info.channels > INT_MAX / h->info.chansize )
+    if( h->info.channels <= 0 || h->info.samplerate <= 0 )
     {
         free( h );
         return NULL;
     }
-    h->info.samplesize     = h->info.chansize * h->info.channels;
+    int64_t samplesize64 = (int64_t)h->info.chansize * h->info.channels;
+    if( h->info.chansize <= 0 || h->info.chansize > INT_MAX / 8 || samplesize64 > INT_MAX )
+    {
+        free( h );
+        return NULL;
+    }
+    int samplesize = (int)samplesize64;
+    h->info.samplesize     = samplesize;
     if( set_framesize( &h->info, "raw" ) )
     {
         free( h );
@@ -67,8 +73,9 @@ static hnd_t init( hnd_t filter_chain, const char *opts )
     }
     h->info.timebase       = (timebase_t) { 1, h->info.samplerate };
 
+    int sample_bits = h->info.chansize * 8;
     x264_cli_log( "audio", X264_LOG_INFO, "opened raw encoder (%dbits, %dch, %dhz)\n",
-                  h->info.chansize * 8, h->info.channels, h->info.samplerate );
+                  sample_bits, h->info.channels, h->info.samplerate );
     return h;
 }
 
@@ -119,9 +126,12 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     out->data        = x264_af_interleave2( SMPFMT_S16, smp->samples, smp->channels, smp->samplecount );
     if( smp->samplecount && !out->data )
         goto error;
-    out->size        = (int)((uint64_t)smp->samplecount * (uint64_t)h->info.samplesize);
+    uint64_t out_size64 = (uint64_t)smp->samplecount * (uint64_t)h->info.samplesize;
+    int out_size = (int)out_size64;
+    uint32_t packet_last_delta = (uint32_t)smp->samplecount;
+    out->size        = out_size;
     out->dts         = h->last_sample;
-    out->info.last_delta = (uint32_t)smp->samplecount;
+    out->info.last_delta = packet_last_delta;
     h->last_sample   = staged_last_sample;
     x264_af_free_packet( smp );
 

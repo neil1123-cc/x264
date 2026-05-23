@@ -143,7 +143,8 @@ static int flv_get_raw_audio_framelen( int *dst, audio_info_t *info, x264_param_
     }
     if( framelen != framelen || framelen <= 0.0 || framelen > INT_MAX )
         return -1;
-    *dst = (int)framelen;
+    int frame_length = (int)framelen;
+    *dst = frame_length;
     return 0;
 }
 
@@ -180,6 +181,7 @@ static int audio_init( hnd_t handle, hnd_t filters, char *audio_enc, char *audio
     a_flv->lastdts = INVALID_DTS;
     audio_info_t *info = x264_audio_encoder_info( henc );
     if( !info || info->samplerate <= 0 || info->channels <= 0 || info->chansize < 0 ||
+        info->chansize > INT_MAX / 8 ||
         info->framelen < 0 || info->samplesize < 0 || info->extradata_size < 0 ||
         info->timebase.num <= 0 || info->timebase.den <= 0 )
         goto error;
@@ -235,7 +237,8 @@ static int audio_init( hnd_t handle, hnd_t filters, char *audio_enc, char *audio
             default:
                 if( info->chansize > INT_MAX / 8 )
                     goto error;
-                x264_cli_log( "flv", X264_LOG_ERROR, "%d-bit audio not supported\n", info->chansize * 8 );
+                int unsupported_audio_bits = info->chansize * 8;
+                x264_cli_log( "flv", X264_LOG_ERROR, "%d-bit audio not supported\n", unsupported_audio_bits );
                 goto error;
         }
 
@@ -408,10 +411,13 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
     if( p_flv->a_flv )
     {
         flv_audio_hnd_t *a_flv = p_flv->a_flv;
+        if( a_flv->info->chansize > INT_MAX / 8 )
+            return -1;
+        int audio_sample_bits = a_flv->info->chansize * 8;
         flv_put_amf_string( c, "audiocodecid" );
         flv_put_amf_double( c, a_flv->codecid >> FLV_AUDIO_CODECID_OFFSET );
         flv_put_amf_string( c, "audiosamplesize" );
-        flv_put_amf_double( c, a_flv->info->chansize * 8 );
+        flv_put_amf_double( c, audio_sample_bits );
         flv_put_amf_string( c, "audiosamplerate" );
         flv_put_amf_double( c, a_flv->info->samplerate );
         flv_put_amf_string( c, "stereo" );

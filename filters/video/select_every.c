@@ -53,7 +53,8 @@ static int select_every_frame_number( selvry_hnd_t *h, int frame, int *pat_frame
                        (int64_t)(frame / h->pattern_len) * h->step_size;
     if( selected > INT_MAX )
         return -1;
-    *pat_frame = (int)selected;
+    int pattern_frame = (int)selected;
+    *pat_frame = pattern_frame;
     return 0;
 }
 
@@ -70,7 +71,8 @@ static int select_every_num_frames( selvry_hnd_t *h, int num_frames )
     }
     if( selected > INT_MAX )
         return -1;
-    return (int)selected;
+    int selected_frames = (int)selected;
+    return selected_frames;
 }
 
 static void help( int longhelp )

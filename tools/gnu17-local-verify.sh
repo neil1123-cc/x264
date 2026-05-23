@@ -828,6 +828,27 @@ write_smoke_y4m_frames()
     write_smoke_y4m_with_header "$1" "$2" "YUV4MPEG2 W16 H16 F$smoke_y4m_fps Ip A1:1 C420"
 }
 
+write_smoke_y4m_pattern_frames()
+{
+    smoke_y4m_path=$1
+    smoke_y4m_frames=$2
+    smoke_y4m_fps=$3
+    {
+        printf '%s\n' "YUV4MPEG2 W16 H16 F$smoke_y4m_fps Ip A1:1 C420"
+        smoke_y4m_i=0
+        while [ "$smoke_y4m_i" -lt "$smoke_y4m_frames" ]; do
+            printf '%s\n' 'FRAME'
+            perl -e '
+                my $frame = shift;
+                for my $i (0..255) { print pack("C", ($i * 7 + $frame * 23) % 255 + 1); }
+                for my $i (0..63)  { print pack("C", 64 + (($frame * 11 + $i) % 64)); }
+                for my $i (0..63)  { print pack("C", 128 + (($frame * 13 + $i) % 64)); }
+            ' "$smoke_y4m_i"
+            smoke_y4m_i=$((smoke_y4m_i + 1))
+        done
+    } > "$smoke_y4m_path"
+}
+
 write_smoke_y4m_with_header()
 {
     smoke_y4m_path=$1
@@ -3640,6 +3661,7 @@ void x264_cli_log( const char *name, int i_level, const char *fmt, ... )
 int main( void )
 {
     intptr_t offset = 0;
+    int byte_width = 0;
 
     if( crop_plane_offset( &offset, 32, 2, 1, 4, 1, 1 ) || offset != 68 )
         return 1;
@@ -3657,6 +3679,10 @@ int main( void )
         return 5;
     if( crop_plane_offset( &offset, INT_MAX, INT_MAX, 2, INT_MAX, 5, 1 ) == 0 )
         return 6;
+    if( crop_plane_width_bytes( &byte_width, 8, 1, 2 ) || byte_width != 16 )
+        return 9;
+    if( crop_plane_width_bytes( &byte_width, INT_MAX, 1, 2 ) == 0 )
+        return 10;
 
     return 0;
 }
@@ -3710,6 +3736,11 @@ int main( void )
     int offset = 0;
     int width = 0;
     int height = 0;
+    pad_handle_t h = { 0 };
+    cli_pic_t pic = { 0 };
+    uint8_t plane0[256];
+    uint8_t plane1[64];
+    uint8_t plane2[64];
 
     if( pad_plane_copy_params( &offset, &width, &height, 16, 16, 64, 2, 4, 1, 1, 1 ) ||
         offset != 258 || width != 16 || height != 16 )
@@ -3728,6 +3759,26 @@ int main( void )
         return 5;
     if( pad_plane_copy_params( &offset, &width, &height, 1, 1, INT_MAX, INT_MAX, 1, 1, 1, 1 ) == 0 )
         return 6;
+
+    h.buffer.img.csp = X264_CSP_I420;
+    h.input_width = 16;
+    h.input_height = 16;
+    h.csp = x264_cli_get_csp( X264_CSP_I420 );
+    pic.img.csp = X264_CSP_I420;
+    pic.img.width = 16;
+    pic.img.height = 16;
+    pic.img.planes = h.csp->planes;
+    pic.img.plane[0] = plane0;
+    pic.img.plane[1] = plane1;
+    pic.img.plane[2] = plane2;
+    pic.img.stride[0] = 16;
+    pic.img.stride[1] = 8;
+    pic.img.stride[2] = 8;
+    if( pad_validate_input_frame( &h, &pic ) )
+        return 8;
+    pic.img.stride[0] = 15;
+    if( pad_validate_input_frame( &h, &pic ) == 0 )
+        return 9;
 
     return 0;
 }
@@ -4007,6 +4058,7 @@ run_filter_option_helper_smoke()
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 void x264_cli_log( const char *name, int i_level, const char *fmt, ... )
 {
@@ -4056,6 +4108,18 @@ static int expect_int_default( const char *arg )
     return x264_otoi( arg, 7 ) != 7;
 }
 
+static int expect_null_option_name( void )
+{
+    static const char * const options[] = { "width", "height", NULL };
+    char **split = x264_split_options( "width=16,height=16", options );
+    if( !split )
+        return 1;
+    int failed = x264_get_option( NULL, split ) != NULL ||
+                 strcmp( x264_get_option( "width", split ), "16" );
+    free( split );
+    return failed;
+}
+
 int main( void )
 {
     return expect_float_success( "1.25", 1.25 ) ||
@@ -4075,7 +4139,8 @@ int main( void )
            expect_int_failure( "- 1" ) ||
            expect_int_failure( "1x" ) ||
            expect_int_default( "+1" ) ||
-           expect_int_default( " 1" );
+           expect_int_default( " 1" ) ||
+           expect_null_option_name();
 }
 HELPER_C
 
@@ -5403,13 +5468,15 @@ assume 25
           "$stats_bad_bframes" "$stats_bad_bframes_out" "$stats_bad_bframes_log" \
           "$stats_bad_bframes_ws" "$stats_bad_bframes_ws_out" "$stats_bad_bframes_ws_log" \
           "$stats_bad_lookahead_ws" "$stats_bad_lookahead_ws_out" "$stats_bad_lookahead_ws_log"
-    write_smoke_y4m_frames "$stats_y4m" 2 25:1
-    "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 1 --no-mbtree --bframes 0 --ref 1 --stats "$stats_valid" -o "$stats_pass1_out" "$stats_y4m" >/dev/null
+    stats_bitrate=40
+    stats_frames=10
+    write_smoke_y4m_pattern_frames "$stats_y4m" "$stats_frames" 25:1
+    "$smoke_bin" --demuxer y4m --frames "$stats_frames" --bitrate "$stats_bitrate" --pass 1 --no-mbtree --bframes 0 --ref 1 --stats "$stats_valid" -o "$stats_pass1_out" "$stats_y4m" >/dev/null
     [ -s "$stats_valid" ] || { printf '%s\n' "missing two-pass stats smoke output: $stats_valid" >&2; exit 1; }
     for bad_stats_resolution in '+16x16' '16x+16' '16x 16'; do
         sed "1s|#options: [^ ]*|#options: $bad_stats_resolution|" "$stats_valid" > "$stats_bad_resolution"
         rm -f "$stats_bad_resolution_log" "$stats_bad_resolution_out"
-        if "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_resolution" -o "$stats_bad_resolution_out" "$stats_y4m" >"$stats_bad_resolution_log" 2>&1; then
+        if "$smoke_bin" --demuxer y4m --frames 2 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_resolution" -o "$stats_bad_resolution_out" "$stats_y4m" >"$stats_bad_resolution_log" 2>&1; then
             printf '%s\n' "accepted malformed stats resolution '$bad_stats_resolution': $stats_bad_resolution" >&2
             exit 1
         fi
@@ -5422,7 +5489,7 @@ assume 25
     for bad_stats_timebase in '-1/1' '+1/1' '1/+1' '1/ 1'; do
         sed "1s|timebase=[^ ]*|timebase=$bad_stats_timebase|" "$stats_valid" > "$stats_bad_timebase"
         rm -f "$stats_bad_timebase_log" "$stats_bad_timebase_out"
-        if "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_timebase" -o "$stats_bad_timebase_out" "$stats_y4m" >"$stats_bad_timebase_log" 2>&1; then
+        if "$smoke_bin" --demuxer y4m --frames 2 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_timebase" -o "$stats_bad_timebase_out" "$stats_y4m" >"$stats_bad_timebase_log" 2>&1; then
             printf '%s\n' "accepted malformed stats timebase '$bad_stats_timebase': $stats_bad_timebase" >&2
             exit 1
         fi
@@ -5433,7 +5500,7 @@ assume 25
         }
     done
     sed '2s|q:[^ ]*|q:nan|' "$stats_valid" > "$stats_bad_main"
-    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_main" -o "$stats_bad_main_out" "$stats_y4m" >"$stats_bad_main_log" 2>&1; then
+    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_main" -o "$stats_bad_main_out" "$stats_y4m" >"$stats_bad_main_log" 2>&1; then
         printf '%s\n' "accepted malformed stats main fields: $stats_bad_main" >&2
         exit 1
     fi
@@ -5444,7 +5511,7 @@ assume 25
     }
     sed '2s|q:\([^ ]*\)|q:+\1|' "$stats_valid" > "$stats_bad_main"
     rm -f "$stats_bad_main_log" "$stats_bad_main_out"
-    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_main" -o "$stats_bad_main_out" "$stats_y4m" >"$stats_bad_main_log" 2>&1; then
+    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_main" -o "$stats_bad_main_out" "$stats_y4m" >"$stats_bad_main_log" 2>&1; then
         printf '%s\n' "accepted prefixed stats main field: $stats_bad_main" >&2
         exit 1
     fi
@@ -5454,7 +5521,7 @@ assume 25
         exit 1
     }
     sed '3s| d:- ref:| d:- junk:1 ref:|' "$stats_valid" > "$stats_bad_main_ref"
-    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_main_ref" -o "$stats_bad_main_ref_out" "$stats_y4m" >"$stats_bad_main_ref_log" 2>&1; then
+    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_main_ref" -o "$stats_bad_main_ref_out" "$stats_y4m" >"$stats_bad_main_ref_log" 2>&1; then
         printf '%s\n' "accepted malformed stats token before ref list: $stats_bad_main_ref" >&2
         exit 1
     fi
@@ -5464,7 +5531,7 @@ assume 25
         exit 1
     }
     sed '3s|ref:[^ ]*|ref:0x|' "$stats_valid" > "$stats_bad_ref"
-    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_ref" -o "$stats_bad_ref_out" "$stats_y4m" >"$stats_bad_ref_log" 2>&1; then
+    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_ref" -o "$stats_bad_ref_out" "$stats_y4m" >"$stats_bad_ref_log" 2>&1; then
         printf '%s\n' "accepted malformed stats ref list: $stats_bad_ref" >&2
         exit 1
     fi
@@ -5475,7 +5542,7 @@ assume 25
     }
     sed '3s|ref:0 ;|ref:+0 ;|' "$stats_valid" > "$stats_bad_ref"
     rm -f "$stats_bad_ref_log" "$stats_bad_ref_out"
-    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_ref" -o "$stats_bad_ref_out" "$stats_y4m" >"$stats_bad_ref_log" 2>&1; then
+    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_ref" -o "$stats_bad_ref_out" "$stats_y4m" >"$stats_bad_ref_log" 2>&1; then
         printf '%s\n' "accepted prefixed stats ref list: $stats_bad_ref" >&2
         exit 1
     fi
@@ -5485,10 +5552,10 @@ assume 25
         exit 1
     }
     sed '3s|ref:0 ;|ref:0 w:0,1,0 ;|' "$stats_valid" > "$stats_weight"
-    "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_weight" -o "$stats_weight_out" "$stats_y4m" >/dev/null
+    "$smoke_bin" --demuxer y4m --frames "$stats_frames" --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_weight" -o "$stats_weight_out" "$stats_y4m" >/dev/null
     [ -s "$stats_weight_out" ] || { printf '%s\n' "missing stats weight smoke output: $stats_weight_out" >&2; exit 1; }
     sed '3s|;||' "$stats_weight" > "$stats_bad_delim"
-    if "$smoke_bin" --demuxer y4m --frames 1 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_delim" -o "$stats_bad_delim_out" "$stats_y4m" >"$stats_bad_delim_log" 2>&1; then
+    if "$smoke_bin" --demuxer y4m --frames 1 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_delim" -o "$stats_bad_delim_out" "$stats_y4m" >"$stats_bad_delim_log" 2>&1; then
         printf '%s\n' "accepted unterminated stats record: $stats_bad_delim" >&2
         exit 1
     fi
@@ -5498,13 +5565,13 @@ assume 25
         exit 1
     }
     sed '3s|ref:0 ;|ref:0 w:0, 1, 0 ;|' "$stats_valid" > "$stats_weight_spaces"
-    "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_weight_spaces" -o "$stats_weight_spaces_out" "$stats_y4m" >/dev/null
+    "$smoke_bin" --demuxer y4m --frames "$stats_frames" --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_weight_spaces" -o "$stats_weight_spaces_out" "$stats_y4m" >/dev/null
     [ -s "$stats_weight_spaces_out" ] || { printf '%s\n' "missing stats weight-spaces smoke output: $stats_weight_spaces_out" >&2; exit 1; }
     sed '3s|ref:0 ;|ref:0 w:0, 1, 0, 0, 1, 0, 1, 0 ;|' "$stats_valid" > "$stats_weight_chroma_spaces"
-    "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_weight_chroma_spaces" -o "$stats_weight_chroma_spaces_out" "$stats_y4m" >/dev/null
+    "$smoke_bin" --demuxer y4m --frames "$stats_frames" --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_weight_chroma_spaces" -o "$stats_weight_chroma_spaces_out" "$stats_y4m" >/dev/null
     [ -s "$stats_weight_chroma_spaces_out" ] || { printf '%s\n' "missing stats weight chroma-spaces smoke output: $stats_weight_chroma_spaces_out" >&2; exit 1; }
     sed '3s|ref:0 ;|ref:0 w:0,1,0x ;|' "$stats_valid" > "$stats_bad_weight"
-    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_weight" -o "$stats_bad_weight_out" "$stats_y4m" >"$stats_bad_weight_log" 2>&1; then
+    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_weight" -o "$stats_bad_weight_out" "$stats_y4m" >"$stats_bad_weight_log" 2>&1; then
         printf '%s\n' "accepted malformed stats weight list: $stats_bad_weight" >&2
         exit 1
     fi
@@ -5515,7 +5582,7 @@ assume 25
     }
     sed '3s|ref:0 ;|ref:0 w:+0,1,0 ;|' "$stats_valid" > "$stats_bad_weight"
     rm -f "$stats_bad_weight_log" "$stats_bad_weight_out"
-    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_weight" -o "$stats_bad_weight_out" "$stats_y4m" >"$stats_bad_weight_log" 2>&1; then
+    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_weight" -o "$stats_bad_weight_out" "$stats_y4m" >"$stats_bad_weight_log" 2>&1; then
         printf '%s\n' "accepted prefixed stats weight list: $stats_bad_weight" >&2
         exit 1
     fi
@@ -5525,7 +5592,7 @@ assume 25
         exit 1
     }
     sed '1s|bframes=[^ ]*|bframes=3x|' "$stats_valid" > "$stats_bad_bframes"
-    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_bframes" -o "$stats_bad_bframes_out" "$stats_y4m" >"$stats_bad_bframes_log" 2>&1; then
+    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_bframes" -o "$stats_bad_bframes_out" "$stats_y4m" >"$stats_bad_bframes_log" 2>&1; then
         printf '%s\n' "accepted malformed stats bframes token: $stats_bad_bframes" >&2
         exit 1
     fi
@@ -5536,7 +5603,7 @@ assume 25
     }
     sed '1s|bframes=[^ ]*|bframes=+0|' "$stats_valid" > "$stats_bad_bframes"
     rm -f "$stats_bad_bframes_log" "$stats_bad_bframes_out"
-    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_bframes" -o "$stats_bad_bframes_out" "$stats_y4m" >"$stats_bad_bframes_log" 2>&1; then
+    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_bframes" -o "$stats_bad_bframes_out" "$stats_y4m" >"$stats_bad_bframes_log" 2>&1; then
         printf '%s\n' "accepted prefixed stats bframes token: $stats_bad_bframes" >&2
         exit 1
     fi
@@ -5546,7 +5613,7 @@ assume 25
         exit 1
     }
     sed '1s|bframes=[^ ]*|bframes= 3|' "$stats_valid" > "$stats_bad_bframes_ws"
-    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_bframes_ws" -o "$stats_bad_bframes_ws_out" "$stats_y4m" >"$stats_bad_bframes_ws_log" 2>&1; then
+    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --stats "$stats_bad_bframes_ws" -o "$stats_bad_bframes_ws_out" "$stats_y4m" >"$stats_bad_bframes_ws_log" 2>&1; then
         printf '%s\n' "accepted whitespace-prefixed stats bframes token: $stats_bad_bframes_ws" >&2
         exit 1
     fi
@@ -5556,7 +5623,7 @@ assume 25
         exit 1
     }
     sed '1s|$| rc_lookahead= 1|' "$stats_valid" > "$stats_bad_lookahead_ws"
-    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate 100 --pass 2 --no-mbtree --bframes 0 --ref 1 --vbv-bufsize 100 --vbv-maxrate 100 --stats "$stats_bad_lookahead_ws" -o "$stats_bad_lookahead_ws_out" "$stats_y4m" >"$stats_bad_lookahead_ws_log" 2>&1; then
+    if "$smoke_bin" --demuxer y4m --frames 2 --bitrate "$stats_bitrate" --pass 2 --no-mbtree --bframes 0 --ref 1 --vbv-bufsize "$stats_bitrate" --vbv-maxrate "$stats_bitrate" --stats "$stats_bad_lookahead_ws" -o "$stats_bad_lookahead_ws_out" "$stats_y4m" >"$stats_bad_lookahead_ws_log" 2>&1; then
         printf '%s\n' "accepted whitespace-prefixed stats rc_lookahead token: $stats_bad_lookahead_ws" >&2
         exit 1
     fi

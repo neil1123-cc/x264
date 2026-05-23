@@ -413,7 +413,8 @@ static int cqm_parse_int( const char *p, char **end, int *dst )
     if( *end == p || errno == ERANGE || value < INT_MIN || value > INT_MAX )
         return -1;
 
-    *dst = (int)value;
+    int parsed_value = (int)value;
+    *dst = parsed_value;
     return 0;
 }
 

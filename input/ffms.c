@@ -219,7 +219,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     FAIL_IF_ERROR_CLEANUP( videop->FPSDenominator < 0 || (uint64_t)videop->FPSDenominator > UINT32_MAX ||
                            videop->FPSNumerator < 0 || (uint64_t)videop->FPSNumerator > UINT32_MAX,
                            "invalid framerate\n" );
-    updated_info.num_frames   = h->num_frames = (int)videop->NumFrames;
+    int num_frames = (int)videop->NumFrames;
+    updated_info.num_frames   = h->num_frames = num_frames;
     updated_info.sar_height   = (uint32_t)videop->SARDen;
     updated_info.sar_width    = (uint32_t)videop->SARNum;
     updated_info.fps_den      = (uint32_t)videop->FPSDenominator;
@@ -260,7 +261,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     if( h->vfr_input )
     {
         int64_t timebase_num = timebase->Num;
-        int64_t timebase_den = timebase->Den * 1000;
+        int64_t timebase_den = (int64_t)timebase->Den * 1000;
         h->reduce_pts = 0;
 
         while( timebase_num > UINT32_MAX || timebase_den > INT32_MAX )
@@ -284,9 +285,12 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         codec = "unknown";
     double duration        = videop->FPSNumerator > 0 && videop->FPSDenominator > 0 ?
                              (double)videop->NumFrames * videop->FPSDenominator / videop->FPSNumerator : 0;
-    int duration_log       = isfinite( duration ) && duration > 0.0
-                           ? duration > INT_MAX ? INT_MAX : (int)duration
-                           : 0;
+    int duration_log       = 0;
+    if( isfinite( duration ) && duration > 0.0 )
+    {
+        int duration_seconds = duration > INT_MAX ? INT_MAX : (int)duration;
+        duration_log = duration_seconds;
+    }
     const AVPixFmtDescriptor *pix_desc = av_pix_fmt_desc_get(frame->EncodedPixelFormat);
     x264_cli_log( "ffms", X264_LOG_INFO,
                   "\n Format    : %s"

@@ -20,6 +20,18 @@ typedef struct enc_lame_t
     audio_packet_t *in;
 } enc_lame_t;
 
+static int set_framesize( audio_info_t *info, const char *name )
+{
+    if( info->framelen <= 0 || info->samplesize <= 0 ||
+        (uint64_t)info->framelen > SIZE_MAX / (uint64_t)info->samplesize )
+    {
+        x264_cli_log( name, X264_LOG_ERROR, "invalid audio frame size\n" );
+        return -1;
+    }
+    info->framesize = (size_t)info->framelen * (size_t)info->samplesize;
+    return 0;
+}
+
 static int get_sample_end( int64_t first_sample, int framelen, int64_t *last_sample )
 {
     if( first_sample < 0 || framelen <= 0 || first_sample > INT64_MAX - framelen )
@@ -130,6 +142,11 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
         x264_cli_log( "lame", X264_LOG_ERROR, "invalid quality option\n" );
         goto error;
     }
+    if( !(quality_value >= INT_MIN && quality_value <= INT_MAX) )
+    {
+        x264_cli_log( "lame", X264_LOG_ERROR, "invalid quality option\n" );
+        goto error;
+    }
     int quality = (int)quality_value;
 
     if( parse_int_option( x264_get_option( "samplerate", opts ), chain->info.samplerate, &h->info.samplerate ) ||
@@ -158,8 +175,14 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
 
     if( !is_vbr )
     {
+        if( !(brval >= INT_MIN && brval <= INT_MAX) )
+        {
+            x264_cli_log( "lame", X264_LOG_ERROR, "invalid bitrate option\n" );
+            goto error;
+        }
+        int bitrate_kbps = (int)brval;
         lame_set_VBR( h->lame, vbr_off );
-        lame_set_brate( h->lame, (int) brval );
+        lame_set_brate( h->lame, bitrate_kbps );
     }
     else
         lame_set_VBR_quality( h->lame, brval );
@@ -170,11 +193,16 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
         goto error;
 
     h->info.framelen   = lame_get_framesize( h->lame );
-    if( h->info.framelen <= 0 || h->info.framelen > INT_MAX / 2 )
-        goto error;
-    h->info.framesize  = (size_t)h->info.framelen * 2;
     h->info.chansize   = 2;
-    h->info.samplesize = 2 * h->info.channels;
+    if( h->info.framelen <= 0 )
+        goto error;
+    int64_t samplesize64 = (int64_t)h->info.chansize * h->info.channels;
+    if( h->info.chansize <= 0 || h->info.chansize > INT_MAX / 8 || samplesize64 > INT_MAX )
+        goto error;
+    int samplesize = (int)samplesize64;
+    h->info.samplesize = samplesize;
+    if( set_framesize( &h->info, "lame" ) )
+        goto error;
     h->info.depth      = 16;
     h->info.timebase   = (timebase_t) { 1, h->info.samplerate };
     h->info.last_delta = h->info.framelen;

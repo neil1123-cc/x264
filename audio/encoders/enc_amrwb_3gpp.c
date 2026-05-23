@@ -116,7 +116,11 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
     h->info                 = chain->info;
     h->info.codec_name      = "amrwb";
     h->info.chansize        = 2;
-    h->info.samplesize      = 2 * h->info.channels;
+    int64_t samplesize64    = (int64_t)h->info.chansize * h->info.channels;
+    if( h->info.chansize <= 0 || h->info.chansize > INT_MAX / 8 || samplesize64 > INT_MAX )
+        goto error;
+    int samplesize          = (int)samplesize64;
+    h->info.samplesize      = samplesize;
     h->info.framelen        = L_FRAME16k;
     if( set_framesize( &h->info, "amrwb_3gpp" ) )
         goto error;
@@ -141,7 +145,14 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
         x264_cli_log( "amrwb_3gpp", X264_LOG_ERROR, "invalid bitrate option\n" );
         goto error;
     }
-    switch( lrintf( bitrate ) )
+    double bitrate_value = bitrate;
+    if( !(bitrate_value >= LONG_MIN && bitrate_value <= LONG_MAX) )
+    {
+        x264_cli_log( "amrwb_3gpp", X264_LOG_ERROR, "invalid bitrate option\n" );
+        goto error;
+    }
+    long rounded_bitrate = lrintf( bitrate );
+    switch( rounded_bitrate )
     {
     case 7: /* 6.60 */
         h->mode = 0; break;

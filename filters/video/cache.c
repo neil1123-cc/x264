@@ -95,7 +95,8 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
     if( !h )
         return -1;
 
-    h->max_size = (int)size;
+    int max_size = (int)size;
+    h->max_size = max_size;
     h->cache = calloc( (size_t)h->max_size + 1, sizeof(cli_pic_t*) );
     if( !h->cache )
     {
@@ -150,7 +151,8 @@ static void fill_cache( cache_hnd_t *h, int frame )
         h->eof = frame;
         return;
     }
-    int cur_frame = (int)X264_MAX( next_frame, refill_start );
+    int64_t refill_frame = X264_MAX( next_frame, refill_start );
+    int cur_frame = (int)refill_frame;
     /* the new starting point is either
      * A) the current one shifted the number of frames entering/leaving the cache, or
      * B) at a new frame that has the end of the cache at the desired frame. */
@@ -160,8 +162,10 @@ static void fill_cache( cache_hnd_t *h, int frame )
         h->eof = frame;
         return;
     }
-    h->first_frame = (int)X264_MIN( shifted_first, (int64_t)cur_frame );
-    h->cur_size = (int)X264_MAX( (int64_t)h->cur_size - shift, 0 );
+    int first_frame = (int)X264_MIN( shifted_first, (int64_t)cur_frame );
+    int cur_size = (int)X264_MAX( (int64_t)h->cur_size - shift, 0 );
+    h->first_frame = first_frame;
+    h->cur_size = cur_size;
     while( h->cur_size < h->max_size )
     {
         cli_pic_t temp;
@@ -201,7 +205,8 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
     int64_t idx = (int64_t)frame - cache_start;
     if( idx < 0 || idx >= h->max_size )
         return -1;
-    *output = *h->cache[idx];
+    int cache_index = (int)idx;
+    *output = *h->cache[cache_index];
     return 0;
 }
 

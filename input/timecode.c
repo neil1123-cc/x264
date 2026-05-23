@@ -97,7 +97,8 @@ static int timecode_parse_int_end( const char *arg, char **end, int *dst )
     if( *end == arg || errno == ERANGE || value < INT_MIN || value > INT_MAX )
         return -1;
 
-    *dst = (int)value;
+    int parsed_value = (int)value;
+    *dst = parsed_value;
     return 0;
 }
 
@@ -696,7 +697,8 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
             if( h->auto_timebase_num && !h->auto_timebase_den )
             {
                 FAIL_IF_ERROR( fpss_num > INT_MAX, "too many tcfile fps entries\n" );
-                if( try_mkv_timebase_den( fpss, h, (int)fpss_num ) < 0 )
+                int fpss_num_int = (int)fpss_num;
+                if( try_mkv_timebase_den( fpss, h, fpss_num_int ) < 0 )
                     goto fail;
             }
             free( fpss );

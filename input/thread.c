@@ -91,7 +91,7 @@ static void *read_frame_thread_int( void *arg )
 {
     thread_input_arg_t *i = arg;
     if( !i || !i->h || !i->pic || !i->h->p_handle || !i->h->input.read_frame ||
-        i->i_frame < 0 ||
+        i->i_frame < 0 || i->i_frame == INT_MAX ||
         (i->h->frame_total && i->i_frame >= i->h->frame_total) )
     {
         if( i )
@@ -108,7 +108,7 @@ static int read_frame( cli_pic_t *p_pic, hnd_t handle, int i_frame )
     int ret = 0;
 
     if( !p_pic || !h || !h->p_handle || !h->pool || !h->next_args || !h->input.read_frame ||
-        i_frame < 0 || (h->frame_total && i_frame >= h->frame_total) )
+        i_frame < 0 || i_frame == INT_MAX || (h->frame_total && i_frame >= h->frame_total) )
         return -1;
 
     if( h->next_frame >= 0 )

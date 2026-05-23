@@ -195,7 +195,8 @@ static int resize_scale_dimension( int value, float scale, int *out )
     long double scaled = (long double)value * scale;
     if( !out || scaled != scaled || scaled <= 0.0 || scaled > INT_MAX )
         return -1;
-    *out = (int)scaled;
+    int scaled_value = (int)scaled;
+    *out = scaled_value;
     return 0;
 }
 
@@ -444,9 +445,18 @@ static int handle_opts( const char * const *optlist, char **opts, video_info_t *
                 /* new_sar = (new_h * old_w * old_sar_w) / (old_h * new_w * old_sar_h) */
                 uint64_t num = (uint64_t)info->width  * height;
                 uint64_t den = (uint64_t)info->height * width;
+                uint64_t out_sar_w64, out_sar_h64;
                 x264_reduce_fraction64( &num, &den );
-                out_sar_w = num * in_sar_w;
-                out_sar_h = den * in_sar_h;
+                FAIL_IF_ERROR( (uint64_t)in_sar_w && num > UINT64_MAX / (uint64_t)in_sar_w ||
+                               (uint64_t)in_sar_h && den > UINT64_MAX / (uint64_t)in_sar_h,
+                               "resulting sar is out of range\n" );
+                out_sar_w64 = num * (uint64_t)in_sar_w;
+                out_sar_h64 = den * (uint64_t)in_sar_h;
+                x264_reduce_fraction64( &out_sar_w64, &out_sar_h64 );
+                FAIL_IF_ERROR( out_sar_w64 > UINT32_MAX || out_sar_h64 > UINT32_MAX,
+                               "resulting sar is out of range\n" );
+                out_sar_w = (uint32_t)out_sar_w64;
+                out_sar_h = (uint32_t)out_sar_h64;
                 x264_reduce_fraction( &out_sar_w, &out_sar_h );
             }
         }

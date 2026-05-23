@@ -71,7 +71,8 @@ static int cli_pic_scale_dimension( int value, float scale, int *out )
     long double scaled = (long double)value * scale;
     if( !out || scaled != scaled || scaled < 0.0 || scaled > INT_MAX )
         return -1;
-    *out = (int)scaled;
+    int scaled_value = (int)scaled;
+    *out = scaled_value;
     return 0;
 }
 
@@ -131,7 +132,7 @@ static int cli_pic_plane_alloc_size( int csp, int csp_mask, int width, int heigh
     if( aligned_stride < byte_width || plane_height > INT64_MAX / aligned_stride )
         return -1;
     *stride = aligned_stride;
-    *size = plane_height * aligned_stride;
+    *size = (int64_t)plane_height * aligned_stride;
     if( (uint64_t)*size > SIZE_MAX )
         return -1;
     return 0;
@@ -232,8 +233,10 @@ int x264_cli_mmap_init( cli_mmap_t *h, FILE *fh )
     if( !mmap_alignment_is_valid( si.dwPageSize ) ||
         !mmap_alignment_is_valid( si.dwAllocationGranularity ) )
         return -1;
-    h->page_mask = (int)si.dwPageSize - 1;
-    h->align_mask = (int)si.dwAllocationGranularity - 1;
+    int page_size = (int)si.dwPageSize;
+    int allocation_granularity = (int)si.dwAllocationGranularity;
+    h->page_mask = page_size - 1;
+    h->align_mask = allocation_granularity - 1;
     h->prefetch_virtual_memory = (void*)GetProcAddress( GetModuleHandleW( L"kernel32.dll" ), "PrefetchVirtualMemory" );
     h->process_handle = GetCurrentProcess();
     h->map_handle = CreateFileMappingW( osfhandle, NULL, PAGE_READONLY, 0, 0, NULL );
@@ -242,7 +245,8 @@ int x264_cli_mmap_init( cli_mmap_t *h, FILE *fh )
     long page_size = sysconf( _SC_PAGESIZE );
     if( !mmap_alignment_is_valid( page_size ) )
         return -1;
-    h->align_mask = (int)page_size - 1;
+    int page_alignment = (int)page_size;
+    h->align_mask = page_alignment - 1;
     h->fd = fd;
     return 0;
 #endif

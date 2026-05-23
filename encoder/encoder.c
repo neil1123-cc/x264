@@ -1050,8 +1050,9 @@ static int validate_parameters( x264_t *h, int b_open )
             x264_log( h, X264_LOG_ERROR, "AVC-Intra bitrate exceeds supported range\n" );
             return -1;
         }
+        int avcintra_bitrate_int = (int)avcintra_bitrate;
         h->param.rc.i_vbv_max_bitrate =
-        h->param.rc.i_bitrate = (int)avcintra_bitrate;
+        h->param.rc.i_bitrate = avcintra_bitrate_int;
         h->param.rc.i_rc_method = X264_RC_ABR;
         h->param.rc.f_vbv_buffer_init = 1.0;
         h->param.rc.b_filler = 1;
@@ -1840,7 +1841,11 @@ x264_t *x264_encoder_open( x264_param_t *param, void *api )
 
     h->mb.i_mb_width = h->sps->i_mb_width;
     h->mb.i_mb_height = h->sps->i_mb_height;
-    h->mb.i_mb_count = h->mb.i_mb_width * h->mb.i_mb_height;
+    if( checked_int_mul( h->mb.i_mb_width, h->mb.i_mb_height, &h->mb.i_mb_count ) )
+    {
+        x264_log( h, X264_LOG_ERROR, "macroblock count is too large\n" );
+        goto fail;
+    }
 
     h->mb.chroma_h_shift = CHROMA_FORMAT == CHROMA_420 || CHROMA_FORMAT == CHROMA_422;
     h->mb.chroma_v_shift = CHROMA_FORMAT == CHROMA_420;
@@ -4491,8 +4496,8 @@ static int encoder_frame_end( x264_t *h, x264_t *thread_current,
             h->stat.frame.i_ssd[1],
             h->stat.frame.i_ssd[2],
         };
-        int luma_size = h->param.i_width * h->param.i_height;
-        int chroma_size = CHROMA_SIZE( luma_size );
+        int64_t luma_size = (int64_t)h->param.i_width * h->param.i_height;
+        int64_t chroma_size = CHROMA_SIZE( luma_size );
         pic_out->prop.f_psnr[0] = calc_psnr( ssd[0], luma_size );
         pic_out->prop.f_psnr[1] = calc_psnr( ssd[1], chroma_size );
         pic_out->prop.f_psnr[2] = calc_psnr( ssd[2], chroma_size );
@@ -4541,7 +4546,7 @@ static int encoder_frame_end( x264_t *h, x264_t *thread_current,
     static const char mb_chars[] = { 'i', 'i', 'I', 'C', 'P', '8', 'S',
         'D', '<', 'X', 'B', 'X', '>', 'B', 'B', 'B', 'B', '8', 'S' };
     X264_STATIC_ASSERT( ARRAY_ELEMS(mb_chars) == X264_MBTYPE_MAX, "debug mb character table size must match mb type enum" );
-    for( int mb_xy = 0; mb_xy < h->mb.i_mb_width * h->mb.i_mb_height; mb_xy++ )
+    for( int mb_xy = 0; mb_xy < h->mb.i_mb_count; mb_xy++ )
     {
         if( h->mb.type[mb_xy] < X264_MBTYPE_MAX && h->mb.type[mb_xy] >= 0 )
             fprintf( stderr, "%c ", mb_chars[ h->mb.type[mb_xy] ] );
@@ -4587,7 +4592,7 @@ static void print_intra( int64_t *i_mb_count, double i_count, int b_print_pcm, c
  ****************************************************************************/
 void    x264_encoder_close  ( x264_t *h )
 {
-    int64_t i_yuv_size = FRAME_SIZE( h->param.i_width * h->param.i_height );
+    int64_t i_yuv_size = FRAME_SIZE( (int64_t)h->param.i_width * h->param.i_height );
     int64_t i_mb_count_size[2][7] = {{0}};
     char buf[200];
     int b_print_pcm = h->stat.i_mb_count[SLICE_TYPE_I][I_PCM]

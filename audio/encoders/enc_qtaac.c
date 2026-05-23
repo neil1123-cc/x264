@@ -377,9 +377,12 @@ OSStatus configure_quicktime_component( enc_qtaac_t *h )
     indesc.mSampleRate = chain->info.samplerate;
     indesc.mFormatID = kAudioFormatLinearPCM;
     indesc.mFormatFlags = kLinearPCMFormatFlagIsFloat | kAudioFormatFlagsNativeEndian;
-    indesc.mBytesPerPacket = 4 * chain->info.channels;
+    uint64_t bytes_per_packet64 = 4u * (uint64_t)chain->info.channels;
+    if( chain->info.channels <= 0 || bytes_per_packet64 > UINT32_MAX )
+        goto error;
+    indesc.mBytesPerPacket = (UInt32)bytes_per_packet64;
     indesc.mFramesPerPacket = 1;
-    indesc.mBytesPerFrame = indesc.mBytesPerPacket * indesc.mFramesPerPacket;
+    indesc.mBytesPerFrame = indesc.mBytesPerPacket;
     indesc.mChannelsPerFrame = chain->info.channels;
     indesc.mBitsPerChannel = 32;
 
@@ -753,7 +756,11 @@ static hnd_t qtaac_init( hnd_t filter_chain, const char *opt_str )
     h->info.channels       = outdesc.mChannelsPerFrame;
     h->info.framelen       = outdesc.mFramesPerPacket;
     h->info.chansize       = 4;
-    h->info.samplesize     = h->info.channels * h->info.chansize;
+    int64_t samplesize64   = (int64_t)h->info.channels * h->info.chansize;
+    if( h->info.chansize <= 0 || h->info.chansize > INT_MAX / 8 || samplesize64 > INT_MAX )
+        goto error;
+    int samplesize         = (int)samplesize64;
+    h->info.samplesize     = samplesize;
     if( set_framesize( &h->info, "qtaac" ) )
         goto error;
     h->info.depth          = 32;
@@ -774,7 +781,8 @@ static hnd_t qtaac_init( hnd_t filter_chain, const char *opt_str )
     h->samplebuffer = NULL;
     if( size > INT_MAX )
         goto error;
-    h->bufsize = (int)size;
+    int packet_bufsize = (int)size;
+    h->bufsize = packet_bufsize;
     if( ( h->buffer = malloc( h->bufsize )) == NULL )
         goto error;
 
@@ -893,7 +901,10 @@ static OSStatus pcmInputDataProc( ComponentInstance ci,
         in->samplecount > UINT32_MAX / (uint64_t)h->info.samplesize )
         goto error;
     UInt32 packet_count = (UInt32)in->samplecount;
-    UInt32 data_size = (UInt32)(in->samplecount * (uint64_t)h->info.samplesize);
+    uint64_t data_size64 = in->samplecount * (uint64_t)h->info.samplesize;
+    if( data_size64 > UINT32_MAX )
+        goto error;
+    UInt32 data_size = (UInt32)data_size64;
 
     samplebuffer = x264_af_interleave3( SMPFMT_FLT, in->samples, h->info.channels, in->samplecount, qt_channel_map[h->info.channels-1] );
     if( in->samplecount && !samplebuffer )
@@ -982,7 +993,8 @@ static audio_packet_t *fill_buffer( enc_qtaac_t *h )
         return NULL;
     }
     out->info = h->info;
-    out->size = (int)desc.mDataByteSize;
+    int output_size = (int)desc.mDataByteSize;
+    out->size = output_size;
     out->data = malloc( desc.mDataByteSize );
     if( !out->data )
     {

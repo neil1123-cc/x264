@@ -43,7 +43,8 @@ static int x264_cli_scale_dimension( int value, float scale, int *out )
     long double scaled = (long double)value * scale;
     if( !out || scaled != scaled || scaled < 0.0 || scaled > INT_MAX )
         return -1;
-    *out = (int)scaled;
+    int scaled_value = (int)scaled;
+    *out = scaled_value;
     return 0;
 }
 

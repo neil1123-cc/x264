@@ -232,11 +232,19 @@ static int set_video_track( mkv_hnd_t *p_mkv, x264_param_t *p_param )
     {
         if( p_param->vui.i_sar_width > p_param->vui.i_sar_height )
         {
-            dw = dw * p_param->vui.i_sar_width / p_param->vui.i_sar_height;
+            uint64_t sar_num = (uint64_t)p_param->vui.i_sar_width;
+            uint64_t sar_den = (uint64_t)p_param->vui.i_sar_height;
+            if( (uint64_t)dw > UINT64_MAX / sar_num )
+                return -1;
+            dw = (int64_t)( (uint64_t)dw * sar_num / sar_den );
         }
         else
         {
-            dh = dh * p_param->vui.i_sar_height / p_param->vui.i_sar_width;
+            uint64_t sar_num = (uint64_t)p_param->vui.i_sar_height;
+            uint64_t sar_den = (uint64_t)p_param->vui.i_sar_width;
+            if( (uint64_t)dh > UINT64_MAX / sar_num )
+                return -1;
+            dh = (int64_t)( (uint64_t)dh * sar_num / sar_den );
         }
     }
     if( dw <= 0 || dh <= 0 || dw > UINT_MAX || dh > UINT_MAX )
@@ -284,7 +292,8 @@ static int get_pcm_audio_framelen( int *dst, audio_info_t *info, x264_param_t *p
     }
     if( framelen != framelen || framelen <= 0.0 || framelen > INT_MAX )
         return -1;
-    *dst = (int)framelen;
+    int frame_length = (int)framelen;
+    *dst = frame_length;
     return 0;
 }
 
@@ -352,9 +361,10 @@ static int set_audio_track( mkv_hnd_t *p_mkv, x264_param_t *p_param )
 
     if( !strcmp( atrack.codec_id, MK_AUDIO_TAG_PCM_LE ) )
     {
-        if( info->chansize > INT_MAX / 8 )
+        if( info->chansize <= 0 || info->chansize > INT_MAX / 8 )
             return -1;
-        a->bit_depth         = info->chansize * 8;
+        int audio_bit_depth = info->chansize * 8;
+        a->bit_depth         = audio_bit_depth;
 
         // this is slightly inaccurate for some fps and samplerate conbinations
         if( get_pcm_audio_framelen( &framelen, info, p_param ) )
@@ -472,9 +482,10 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     memcpy( header_tracks, p_mkv->tracks, sizeof(header_tracks) );
     header_tracks[p_mkv->i_video_track].codec_private_size = codec_private_size;
     header_tracks[p_mkv->i_video_track].codec_private = codec_private;
+    int track_count = (int)p_mkv->i_track_count;
 
     ret = mk_write_header( p_mkv->w, "x264 "X264_COREVER, MKV_TIMECODE_SCALE,
-                           header_tracks, (int)p_mkv->i_track_count );
+                           header_tracks, track_count );
 
     if( ret < 0 )
     {

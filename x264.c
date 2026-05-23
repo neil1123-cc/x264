@@ -171,7 +171,8 @@ static int parse_cli_int_end( const char *arg, char **end, int *dst )
     if( *end == arg || errno == ERANGE || value < INT_MIN || value > INT_MAX )
         return -1;
 
-    *dst = (int)value;
+    int parsed_value = (int)value;
+    *dst = parsed_value;
     return 0;
 }
 
@@ -2222,6 +2223,8 @@ static int select_audio_demuxer( const char *demuxer, char *used_demuxer, size_t
 
 static int parse_enum_name( const char *arg, const char * const *names, const char **dst )
 {
+    if( !arg || !names || !dst )
+        return -1;
     for( int i = 0; names[i]; i++ )
         if( *names[i] && !strcasecmp( arg, names[i] ) )
         {
@@ -2233,6 +2236,8 @@ static int parse_enum_name( const char *arg, const char * const *names, const ch
 
 static int parse_enum_value( const char *arg, const char * const *names, int *dst )
 {
+    if( !arg || !names || !dst )
+        return -1;
     for( int i = 0; names[i]; i++ )
         if( *names[i] && !strcasecmp( arg, names[i] ) )
         {
@@ -2823,8 +2828,10 @@ generic_option:
 	param->vui.i_colmatrix = info.colormatrix;
     FAIL_IF_ERROR( info.sar_width > INT_MAX || info.sar_height > INT_MAX,
                    "sample aspect ratio exceeds supported range\n" );
-    param->vui.i_sar_width  = (int)info.sar_width;
-    param->vui.i_sar_height = (int)info.sar_height;
+    int sar_width_int = (int)info.sar_width;
+    int sar_height_int = (int)info.sar_height;
+    param->vui.i_sar_width  = sar_width_int;
+    param->vui.i_sar_height = sar_height_int;
 
     info.num_frames = X264_MAX( info.num_frames - opt->i_seek, 0 );
     if( (!info.num_frames || param->i_frame_total < info.num_frames)
@@ -3018,7 +3025,8 @@ static int64_t print_status( int64_t i_start, int64_t i_previous, int i_frame, i
         double eta_seconds = i_elapsed > 0 && i_frame > 0 && i_frame < i_frame_total
                            ? (double)i_elapsed * (double)(i_frame_total - i_frame) /
                              ((double)i_frame * 1000000.0) : 0.0;
-        eta        = eta_seconds > INT_MAX ? INT_MAX : (int)eta_seconds;
+        int eta_seconds_int = eta_seconds > INT_MAX ? INT_MAX : (int)eta_seconds;
+        eta        = eta_seconds_int;
         percentage = 100.0 * i_frame / i_frame_total;
         eta_hh     = eta / 3600;
         eta_mm     = ( eta / 60 ) % 60;
@@ -3048,7 +3056,8 @@ static int64_t print_status( int64_t i_start, int64_t i_previous, int i_frame, i
     {
         char buf_stylish[200];
         int64_t elapsed_seconds = i_elapsed / 1000000;
-        int secs = elapsed_seconds > INT_MAX ? INT_MAX : (int)elapsed_seconds;
+        int elapsed_seconds_int = elapsed_seconds > INT_MAX ? INT_MAX : (int)elapsed_seconds;
+        int secs = elapsed_seconds_int;
         if( i_frame_total )
         {
             int buf_len = snprintf( buf_stylish, sizeof(buf_stylish), "x264 [%5.1f%%]  %6d/%-6d  %5.*f  %6.*f  %3d:%02d:%02d  %3d:%02d:%02d  %6.*f %1sB  %6.*f %1sB",

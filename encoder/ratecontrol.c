@@ -250,7 +250,8 @@ static int stats_parse_int_token( const char *p, int *dst )
         !stats_option_token_end( *end ) )
         return -1;
 
-    *dst = (int)value;
+    int parsed_value = (int)value;
+    *dst = parsed_value;
     return 0;
 }
 
@@ -274,7 +275,8 @@ static int stats_parse_int_value( const char **p, int *dst )
     if( end == *p || errno == ERANGE || value < INT_MIN || value > INT_MAX )
         return -1;
 
-    *dst = (int)value;
+    int parsed_value = (int)value;
+    *dst = parsed_value;
     *p = end;
     return 0;
 }
@@ -485,7 +487,8 @@ static int stats_parse_positive_int( const char **p, int *dst )
     if( end == *p || errno == ERANGE || value <= 0 || value > INT_MAX )
         return -1;
 
-    *dst = (int)value;
+    int parsed_value = (int)value;
+    *dst = parsed_value;
     *p = end;
     return 0;
 }
@@ -2001,7 +2004,8 @@ static int parse_zone_int( char **p, int *dst )
     value = strtol( *p, &end, 10 );
     if( end == *p || errno == ERANGE || value < INT_MIN || value > INT_MAX )
         return -1;
-    *dst = (int)value;
+    int parsed_value = (int)value;
+    *dst = parsed_value;
     *p = end;
     return 0;
 }
@@ -2163,7 +2167,8 @@ static int parse_zones( x264_t *h )
             x264_log( h, X264_LOG_ERROR, "too many zones\n" );
             goto fail;
         }
-        i_zones = (int)zone_count;
+        int zone_total = (int)zone_count;
+        i_zones = zone_total;
         size_t string_zones_size;
         if( ratecontrol_mul_size( &string_zones_size, zone_count, sizeof(*string_zones) ) )
         {
@@ -2740,8 +2745,8 @@ static NOINLINE float x264_haali_adaptive_quant( x264_t *h )
 
     /* the function is chosen such that it stays close to 0 in almost all
      * range of 0..1, and rapidly goes up to 1 near 1.0 */
-    qp_adj = (float)((double)h->rc->qpm * h->param.rc.f_aq2_strength /
-             pow( 2.0 - expf( (float)(-5e-13 * (double)total * (double)total) ), h->param.rc.f_aq2_sensitivity ));
+    qp_adj = (float)((double)h->rc->qpm * (double)h->param.rc.f_aq2_strength /
+             pow( 2.0 - (double)expf( (float)(-5e-13 * (double)total * (double)total) ), (double)h->param.rc.f_aq2_sensitivity ));
 
     /* don't adjust by more than this amount */
     qp_adj = X264_MIN( qp_adj, h->rc->qpm / 2.f );
@@ -2896,7 +2901,7 @@ int x264_ratecontrol_end( x264_t *h, int bits, int *filler )
                  h->fenc->i_frame, h->i_frame,
                  c_type, h->fenc->i_duration,
                  h->fenc->i_cpb_duration,
-                 rc->qpa_rc, h->fdec->f_qp_avg_aq,
+                 (double)rc->qpa_rc, (double)h->fdec->f_qp_avg_aq,
                  h->stat.frame.i_tex_bits,
                  h->stat.frame.i_mv_bits,
                  h->stat.frame.i_misc_bits,
@@ -2953,20 +2958,20 @@ int x264_ratecontrol_end( x264_t *h, int bits, int *filler )
     if( rc->b_abr )
     {
         if( h->sh.i_type != SLICE_TYPE_B )
-            rc->cplxr_sum += (float)bits * qp2qscale( rc->qpa_rc ) / rc->last_rceq;
+            rc->cplxr_sum += (double)bits * (double)qp2qscale( rc->qpa_rc ) / rc->last_rceq;
         else
         {
             /* Depends on the fact that B-frame's QP is an offset from the following P-frame's.
              * Not perfectly accurate with B-refs, but good enough. */
-            rc->cplxr_sum += (float)bits * qp2qscale( rc->qpa_rc ) / (rc->last_rceq * h->param.rc.f_pb_factor);
+            rc->cplxr_sum += (double)bits * (double)qp2qscale( rc->qpa_rc ) / (rc->last_rceq * (double)h->param.rc.f_pb_factor);
         }
         rc->cplxr_sum *= rc->cbr_decay;
-        rc->wanted_bits_window += h->fenc->f_duration * rc->bitrate;
+        rc->wanted_bits_window += (double)h->fenc->f_duration * rc->bitrate;
         rc->wanted_bits_window *= rc->cbr_decay;
     }
 
     if( rc->b_2pass )
-        rc->expected_bits_sum += qscale2bits( rc->rce, qp2qscale( rc->rce->new_qp ) );
+        rc->expected_bits_sum += qscale2bits( rc->rce, (double)qp2qscale( rc->rce->new_qp ) );
 
     if( h->mb.b_variable_qp )
     {
@@ -3047,10 +3052,10 @@ static double get_qscale(x264_t *h, ratecontrol_entry_t *rce, double rate_factor
     if( h->param.rc.b_mb_tree )
     {
         double timescale = (double)h->sps->vui.i_num_units_in_tick / h->sps->vui.i_time_scale;
-        q = pow( BASE_FRAME_DURATION / CLIP_DURATION((double)rce->i_duration * timescale), 1 - h->param.rc.f_qcompress );
+        q = pow( (double)BASE_FRAME_DURATION / CLIP_DURATION((double)rce->i_duration * timescale), 1.0 - (double)h->param.rc.f_qcompress );
     }
     else
-        q = pow( rce->blurred_complexity, 1 - rcc->qcompress );
+        q = pow( (double)rce->blurred_complexity, 1.0 - rcc->qcompress );
 
     // avoid NaN's in the rc_eq
     if( !isfinite(q) || rce->tex_bits + rce->mv_bits == 0 )
@@ -3067,7 +3072,7 @@ static double get_qscale(x264_t *h, ratecontrol_entry_t *rce, double rate_factor
         if( zone->b_force_qp )
             q = (double)qp2qscale( (float)zone->i_qp );
         else
-            q /= zone->f_bitrate_factor;
+            q /= (double)zone->f_bitrate_factor;
     }
 
     return q;
@@ -3268,7 +3273,7 @@ static void update_vbv_plan( x264_t *h, int overhead )
             double bits = t->rc->frame_size_planned;
             if( !t->b_thread_active )
                 continue;
-            bits = X264_MAX(bits, t->rc->frame_size_estimated);
+            bits = X264_MAX( bits, (double)t->rc->frame_size_estimated );
             rcc->buffer_fill -= bits;
             rcc->buffer_fill = X264_MAX( rcc->buffer_fill, 0 );
             rcc->buffer_fill += t->rc->buffer_rate;
@@ -3286,7 +3291,7 @@ static double clip_qscale( x264_t *h, int pict_type, double q )
     double lmin = rcc->lmin[pict_type];
     double lmax = rcc->lmax[pict_type];
     if( rcc->rate_factor_max_increment != 0.0f )
-        lmax = X264_MIN( lmax, qp2qscale( rcc->qp_novbv + rcc->rate_factor_max_increment ) );
+        lmax = X264_MIN( lmax, (double)qp2qscale( rcc->qp_novbv + rcc->rate_factor_max_increment ) );
 
     if( lmin==lmax )
         return lmin;
@@ -3326,14 +3331,14 @@ static double vbv_pass1( x264_t *h, int pict_type, double q )
             for( int iterations = 0; iterations < 1000 && terminate != 3; iterations++ )
             {
                 double frame_q[3];
-                double cur_bits = predict_size( &rcc->pred[h->sh.i_type], (float)q, (float)rcc->last_satd );
+                double cur_bits = (double)predict_size( &rcc->pred[h->sh.i_type], (float)q, (float)rcc->last_satd );
                 double buffer_fill_cur = rcc->buffer_fill - cur_bits;
                 double target_fill;
                 double total_duration = 0;
                 double last_duration = fenc_cpb_duration;
-                frame_q[0] = h->sh.i_type == SLICE_TYPE_I ? q * h->param.rc.f_ip_factor : q;
-                frame_q[1] = frame_q[0] * h->param.rc.f_pb_factor;
-                frame_q[2] = frame_q[0] / h->param.rc.f_ip_factor;
+                frame_q[0] = h->sh.i_type == SLICE_TYPE_I ? q * (double)h->param.rc.f_ip_factor : q;
+                frame_q[1] = frame_q[0] * (double)h->param.rc.f_pb_factor;
+                frame_q[2] = frame_q[0] / (double)h->param.rc.f_ip_factor;
 
                 /* Loop over the planned future frames. */
                 for( int j = 0; buffer_fill_cur >= 0 && buffer_fill_cur <= rcc->buffer_size; j++ )
@@ -3345,7 +3350,7 @@ static double vbv_pass1( x264_t *h, int pict_type, double q )
                     if( i_type == X264_TYPE_AUTO )
                         break;
                     i_type = IS_X264_TYPE_I( i_type ) ? SLICE_TYPE_I : IS_X264_TYPE_B( i_type ) ? SLICE_TYPE_B : SLICE_TYPE_P;
-                    cur_bits = predict_size( &rcc->pred[i_type], (float)frame_q[i_type], (float)i_satd );
+                    cur_bits = (double)predict_size( &rcc->pred[i_type], (float)frame_q[i_type], (float)i_satd );
                     buffer_fill_cur -= cur_bits;
                     last_duration = h->fenc->f_planned_cpb_duration[j];
                 }
@@ -3380,7 +3385,7 @@ static double vbv_pass1( x264_t *h, int pict_type, double q )
 
             /* Now a hard threshold to make sure the frame fits in VBV.
              * This one is mostly for I-frames. */
-            double bits = predict_size( &rcc->pred[h->sh.i_type], (float)q, (float)rcc->last_satd );
+            double bits = (double)predict_size( &rcc->pred[h->sh.i_type], (float)q, (float)rcc->last_satd );
             /* For small VBVs, allow the frame to use up the entire VBV. */
             double max_fill_factor = h->param.rc.i_vbv_buffer_size >= 5*h->param.rc.i_vbv_max_bitrate / rcc->fps ? 2 : 1;
             /* For single-frame VBVs, request that the frame use up the entire VBV. */
@@ -3405,9 +3410,9 @@ static double vbv_pass1( x264_t *h, int pict_type, double q )
         if( h->sh.i_type == SLICE_TYPE_P && !rcc->single_frame_vbv )
         {
             int nb = rcc->bframes;
-            double bits = predict_size( &rcc->pred[h->sh.i_type], (float)q, (float)rcc->last_satd );
+            double bits = (double)predict_size( &rcc->pred[h->sh.i_type], (float)q, (float)rcc->last_satd );
             double pbbits = bits;
-            double bbits = predict_size( rcc->pred_b_from_p, (float)(q * h->param.rc.f_pb_factor), (float)rcc->last_satd );
+            double bbits = (double)predict_size( rcc->pred_b_from_p, (float)(q * (double)h->param.rc.f_pb_factor), (float)rcc->last_satd );
             double space;
             double bframe_cpb_duration = 0;
             double minigop_cpb_duration;
@@ -3477,7 +3482,7 @@ static float rate_estimate_qscale( x264_t *h )
             q1 -= (float)(rcc->pb_offset / 2.0);
 
         if( i0 && i1 )
-            q = (float)((q0 + q1) / 2.0f + rcc->ip_offset);
+            q = (float)((double)(q0 + q1) / 2.0 + rcc->ip_offset);
         else if( i0 )
             q = q1;
         else if( i1 )
@@ -3493,9 +3498,9 @@ static float rate_estimate_qscale( x264_t *h )
         rcc->qp_novbv = (float)q;
         q = qp2qscale( (float)q );
         if( rcc->b_2pass )
-            rcc->frame_size_planned = qscale2bits( &rce, q );
+            rcc->frame_size_planned = qscale2bits( &rce, (double)q );
         else
-            rcc->frame_size_planned = predict_size( rcc->pred_b_from_p, (float)q, (float)h->fref[1][h->i_ref[1]-1]->i_satd );
+            rcc->frame_size_planned = (double)predict_size( rcc->pred_b_from_p, (float)q, (float)h->fref[1][h->i_ref[1]-1]->i_satd );
 
         /* Apply MinCR and buffer fill restrictions */
         if( rcc->b_vbv )
@@ -3503,7 +3508,7 @@ static float rate_estimate_qscale( x264_t *h )
             double frame_size_maximum = X264_MIN( rcc->frame_size_maximum, X264_MAX( rcc->buffer_fill, 0.001 ) );
             if( rcc->frame_size_planned > frame_size_maximum )
             {
-                q = (float)(q * rcc->frame_size_planned / frame_size_maximum);
+                q = (float)((double)q * rcc->frame_size_planned / frame_size_maximum);
                 rcc->frame_size_planned = frame_size_maximum;
             }
         }
@@ -3528,7 +3533,7 @@ static float rate_estimate_qscale( x264_t *h )
                 double bits = t->rc->frame_size_planned;
                 if( !t->b_thread_active )
                     continue;
-                bits = X264_MAX(bits, t->rc->frame_size_estimated);
+                bits = X264_MAX( bits, (double)t->rc->frame_size_estimated );
                 predicted_bits += bits;
             }
         }
@@ -3550,38 +3555,38 @@ static float rate_estimate_qscale( x264_t *h )
 
             diff = predicted_bits - rce.expected_bits;
             q = (float)rce.new_qscale;
-            q = (float)(q / x264_clip3f( (abr_buffer - diff) / abr_buffer, .5, 2 ));
+            q = (float)((double)q / x264_clip3f( (abr_buffer - diff) / abr_buffer, 0.5, 2.0 ));
             if( h->i_frame >= rcc->fps && rcc->expected_bits_sum >= 1 )
             {
                 /* Adjust quant based on the difference between
                  * achieved and expected bitrate so far */
                 double cur_time = (double)h->i_frame / rcc->num_entries;
                 double w = x264_clip3f( cur_time*100, 0.0, 1.0 );
-                q = (float)(q * pow( (double)total_bits / rcc->expected_bits_sum, w ));
+                q = (float)((double)q * pow( (double)total_bits / rcc->expected_bits_sum, w ));
             }
             rcc->qp_novbv = qscale2qp( q );
             if( rcc->b_vbv )
             {
                 /* Do not overflow vbv */
-                double expected_size = qscale2bits( &rce, q );
+                double expected_size = qscale2bits( &rce, (double)q );
                 double expected_vbv = rcc->buffer_fill + rcc->buffer_rate - expected_size;
                 double expected_fullness = rce.expected_vbv / rcc->buffer_size;
-                double qmax = q*(2 - expected_fullness);
+                double qmax = (double)q * (2.0 - expected_fullness);
                 double size_constraint = 1 + expected_fullness;
                 qmax = X264_MAX( qmax, rce.new_qscale );
                 if( expected_fullness < .05 )
                     qmax = lmax;
                 qmax = X264_MIN(qmax, lmax);
-                while( ((expected_vbv < rce.expected_vbv/size_constraint) && (q < qmax)) ||
-                        ((expected_vbv < 0) && (q < lmax)))
+                while( ((expected_vbv < rce.expected_vbv/size_constraint) && ((double)q < qmax)) ||
+                        ((expected_vbv < 0) && ((double)q < lmax)))
                 {
-                    q = (float)(q * 1.05);
-                    expected_size = qscale2bits(&rce, q);
+                    q = (float)((double)q * 1.05);
+                    expected_size = qscale2bits( &rce, (double)q );
                     expected_vbv = rcc->buffer_fill + rcc->buffer_rate - expected_size;
                 }
                 rcc->last_satd = x264_rc_analyse_slice( h );
             }
-            q = (float)x264_clip3f( q, lmin, lmax );
+            q = (float)x264_clip3f( (double)q, lmin, lmax );
         }
         else /* 1pass ABR */
         {
@@ -3600,7 +3605,7 @@ static float rate_estimate_qscale( x264_t *h )
             rcc->last_satd = x264_rc_analyse_slice( h );
             rcc->short_term_cplxsum *= 0.5;
             rcc->short_term_cplxcount *= 0.5;
-            rcc->short_term_cplxsum += rcc->last_satd / (CLIP_DURATION(h->fenc->f_duration) / BASE_FRAME_DURATION);
+            rcc->short_term_cplxsum += rcc->last_satd / (CLIP_DURATION(h->fenc->f_duration) / (double)BASE_FRAME_DURATION);
             rcc->short_term_cplxcount ++;
 
             rce.tex_bits = rcc->last_satd;
@@ -3635,7 +3640,7 @@ static float rate_estimate_qscale( x264_t *h )
                     {
                         abr_buffer *= X264_MAX( 1, sqrt( time_done ) );
                         overflow = x264_clip3f( 1.0 + (predicted_bits - wanted_bits) / abr_buffer, .5, 2 );
-                        q = (float)(q * overflow);
+                        q = (float)((double)q * overflow);
                     }
                 }
             }
@@ -3660,7 +3665,7 @@ static float rate_estimate_qscale( x264_t *h )
                     else if( overflow < 0.9 )
                         lmin /= rcc->lstep;
 
-                    q = (float)x264_clip3f(q, lmin, lmax);
+                    q = (float)x264_clip3f( (double)q, lmin, lmax );
                 }
             }
             else if( h->param.rc.i_rc_method == X264_RC_CRF && rcc->qcompress != 1 )
@@ -3669,19 +3674,19 @@ static float rate_estimate_qscale( x264_t *h )
             }
             rcc->qp_novbv = qscale2qp( q );
 
-            q = (float)vbv_pass1( h, pict_type, q );
+            q = (float)vbv_pass1( h, pict_type, (double)q );
         }
 
         rcc->last_qscale_for[pict_type] =
-        rcc->last_qscale = q;
+        rcc->last_qscale = (double)q;
 
         if( !(rcc->b_2pass && !rcc->b_vbv) && h->fenc->i_frame == 0 )
-            rcc->last_qscale_for[SLICE_TYPE_P] = q * h->param.rc.f_ip_factor;
+            rcc->last_qscale_for[SLICE_TYPE_P] = (double)q * (double)h->param.rc.f_ip_factor;
 
         if( rcc->b_2pass )
-            rcc->frame_size_planned = qscale2bits( &rce, q );
+            rcc->frame_size_planned = qscale2bits( &rce, (double)q );
         else
-            rcc->frame_size_planned = predict_size( &rcc->pred[h->sh.i_type], q, (float)rcc->last_satd );
+            rcc->frame_size_planned = (double)predict_size( &rcc->pred[h->sh.i_type], q, (float)rcc->last_satd );
 
         /* Apply MinCR and buffer fill restrictions */
         if( rcc->b_vbv )
@@ -3689,7 +3694,7 @@ static float rate_estimate_qscale( x264_t *h )
             double frame_size_maximum = X264_MIN( rcc->frame_size_maximum, X264_MAX( rcc->buffer_fill, 0.001 ) );
             if( rcc->frame_size_planned > frame_size_maximum )
             {
-                q = (float)(q * rcc->frame_size_planned / frame_size_maximum);
+                q = (float)((double)q * rcc->frame_size_planned / frame_size_maximum);
                 rcc->frame_size_planned = frame_size_maximum;
             }
 
@@ -3741,7 +3746,7 @@ void x264_threads_distribute_ratecontrol( x264_t *h )
             int size = 0;
             for( row = t->i_threadslice_start; row < t->i_threadslice_end; row++ )
                 size += h->fdec->i_row_satd[row];
-            t->rc->slice_size_planned = predict_size( &rc->pred[h->sh.i_type + (i+1)*5], qscale, (float)size );
+            t->rc->slice_size_planned = (double)predict_size( &rc->pred[h->sh.i_type + (i+1)*5], qscale, (float)size );
         }
         else
             t->rc->slice_size_planned = 0;
@@ -3757,7 +3762,7 @@ void x264_threads_distribute_ratecontrol( x264_t *h )
             {
                 x264_t *t = h->thread[i];
                 float max_frame_error = (float)x264_clip3f( 1.0 / (double)(t->i_threadslice_end - t->i_threadslice_start), 0.05, 0.25 );
-                t->rc->slice_size_planned += 2 * max_frame_error * rc->frame_size_planned;
+                t->rc->slice_size_planned += 2.0 * (double)max_frame_error * rc->frame_size_planned;
             }
             threads_normalize_predictors( h );
         }
@@ -3919,8 +3924,8 @@ static int vbv_pass2( x264_t *h, double all_available_bits )
     double adjustment;
     double prev_bits = 0;
     int t0, t1;
-    double qscale_min = qp2qscale( (float)h->param.rc.i_qp_min[h->sh.i_type] );
-    double qscale_max = qp2qscale( (float)h->param.rc.i_qp_max[h->sh.i_type] );
+    double qscale_min = (double)qp2qscale( (float)h->param.rc.i_qp_min[h->sh.i_type] );
+    double qscale_max = (double)qp2qscale( (float)h->param.rc.i_qp_max[h->sh.i_type] );
     size_t fills_size;
     int adj_min, adj_max;
     if( ratecontrol_mul_size( &fills_size, (size_t)rcc->num_entries + 1, sizeof(double) ) )
@@ -3937,7 +3942,7 @@ static int vbv_pass2( x264_t *h, double all_available_bits )
         if( expected_bits != 0.0 )
         {   /* not first iteration */
             adjustment = X264_MAX(X264_MIN(expected_bits / all_available_bits, 0.999), 0.9);
-            fills[-1] = rcc->buffer_size * h->param.rc.f_vbv_buffer_init;
+            fills[-1] = rcc->buffer_size * (double)h->param.rc.f_vbv_buffer_init;
             t0 = 0;
             /* fix overflows */
             adj_min = 1;
@@ -3948,7 +3953,7 @@ static int vbv_pass2( x264_t *h, double all_available_bits )
             }
         }
 
-        fills[-1] = rcc->buffer_size * (1. - h->param.rc.f_vbv_buffer_init);
+        fills[-1] = rcc->buffer_size * (1.0 - (double)h->param.rc.f_vbv_buffer_init);
         t0 = 0;
         /* fix underflows -- should be done after overflow, as we'd better undersize target than underflowing VBV */
         adj_max = 1;
@@ -3982,8 +3987,8 @@ static int init_pass2( x264_t *h )
     duration *= timescale;
     uint64_t all_available_bits = (uint64_t)((double)h->param.rc.i_bitrate * 1000. * duration);
     double rate_factor, step_mult;
-    double qblur = h->param.rc.f_qblur;
-    double cplxblur = h->param.rc.f_complexity_blur;
+    double qblur = (double)h->param.rc.f_qblur;
+    double cplxblur = (double)h->param.rc.f_complexity_blur;
     const int filter_size = (int)(qblur*4) | 1;
     double expected_bits;
     double *qscale, *blurred_qscale;
@@ -4021,8 +4026,8 @@ static int init_pass2( x264_t *h )
         for( int j = 1; j < cplxblur*2 && j < rcc->num_entries-i; j++ )
         {
             ratecontrol_entry_t *rcj = &rcc->entry[i+j];
-            double frame_duration = CLIP_DURATION((double)rcj->i_duration * timescale) / BASE_FRAME_DURATION;
-            weight *= 1 - pow( (float)rcj->i_count / (float)rcc->nmb, 2 );
+            double frame_duration = CLIP_DURATION((double)rcj->i_duration * timescale) / (double)BASE_FRAME_DURATION;
+            weight *= 1.0 - pow( (double)rcj->i_count / rcc->nmb, 2.0 );
             if( weight < .0001 )
                 break;
             gaussian_weight = weight * exp( -j*j/200.0 );
@@ -4034,11 +4039,11 @@ static int init_pass2( x264_t *h )
         for( int j = 0; j <= cplxblur*2 && j <= i; j++ )
         {
             ratecontrol_entry_t *rcj = &rcc->entry[i-j];
-            double frame_duration = CLIP_DURATION((double)rcj->i_duration * timescale) / BASE_FRAME_DURATION;
+            double frame_duration = CLIP_DURATION((double)rcj->i_duration * timescale) / (double)BASE_FRAME_DURATION;
             gaussian_weight = weight * exp( -j*j/200.0 );
             weight_sum += gaussian_weight;
             cplx_sum += gaussian_weight * (qscale2bits( rcj, 1 ) - rcj->misc_bits) / frame_duration;
-            weight *= 1 - pow( (float)rcj->i_count / (float)rcc->nmb, 2 );
+            weight *= 1.0 - pow( (double)rcj->i_count / rcc->nmb, 2.0 );
             if( weight < .0001 )
                 break;
         }
@@ -4147,22 +4152,22 @@ static int init_pass2( x264_t *h )
         double avgq = 0;
         for( int i = 0; i < rcc->num_entries; i++ )
             avgq += rcc->entry[i].new_qscale;
-        avgq = qscale2qp( (float)(avgq / (double)rcc->num_entries) );
+        avgq = (double)qscale2qp( (float)(avgq / (double)rcc->num_entries) );
 
         if( expected_bits > (double)all_available_bits || !rcc->b_vbv )
             x264_log( h, X264_LOG_WARNING, "Error: 2pass curve failed to converge\n" );
         x264_log( h, X264_LOG_WARNING, "target: %.2f kbit/s, expected: %.2f kbit/s, avg QP: %.4f\n",
-                  (float)h->param.rc.i_bitrate,
+                  (double)h->param.rc.i_bitrate,
                   expected_bits * rcc->fps / ((double)rcc->num_entries * 1000.),
                   avgq );
-        if( expected_bits < (double)all_available_bits && avgq < (float)h->param.rc.i_qp_min[h->sh.i_type] + 2.f )
+        if( expected_bits < (double)all_available_bits && avgq < (double)h->param.rc.i_qp_min[h->sh.i_type] + 2.0 )
         {
             if( h->param.rc.i_qp_min[h->sh.i_type] > 0 )
                 x264_log( h, X264_LOG_WARNING, "try reducing target bitrate or reducing qp_min (currently %d)\n", h->param.rc.i_qp_min[h->sh.i_type] );
             else
                 x264_log( h, X264_LOG_WARNING, "try reducing target bitrate\n" );
         }
-        else if( expected_bits > (double)all_available_bits && avgq > (float)h->param.rc.i_qp_max[h->sh.i_type] - 2.f )
+        else if( expected_bits > (double)all_available_bits && avgq > (double)h->param.rc.i_qp_max[h->sh.i_type] - 2.0 )
         {
             if( h->param.rc.i_qp_max[h->sh.i_type] < QP_MAX )
                 x264_log( h, X264_LOG_WARNING, "try increasing target bitrate or increasing qp_max (currently %d)\n", h->param.rc.i_qp_max[h->sh.i_type] );

@@ -487,7 +487,8 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     if( append_sample_data( p_mp4, sei, sei_size ) )
         return -1;
 
-    return (int)(header_size + sei_size);
+    int total_header_size = (int)(header_size + sei_size);
+    return total_header_size;
 }
 
 static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_t *p_picture )

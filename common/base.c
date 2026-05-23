@@ -374,7 +374,8 @@ REALIGN_STACK int x264_picture_alloc( x264_picture_t *pic, int i_csp, int i_widt
         int64_t plane_size = plane_height * stride;
         if( frame_size > INT64_MAX - plane_size )
             return -1;
-        staged_pic.img.i_stride[i] = (int)stride;
+        int plane_stride = (int)stride;
+        staged_pic.img.i_stride[i] = plane_stride;
         plane_offset[i] = frame_size;
         frame_size += plane_size;
     }
@@ -1282,7 +1283,8 @@ static int parse_int_end_base( const char *str, char **end, int base, int *dst )
     if( *end == str || errno == ERANGE || value < INT_MIN || value > INT_MAX )
         return -1;
 
-    *dst = (int)value;
+    int parsed_value = (int)value;
+    *dst = parsed_value;
     return 0;
 }
 
@@ -1883,7 +1885,8 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
                 }
                 else
                 {
-                    p->i_fps_num = (int)fps_num;
+                    int parsed_fps_num = (int)fps_num;
+                    p->i_fps_num = parsed_fps_num;
                     p->i_fps_den = 1000;
                 }
             }
@@ -2631,7 +2634,8 @@ char *x264_param2string( x264_param_t *p, int b_res )
         size_t zones_len = strlen( p->rc.psz_zones );
         if( zones_len > (size_t)(INT_MAX - len) )
             return NULL;
-        len += (int)zones_len;
+        int zones_len_int = (int)zones_len;
+        len += zones_len_int;
     }
     buf = s = x264_malloc( len );
     if( !buf )

@@ -108,7 +108,8 @@ static int sei_version_add_len( int *length, size_t add )
 {
     if( add > (size_t)(INT_MAX - *length) )
         return -1;
-    *length += (int)add;
+    int add_length = (int)add;
+    *length += add_length;
     return 0;
 }
 

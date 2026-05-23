@@ -78,6 +78,8 @@ static int x264_audio_encoder_entry_is_lavc( const audio_encoder_entry_t UNUSED 
 
 static int x264_audio_encoder_name_matches( const audio_encoder_entry_t *entry, const char *name, int mode )
 {
+    if( !entry || !name || !x264_audio_encoder_entry_valid( entry ) )
+        return 0;
     if( !strcmp( name, mode == QUERY_CODEC ? entry->codec : entry->name ) )
         return 1;
     if( mode == QUERY_ENCODER && x264_audio_encoder_entry_is_lavc( entry ) &&
