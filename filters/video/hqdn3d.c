@@ -266,7 +266,7 @@ static void denoise_temporal(unsigned char *frame, unsigned short *frame_ant,
     unsigned int pixel_dst;
     for(y = 0; y < h; y++) {
         for(x = 0; x < w; x++) {
-            pixel_dst = lpm(frame_ant[x]<<8, frame[x]<<16, temporal);
+            pixel_dst = lpm( (unsigned)frame_ant[x] << 8, (unsigned)frame[x] << 16, temporal );
             frame_ant[x] = ((pixel_dst+0x1000007F)>>8);
             frame[x] = ((pixel_dst+0x10007FFF)>>16);
         }
@@ -282,25 +282,25 @@ static void denoise_spacial(unsigned char *frame, unsigned int *line_ant,
     unsigned int pixel_ant, pixel_dst;
 
     /* First pixel has no left nor top neighbor. */
-    pixel_dst = line_ant[0] = pixel_ant = frame[0]<<16;
+    pixel_dst = line_ant[0] = pixel_ant = (unsigned)frame[0] << 16;
     frame[0] = ((pixel_dst+0x10007FFF)>>16);
 
     /* First line has no top neighbor, only left. */
     for(x = 1; x < w; x++) {
-        pixel_dst = line_ant[x] = lpm(pixel_ant, frame[x]<<16, spacial);
+        pixel_dst = line_ant[x] = lpm( pixel_ant, (unsigned)frame[x] << 16, spacial );
         frame[x] = ((pixel_dst+0x10007FFF)>>16);
     }
 
     for(y = 1; y < h; y++) {
         line_offs += stride;
         /* First pixel on each line doesn't have previous pixel */
-        pixel_ant = frame[line_offs]<<16;
+        pixel_ant = (unsigned)frame[line_offs] << 16;
         pixel_dst = line_ant[0] = lpm(line_ant[0], pixel_ant, spacial);
         frame[line_offs] = ((pixel_dst+0x10007FFF)>>16);
 
         for(x = 1; x < w; x++) {
             /* The rest are normal */
-            pixel_ant = lpm(pixel_ant, frame[line_offs+x]<<16, spacial);
+            pixel_ant = lpm( pixel_ant, (unsigned)frame[line_offs+x] << 16, spacial );
             pixel_dst = line_ant[x] = lpm(line_ant[x], pixel_ant, spacial);
             frame[line_offs+x] = ((pixel_dst+0x10007FFF)>>16);
         }
@@ -324,37 +324,37 @@ static void denoise(unsigned char *frame, unsigned int *line_ant,
     }
 
     /* First pixel has no left nor top neightbour. Only previous frame */
-    line_ant[0] = pixel_ant = frame[0]<<16;
-    pixel_dst = lpm(frame_ant[0]<<8, pixel_ant, temporal);
-    frame_ant[0] = ((pixel_dst+0x1000007F)/256);
-    frame[0] = ((pixel_dst+0x10007FFF)/65536);
+    line_ant[0] = pixel_ant = (unsigned)frame[0] << 16;
+    pixel_dst = lpm( (unsigned)frame_ant[0] << 8, pixel_ant, temporal );
+    frame_ant[0] = (pixel_dst + 0x1000007Fu) >> 8;
+    frame[0] = (pixel_dst + 0x10007FFFu) >> 16;
 
     /* Fist line has no top neightbour. Only left one for each pixel and
      * last frame */
     for (x = 1; x < w; x++){
-        line_ant[x] = pixel_ant = lpm(pixel_ant, frame[x]<<16, spacial);
-        pixel_dst = lpm(frame_ant[x]<<8, pixel_ant, temporal);
-        frame_ant[x] = ((pixel_dst+0x1000007F)/256);
-        frame[x] = ((pixel_dst+0x10007FFF)/65536);
+        line_ant[x] = pixel_ant = lpm( pixel_ant, (unsigned)frame[x] << 16, spacial );
+        pixel_dst = lpm( (unsigned)frame_ant[x] << 8, pixel_ant, temporal );
+        frame_ant[x] = (pixel_dst + 0x1000007Fu) >> 8;
+        frame[x] = (pixel_dst + 0x10007FFFu) >> 16;
     }
 
     for (y = 1; y < h; y++){
         unsigned short* line_prev = &frame_ant[y*w];
         line_offs += stride;
         /* First pixel on each line doesn't have previous pixel */
-        pixel_ant = frame[line_offs]<<16;
+        pixel_ant = (unsigned)frame[line_offs] << 16;
         line_ant[0] = lpm(line_ant[0], pixel_ant, spacial);
-        pixel_dst = lpm(line_prev[0]<<8, line_ant[0], temporal);
-        line_prev[0] = ((pixel_dst+0x1000007F)/256);
-        frame[line_offs] = ((pixel_dst+0x10007FFF)/65536);
+        pixel_dst = lpm( (unsigned)line_prev[0] << 8, line_ant[0], temporal );
+        line_prev[0] = (pixel_dst + 0x1000007Fu) >> 8;
+        frame[line_offs] = (pixel_dst + 0x10007FFFu) >> 16;
 
         for (x = 1; x < w; x++){
             /* The rest are normal */
-            pixel_ant = lpm(pixel_ant, frame[line_offs+x]<<16, spacial);
-            line_ant[x] = lpm(line_ant[x], pixel_ant, spacial);
-            pixel_dst = lpm(line_prev[x]<<8, line_ant[x], temporal);
-            line_prev[x] = ((pixel_dst+0x1000007F)/256);
-            frame[line_offs+x] = ((pixel_dst+0x10007FFF)/65536);
+            pixel_ant = lpm( pixel_ant, (unsigned)frame[line_offs+x] << 16, spacial );
+            line_ant[x] = lpm( line_ant[x], pixel_ant, spacial );
+            pixel_dst = lpm( (unsigned)line_prev[x] << 8, line_ant[x], temporal );
+            line_prev[x] = (pixel_dst + 0x1000007Fu) >> 8;
+            frame[line_offs+x] = (pixel_dst + 0x10007FFFu) >> 16;
         }
     }
 }
@@ -364,7 +364,7 @@ static void init_data(uint8_t *source, unsigned short *dest,
 {
     for(int y = 0; y < height; y++)
         for(int x = 0; x < width; x++)
-            dest[y*width+x] = source[y*stride+x]<<8;
+            dest[y*width+x] = (unsigned)source[y*stride+x] << 8;
 }
 
 static int get_frame(hnd_t handle, cli_pic_t *out, int frame)

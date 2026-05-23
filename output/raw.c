@@ -66,10 +66,15 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
         add_payload_size( &size, p_nal[1].i_payload ) ||
         add_payload_size( &size, p_nal[2].i_payload ) )
         return -1;
+    if( (p_nal[0].i_payload && !p_nal[0].p_payload) ||
+        (p_nal[1].i_payload && !p_nal[1].p_payload) ||
+        (p_nal[2].i_payload && !p_nal[2].p_payload) )
+        return -1;
     if( !size )
         return 0;
-    if( !p_nal[0].p_payload || fwrite( p_nal[0].p_payload, (size_t)size, 1, (FILE*)handle ) != 1 )
-        return -1;
+    for( int i = 0; i < 3; i++ )
+        if( p_nal[i].i_payload && fwrite( p_nal[i].p_payload, (size_t)p_nal[i].i_payload, 1, (FILE*)handle ) != 1 )
+            return -1;
     return size;
 }
 

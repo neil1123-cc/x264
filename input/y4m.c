@@ -195,7 +195,9 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     /* Read header */
     for( i = 0; i < Y4M_MAX_HEADER; i++ )
     {
-        header[i] = fgetc( h->fh );
+        int c = fgetc( h->fh );
+        FAIL_IF_ERROR_CLEANUP( c == EOF, "bad sequence header length\n" );
+        header[i] = c;
         if( header[i] == '\n' )
         {
             /* Add a space after last option. Makes parsing "444" vs
@@ -360,14 +362,16 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     const x264_cli_csp_t *csp = x264_cli_get_csp( updated_info.csp );
     FAIL_IF_ERROR_CLEANUP( !csp, "colorspace unhandled\n" );
 
+    int pixel_depth = x264_cli_csp_depth_factor( updated_info.csp );
+    FAIL_IF_ERROR_CLEANUP( pixel_depth <= 0, "invalid pixel depth\n" );
     for( i = 0; i < csp->planes; i++ )
     {
-        h->plane_size[i] = x264_cli_pic_plane_size( updated_info.csp, updated_info.width, updated_info.height, i );
-        h->frame_size += h->plane_size[i];
+        int64_t plane_size = x264_cli_pic_plane_size( updated_info.csp, updated_info.width, updated_info.height, i );
+        FAIL_IF_ERROR_CLEANUP( plane_size <= 0 || h->frame_size > INT64_MAX - plane_size, "invalid frame size\n" );
+        h->frame_size += plane_size;
         /* x264_cli_pic_plane_size returns the size in bytes, we need the value in pixels from here on */
-        h->plane_size[i] /= x264_cli_csp_depth_factor( updated_info.csp );
+        h->plane_size[i] = plane_size / pixel_depth;
     }
-    FAIL_IF_ERROR_CLEANUP( h->frame_size <= 0, "invalid frame size\n" );
 
     if( x264_is_regular_file( h->fh ) )
     {
@@ -381,6 +385,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
             len++;
         FAIL_IF_ERROR_CLEANUP( len > Y4M_MAX_HEADER || len < sizeof(Y4M_FRAME_MAGIC) || c == EOF, "bad frame header length\n" );
         h->frame_header_len = (int)len;
+        FAIL_IF_ERROR_CLEANUP( h->frame_size > INT64_MAX - (int64_t)len, "invalid frame size\n" );
         h->frame_size += (int64_t)len;
 
         FAIL_IF_ERROR_CLEANUP( fseek( h->fh, 0, SEEK_END ), "unable to seek input file\n" );
@@ -445,9 +450,10 @@ static int read_frame_internal( cli_pic_t *pic, y4m_hnd_t *h, int bit_depth_uc )
         header = header_buf;
         if( fread( header, 1, slen, h->fh ) != slen )
             return -1;
-        while( i <= Y4M_MAX_HEADER && fgetc( h->fh ) != '\n' )
+        int c;
+        while( i <= Y4M_MAX_HEADER && (c = fgetc( h->fh )) != '\n' && c != EOF )
             i++;
-        FAIL_IF_ERROR( i > Y4M_MAX_HEADER, "bad frame header length\n" );
+        FAIL_IF_ERROR( i > Y4M_MAX_HEADER || c == EOF, "bad frame header length\n" );
     }
     FAIL_IF_ERROR( memcmp( header, Y4M_FRAME_MAGIC, slen ), "bad frame header magic\n" );
 
@@ -472,7 +478,7 @@ static int read_frame_internal( cli_pic_t *pic, y4m_hnd_t *h, int bit_depth_uc )
             int64_t pixel_count = h->plane_size[i];
             int lshift = 16 - h->bit_depth;
             for( int64_t j = 0; j < pixel_count; j++ )
-                plane[j] = plane[j] << lshift;
+                plane[j] = (unsigned)plane[j] << lshift;
         }
     }
     return 0;

@@ -905,6 +905,10 @@ run_param_list_guard_smoke()
 #include <string.h>
 
 #include "x264.h"
+#include "common/base.h"
+
+int x264_generic_device_check( x264_param_t *param, const char *device, int device_mask );
+int x264_param_restrict_device( x264_param_t *param, int i_profile, const char *device );
 
 struct guard_allocation
 {
@@ -1080,6 +1084,12 @@ static int expect_apply_profile_failure_keeps_values( void )
 {
     x264_param_t param;
 
+    if( x264_param_apply_profile( NULL, "baseline", NULL ) >= 0 )
+    {
+        fprintf( stderr, "NULL profile param was accepted\n" );
+        return -1;
+    }
+
     x264_param_default( &param );
     int profile_before = param.i_profile;
     int level_before = param.i_level_idc;
@@ -1133,10 +1143,53 @@ static int expect_apply_profile_failure_keeps_values( void )
     return 0;
 }
 
+static int expect_restrict_device_failure_keeps_values( void )
+{
+    x264_param_t param;
+
+    if( x264_param_restrict_device( NULL, 0, "bluray" ) >= 0 ||
+        x264_param_restrict_device( &param, 0, NULL ) >= 0 )
+    {
+        fprintf( stderr, "NULL restrict device input was accepted\n" );
+        return -1;
+    }
+
+    x264_param_default( &param );
+    int level_before = param.i_level_idc;
+    int level_force_before = param.b_level_force;
+    int bluray_before = param.b_bluray_compat;
+    int vbv_maxrate_before = param.rc.i_vbv_max_bitrate;
+    int vbv_bufsize_before = param.rc.i_vbv_buffer_size;
+    int ret = x264_param_restrict_device( &param, 0, "bluray,baddevice" );
+    if( ret >= 0 ||
+        param.i_level_idc != level_before ||
+        param.b_level_force != level_force_before ||
+        param.b_bluray_compat != bluray_before ||
+        param.rc.i_vbv_max_bitrate != vbv_maxrate_before ||
+        param.rc.i_vbv_buffer_size != vbv_bufsize_before )
+    {
+        fprintf( stderr, "failed restrict device parse changed values: ret %d level %d -> %d level-force %d -> %d bluray %d -> %d vbv %d/%d -> %d/%d\n",
+                 ret, level_before, param.i_level_idc,
+                 level_force_before, param.b_level_force,
+                 bluray_before, param.b_bluray_compat,
+                 vbv_maxrate_before, vbv_bufsize_before,
+                 param.rc.i_vbv_max_bitrate, param.rc.i_vbv_buffer_size );
+        return -1;
+    }
+
+    return 0;
+}
+
 static int expect_failed_default_preset_tune_keeps_values( void )
 {
     x264_param_t baseline;
     x264_param_t param;
+
+    if( x264_param_default_preset( NULL, "fast", NULL ) >= 0 )
+    {
+        fprintf( stderr, "NULL default preset param was accepted\n" );
+        return -1;
+    }
 
     if( x264_param_default_preset( &baseline, "fast", NULL ) )
     {
@@ -1798,6 +1851,7 @@ int main( void )
         { "b-pyramid", "2" },
         { "fps", "25" },
         { "fps", "2147484" },
+        { "fps", "2147483.646" },
         { "fps", "30000/1001" },
         { "threads", "auto" },
         { "threads", "1" },
@@ -1885,6 +1939,7 @@ int main( void )
         { "fps", "25/0" },
         { "fps", "nan" },
         { "fps", "inf" },
+        { "fps", "2147483.6466" },
         { "vbv-init", "nan" },
         { "vbv-init", "inf" },
         { "aq2-strength", "inf" },
@@ -1981,6 +2036,52 @@ int main( void )
 #endif
     };
 
+    x264_picture_init( NULL );
+    x264_param_default( NULL );
+    x264_param_apply_fastfirstpass( NULL );
+    x264_param_cleanup( NULL );
+    x264_picture_clean( NULL );
+    x264_reduce_fraction( NULL, NULL );
+    x264_reduce_fraction64( NULL, NULL );
+    x264_ntsc_fps( NULL, NULL );
+    if( x264_generic_device_check( NULL, "dxva", 0 ) >= 0 ||
+        x264_generic_device_check( NULL, NULL, 0 ) >= 0 )
+    {
+        fprintf( stderr, "NULL generic device check was accepted\n" );
+        return 1;
+    }
+    x264_nal_encode( NULL, NULL, NULL );
+    x264_encoder_parameters( NULL, NULL );
+    x264_encoder_close( NULL );
+    x264_encoder_intra_refresh( NULL );
+
+    if( x264_slurp_file( NULL ) ||
+        x264_param_strdup( NULL, "x" ) ||
+        x264_param_strdup( NULL, NULL ) ||
+        x264_param2string( NULL, 0 ) )
+    {
+        fprintf( stderr, "NULL base helper input was accepted\n" );
+        return 1;
+    }
+
+    if( x264_encoder_open( NULL ) ||
+        x264_encoder_reconfig( NULL, NULL ) >= 0 ||
+        x264_encoder_headers( NULL, NULL, NULL ) >= 0 ||
+        x264_encoder_encode( NULL, NULL, NULL, NULL, NULL ) >= 0 ||
+        x264_encoder_delayed_frames( NULL ) != 0 ||
+        x264_encoder_maximum_delayed_frames( NULL ) != 0 ||
+        x264_encoder_invalidate_reference( NULL, 0 ) >= 0 )
+    {
+        fprintf( stderr, "NULL encoder API was accepted\n" );
+        return 1;
+    }
+
+    if( x264_param_parse( NULL, "threads", "1" ) != X264_PARAM_BAD_VALUE )
+    {
+        fprintf( stderr, "NULL param parse target was accepted\n" );
+        return 1;
+    }
+
     for( size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++ )
         if( expect_guarded_value( cases[i].name, cases[i].value, 0 ) )
             return 1;
@@ -1996,6 +2097,8 @@ int main( void )
         return 1;
 #endif
     if( expect_apply_profile_failure_keeps_values() )
+        return 1;
+    if( expect_restrict_device_failure_keeps_values() )
         return 1;
     if( expect_failed_default_preset_tune_keeps_values() )
         return 1;
@@ -2130,6 +2233,9 @@ int main( void )
         expect_unchanged_int_value( "frame-packing", "0x", "1", offsetof( x264_param_t, i_frame_packing ) ) ||
         expect_unchanged_int_value( "level", "4.1x", "4.1", offsetof( x264_param_t, i_level_idc ) ) ||
         expect_failed_parse_keeps_two_uint32_values( "fps", "25/0", "30000/1001",
+                                                     offsetof( x264_param_t, i_fps_num ),
+                                                     offsetof( x264_param_t, i_fps_den ) ) ||
+        expect_failed_parse_keeps_two_uint32_values( "fps", "2147483.6466", "30000/1001",
                                                      offsetof( x264_param_t, i_fps_num ),
                                                      offsetof( x264_param_t, i_fps_den ) ) ||
         expect_failed_parse_keeps_three_int_values( "cll", "100,200x", "100,200",
@@ -2405,6 +2511,107 @@ RAW_ATOMIC_C
     fi
 }
 
+run_raw_output_header_smoke()
+{
+    raw_header_source=$smoke_dir/raw-output-header.c
+    raw_header_binary=$smoke_dir/raw-output-header$exe
+    raw_header_log=$smoke_dir/raw-output-header.log
+    raw_header_file=$smoke_dir/raw-output-header.264
+
+    cat > "$raw_header_source" <<'RAW_HEADER_C'
+#include "output/output.h"
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
+
+void x264_cli_log( const char *name, int i_level, const char *fmt, ... )
+{
+    (void)name;
+    (void)i_level;
+    va_list args;
+    va_start( args, fmt );
+    vfprintf( stderr, fmt, args );
+    va_end( args );
+}
+
+int main( int argc, char **argv )
+{
+    if( argc != 2 )
+        return 2;
+
+    FILE *file = fopen( argv[1], "w+b" );
+    if( !file )
+        return 1;
+
+    uint8_t first[] = { 1, 2 };
+    uint8_t second[] = { 3, 4, 5 };
+    x264_nal_t nals[3];
+    memset( nals, 0, sizeof(nals) );
+    nals[0].i_payload = sizeof(first);
+    nals[0].p_payload = first;
+    nals[1].i_payload = sizeof(second);
+    nals[1].p_payload = second;
+
+    if( raw_output.write_headers( file, nals ) != 5 )
+    {
+        fclose( file );
+        return 1;
+    }
+    if( fflush( file ) || fseek( file, 0, SEEK_SET ) )
+    {
+        fclose( file );
+        return 1;
+    }
+
+    uint8_t out[5];
+    if( fread( out, 1, sizeof(out), file ) != sizeof(out) || memcmp( out, "\1\2\3\4\5", sizeof(out) ) )
+    {
+        fclose( file );
+        return 1;
+    }
+
+    fclose( file );
+
+    FILE *fail_file = fopen( argv[1], "w+b" );
+    if( !fail_file )
+        return 1;
+
+    memset( nals, 0, sizeof(nals) );
+    nals[0].i_payload = sizeof(first);
+    nals[0].p_payload = first;
+    nals[1].i_payload = sizeof(second);
+
+    if( raw_output.write_headers( fail_file, nals ) != -1 )
+    {
+        fclose( fail_file );
+        return 1;
+    }
+    if( fflush( fail_file ) || fseek( fail_file, 0, SEEK_END ) || ftell( fail_file ) != 0 )
+    {
+        fclose( fail_file );
+        return 1;
+    }
+
+    fclose( fail_file );
+    return 0;
+}
+RAW_HEADER_C
+
+    if ! ${CC:-cc} -std=gnu17 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200112L \
+        -Wall -Wextra -Werror -Wno-unused-parameter \
+        -I"$smoke_dir" -I"$root" \
+        -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8 \
+        "$raw_header_source" "$smoke_dir/output/raw.o" "$smoke_dir/libx264.a" \
+        -o "$raw_header_binary" >"$raw_header_log" 2>&1; then
+        printf '%s\n' "failed to build raw output header smoke: $raw_header_log" >&2
+        exit 1
+    fi
+    if ! "$raw_header_binary" "$raw_header_file" >>"$raw_header_log" 2>&1; then
+        printf '%s\n' "raw output header smoke failed: $raw_header_log" >&2
+        exit 1
+    fi
+}
+
 run_y4m_input_atomic_smoke()
 {
     y4m_atomic_source=$smoke_dir/y4m-input-atomic.c
@@ -2481,7 +2688,7 @@ Y4M_ATOMIC_C
 
     printf '%s\n' 'YUV4MPEG2 W16 H16 F25:x Ip C420' > "$y4m_atomic_file"
     if ! ${CC:-cc} -std=gnu17 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200112L \
-        -Wall -Wextra -Werror -Wno-unused-parameter \
+        -Wall -Wextra -Werror -Wno-unused-parameter -Wno-sign-compare \
         -I"$smoke_dir" -I"$root" \
         -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8 \
         "$y4m_atomic_source" "$smoke_dir/input/y4m.o" "$smoke_dir/input/input.o" \
@@ -2492,6 +2699,90 @@ Y4M_ATOMIC_C
     fi
     if ! "$y4m_atomic_binary" "$y4m_atomic_file" >>"$y4m_atomic_log" 2>&1; then
         printf '%s\n' "y4m input atomic smoke failed: $y4m_atomic_log" >&2
+        exit 1
+    fi
+}
+
+run_timecode_read_atomic_smoke()
+{
+    timecode_atomic_source=$smoke_dir/timecode-read-atomic.c
+    timecode_atomic_binary=$smoke_dir/timecode-read-atomic$exe
+    timecode_atomic_log=$smoke_dir/timecode-read-atomic.log
+    timecode_atomic_ldflags=$(awk -F= '/^LDFLAGS=/ { print $2 }' "$smoke_dir/config.mak")
+    timecode_atomic_ldflagscli=$(awk -F= '/^LDFLAGSCLI=/ { print $2 }' "$smoke_dir/config.mak")
+
+    cat > "$timecode_atomic_source" <<'TIMECODE_ATOMIC_C'
+#include "input/timecode.c"
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
+
+cli_input_t cli_input;
+
+static int released_frames;
+
+void x264_cli_log( const char *name, int i_level, const char *fmt, ... )
+{
+    (void)name;
+    (void)i_level;
+    va_list args;
+    va_start( args, fmt );
+    vfprintf( stderr, fmt, args );
+    va_end( args );
+}
+
+static int fake_read_frame( cli_pic_t *pic, hnd_t handle, int frame )
+{
+    (void)handle;
+    (void)frame;
+    memset( pic, 0, sizeof(*pic) );
+    return 0;
+}
+
+static int fake_release_frame( cli_pic_t *pic, hnd_t handle )
+{
+    (void)pic;
+    (void)handle;
+    released_frames++;
+    return 0;
+}
+
+int main( void )
+{
+    timecode_hnd_t h;
+    cli_pic_t pic;
+
+    memset( &h, 0, sizeof(h) );
+    memset( &pic, 0x5a, sizeof(pic) );
+    h.input.read_frame = fake_read_frame;
+    h.input.release_frame = fake_release_frame;
+    h.p_handle = &h;
+    h.timebase_num = 1;
+    h.timebase_den = INT64_MAX;
+    h.assume_fps = 2.0;
+    h.last_timecode = 0.0;
+
+    if( !read_frame( &pic, &h, 0 ) )
+        return 1;
+    if( released_frames != 1 || h.last_timecode != 0.0 || h.pts )
+        return 1;
+
+    return 0;
+}
+TIMECODE_ATOMIC_C
+
+    if ! ${CC:-cc} -std=gnu17 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200112L \
+        -Wall -Wextra -Werror -Wno-unused-parameter -Wno-missing-field-initializers \
+        -I"$smoke_dir" -I"$root" \
+        -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8 \
+        "$timecode_atomic_source" "$smoke_dir/input/input.o" \
+        "$smoke_dir/libx264.a" $timecode_atomic_ldflagscli $timecode_atomic_ldflags \
+        -o "$timecode_atomic_binary" >"$timecode_atomic_log" 2>&1; then
+        printf '%s\n' "failed to build timecode read atomic smoke: $timecode_atomic_log" >&2
+        exit 1
+    fi
+    if ! "$timecode_atomic_binary" >>"$timecode_atomic_log" 2>&1; then
+        printf '%s\n' "timecode read atomic smoke failed: $timecode_atomic_log" >&2
         exit 1
     fi
 }
@@ -2566,6 +2857,63 @@ PIC_ALLOC_C
     fi
 }
 
+run_public_pic_alloc_failure_smoke()
+{
+    public_pic_alloc_source=$smoke_dir/public-pic-alloc-failure.c
+    public_pic_alloc_binary=$smoke_dir/public-pic-alloc-failure$exe
+    public_pic_alloc_log=$smoke_dir/public-pic-alloc-failure.log
+    public_pic_alloc_ldflags=$(awk -F= '/^LDFLAGS=/ { print $2 }' "$smoke_dir/config.mak")
+    public_pic_alloc_ldflagscli=$(awk -F= '/^LDFLAGSCLI=/ { print $2 }' "$smoke_dir/config.mak")
+
+    cat > "$public_pic_alloc_source" <<'PUBLIC_PIC_ALLOC_C'
+#include <limits.h>
+#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "x264.h"
+
+int main( void )
+{
+    x264_picture_t pic;
+    x264_picture_t before;
+
+    memset( &pic, 0x5a, sizeof(pic) );
+    memcpy( &before, &pic, sizeof(before) );
+
+    if( x264_picture_alloc( &pic, X264_CSP_BGRA | X264_CSP_HIGH_DEPTH, INT_MAX, 1 ) >= 0 )
+    {
+        x264_picture_clean( &pic );
+        fprintf( stderr, "accepted invalid picture allocation\n" );
+        return 1;
+    }
+
+    if( memcmp( &pic, &before, sizeof(pic) ) )
+    {
+        fprintf( stderr, "failed picture allocation changed caller state\n" );
+        return 1;
+    }
+
+    return 0;
+}
+PUBLIC_PIC_ALLOC_C
+
+    if ! ${CC:-cc} -std=gnu17 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200112L \
+        -Wall -Wextra -Werror -Wno-unused-parameter \
+        -I"$smoke_dir" -I"$root" \
+        "$public_pic_alloc_source" \
+        "$smoke_dir/libx264.a" $public_pic_alloc_ldflagscli $public_pic_alloc_ldflags \
+        -o "$public_pic_alloc_binary" >"$public_pic_alloc_log" 2>&1; then
+        printf '%s\n' "failed to build public picture allocation failure smoke: $public_pic_alloc_log" >&2
+        exit 1
+    fi
+    if ! "$public_pic_alloc_binary" >>"$public_pic_alloc_log" 2>&1; then
+        printf '%s\n' "public picture allocation failure smoke failed: $public_pic_alloc_log" >&2
+        exit 1
+    fi
+}
+
 run_lavf_input_object_smoke()
 {
     lavf_input_log=$smoke_dir/input-lavf-object.log
@@ -2590,6 +2938,853 @@ run_lavf_input_object_smoke()
         exit 1
     fi
     printf '%s\n' "input LAVF object smoke built: $lavf_input_object" >"$lavf_input_log"
+}
+
+run_matroska_unfinished_frame_smoke()
+{
+    mk_unfinished_source=$smoke_dir/matroska-unfinished-frame.c
+    mk_unfinished_binary=$smoke_dir/matroska-unfinished-frame$exe
+    mk_unfinished_out=$smoke_dir/matroska-unfinished-frame.mkv
+    mk_unfinished_log=$smoke_dir/matroska-unfinished-frame.log
+    mk_unfinished_ldflags=$(awk -F= '/^LDFLAGS=/ { print $2 }' "$smoke_dir/config.mak")
+    mk_unfinished_ldflagscli=$(awk -F= '/^LDFLAGSCLI=/ { print $2 }' "$smoke_dir/config.mak")
+
+    cat > "$mk_unfinished_source" <<'MK_UNFINISHED_C'
+#include <stdint.h>
+#include <stdio.h>
+
+#include "output/matroska_ebml.h"
+
+int main( int argc, char **argv )
+{
+    if( argc != 2 )
+        return 1;
+
+    mk_writer *w = mk_create_writer( argv[1] );
+    if( !w )
+        return 2;
+
+    mk_track_t tracks[MK_MAX_TRACKS] = { 0 };
+    tracks[1].type = MK_TRACK_VIDEO;
+    tracks[1].lacing = MK_LACING_NONE;
+    tracks[1].id = 1;
+    tracks[1].codec_id = "V_MPEG4/ISO/AVC";
+    tracks[1].default_frame_duration = 40000000;
+    tracks[1].info.v.width = 16;
+    tracks[1].info.v.height = 16;
+    tracks[1].info.v.display_width = 16;
+    tracks[1].info.v.display_height = 16;
+    tracks[1].info.v.display_size_units = DS_PIXELS;
+    tracks[1].info.v.stereo_mode = -1;
+
+    if( mk_write_header( w, "unfinished-frame-smoke", 1000000, tracks, 1 ) )
+        return 3;
+    if( mk_start_frame( w ) )
+        return 4;
+    static const uint8_t payload[4] = { 1, 2, 3, 4 };
+    if( mk_add_frame_data( w, payload, sizeof(payload) ) )
+        return 5;
+    return mk_close( w, NULL ) < 0 ? 0 : 6;
+}
+MK_UNFINISHED_C
+
+    if ! ${CC:-cc} -std=gnu17 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200112L \
+        -Wall -Wextra -Werror -Wno-unused-parameter \
+        -I"$smoke_dir" -I"$root" \
+        -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8 \
+        "$mk_unfinished_source" "$root/output/matroska_ebml.c" "$smoke_dir/libx264.a" \
+        $mk_unfinished_ldflagscli $mk_unfinished_ldflags \
+        -o "$mk_unfinished_binary" >"$mk_unfinished_log" 2>&1; then
+        printf '%s\n' "failed to build Matroska unfinished-frame smoke: $mk_unfinished_log" >&2
+        exit 1
+    fi
+    if ! "$mk_unfinished_binary" "$mk_unfinished_out" >>"$mk_unfinished_log" 2>&1; then
+        printf '%s\n' "Matroska unfinished-frame smoke failed: $mk_unfinished_log" >&2
+        exit 1
+    fi
+}
+
+run_flv_metadata_position_smoke()
+{
+    flv_position_source=$smoke_dir/flv-metadata-position.c
+    flv_position_binary=$smoke_dir/flv-metadata-position$exe
+    flv_position_log=$smoke_dir/flv-metadata-position.log
+    flv_position_ldflags=$(awk -F= '/^LDFLAGS=/ { print $2 }' "$smoke_dir/config.mak")
+    flv_position_ldflagscli=$(awk -F= '/^LDFLAGSCLI=/ { print $2 }' "$smoke_dir/config.mak")
+
+    cat > "$flv_position_source" <<'FLV_POSITION_C'
+#include <stdint.h>
+#include <stdarg.h>
+#include <stdio.h>
+
+void x264_cli_log( const char *name, int i_level, const char *fmt, ... )
+{
+    (void)name;
+    (void)i_level;
+    va_list args;
+    va_start( args, fmt );
+    vfprintf( stderr, fmt, args );
+    va_end( args );
+}
+
+#include "output/flv.c"
+
+int main( void )
+{
+    flv_buffer c = { 0 };
+    flv_hnd_t h = { 0 };
+    x264_param_t p;
+    uint64_t position = 0;
+
+    c.d_total = UINT64_MAX;
+    if( flv_amf_payload_position( &c, &position ) == 0 )
+        return 1;
+
+    c.d_total = UINT64_MAX - 1;
+    c.d_cur = 1;
+    if( flv_amf_payload_position( &c, &position ) == 0 )
+        return 2;
+
+    c.d_total = UINT64_MAX - 2;
+    c.d_cur = 0;
+    if( flv_amf_payload_position( &c, &position ) || position != UINT64_MAX - 1 )
+        return 3;
+
+    memset( &c, 0, sizeof(c) );
+    h.c = &c;
+    x264_param_default( &p );
+    p.i_width = 0;
+    p.i_height = 16;
+    p.i_timebase_num = 1;
+    p.i_timebase_den = 25;
+    p.i_fps_num = 25;
+    p.i_fps_den = 1;
+    if( set_param( &h, &p ) == 0 || c.d_cur )
+        return 4;
+
+    p.i_width = 16;
+    p.i_height = -1;
+    if( set_param( &h, &p ) == 0 || c.d_cur )
+        return 5;
+
+    p.i_height = 16;
+    p.i_fps_num = 0;
+    if( set_param( &h, &p ) == 0 || c.d_cur )
+        return 6;
+
+    p.i_fps_num = 25;
+    p.i_fps_den = 0;
+    if( set_param( &h, &p ) == 0 || c.d_cur )
+        return 7;
+
+    p.i_fps_den = 1;
+    if( set_param( &h, &p ) )
+        return 8;
+    if( !c.d_cur || h.i_fps_num != 25 || h.i_fps_den != 1 )
+        return 9;
+
+    free( c.data );
+    return 0;
+}
+FLV_POSITION_C
+
+    if ! ${CC:-cc} -std=gnu17 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200112L \
+        -Wall -Wextra -Werror -Wno-unused-parameter \
+        -I"$smoke_dir" -I"$root" \
+        -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8 \
+        "$flv_position_source" "$root/output/flv_bytestream.c" "$smoke_dir/libx264.a" \
+        $flv_position_ldflagscli $flv_position_ldflags \
+        -o "$flv_position_binary" >"$flv_position_log" 2>&1; then
+        printf '%s\n' "failed to build FLV metadata-position smoke: $flv_position_log" >&2
+        exit 1
+    fi
+    if ! "$flv_position_binary" >>"$flv_position_log" 2>&1; then
+        printf '%s\n' "FLV metadata-position smoke failed: $flv_position_log" >&2
+        exit 1
+    fi
+}
+
+run_gop_dimension_smoke()
+{
+    gop_dimension_source=$smoke_dir/gop-dimension.c
+    gop_dimension_binary=$smoke_dir/gop-dimension$exe
+    gop_dimension_log=$smoke_dir/gop-dimension.log
+    gop_dimension_prefix=$smoke_dir/gop-dimension
+    gop_dimension_index=$smoke_dir/gop-dimension.gop
+    gop_dimension_options=$smoke_dir/gop-dimension.options
+    gop_dimension_ldflags=$(awk -F= '/^LDFLAGS=/ { print $2 }' "$smoke_dir/config.mak")
+    gop_dimension_ldflagscli=$(awk -F= '/^LDFLAGSCLI=/ { print $2 }' "$smoke_dir/config.mak")
+
+    cat > "$gop_dimension_source" <<'GOP_DIMENSION_C'
+#include <stdint.h>
+#include <stdarg.h>
+#include <stdio.h>
+
+void x264_cli_log( const char *name, int i_level, const char *fmt, ... )
+{
+    (void)name;
+    (void)i_level;
+    va_list args;
+    va_start( args, fmt );
+    vfprintf( stderr, fmt, args );
+    va_end( args );
+}
+
+#include "output/gop.c"
+
+static int expect_rejected_without_options( gop_hnd_t *h, x264_param_t *p, const char *options_path )
+{
+    FILE *options;
+    remove( options_path );
+    if( set_param( h, p ) == 0 )
+        return 1;
+    options = fopen( options_path, "rb" );
+    if( options )
+    {
+        fclose( options );
+        return 1;
+    }
+    return 0;
+}
+
+int main( int argc, char **argv )
+{
+    if( argc < 4 )
+        return 99;
+
+    gop_hnd_t h = { 0 };
+    x264_param_t p;
+    h.filename_prefix = argv[1];
+    h.gop_file = fopen( argv[2], "wb" );
+    if( !h.gop_file )
+        return 98;
+
+    x264_param_default( &p );
+    p.i_timebase_num = 1;
+    p.i_timebase_den = 25;
+    p.i_fps_num = 25;
+    p.i_fps_den = 1;
+    p.i_width = 0;
+    p.i_height = 16;
+    if( expect_rejected_without_options( &h, &p, argv[3] ) )
+        return 1;
+
+    p.i_width = 16;
+    p.i_height = -1;
+    if( expect_rejected_without_options( &h, &p, argv[3] ) )
+        return 3;
+
+    p.i_height = 16;
+    p.i_timebase_num = 0;
+    if( expect_rejected_without_options( &h, &p, argv[3] ) )
+        return 5;
+
+    p.i_timebase_num = 1;
+    p.i_timebase_den = 0;
+    if( expect_rejected_without_options( &h, &p, argv[3] ) )
+        return 7;
+
+    p.i_timebase_den = 25;
+    p.i_fps_num = 0;
+    if( expect_rejected_without_options( &h, &p, argv[3] ) )
+        return 9;
+
+    p.i_fps_num = 25;
+    p.i_fps_den = 0;
+    if( expect_rejected_without_options( &h, &p, argv[3] ) )
+        return 11;
+
+    p.i_fps_den = 1;
+    p.vui.i_sar_width = -1;
+    if( expect_rejected_without_options( &h, &p, argv[3] ) )
+        return 12;
+
+    p.vui.i_sar_width = 1;
+    p.vui.i_sar_height = -1;
+    if( expect_rejected_without_options( &h, &p, argv[3] ) )
+        return 13;
+
+    p.vui.i_sar_height = 1;
+    p.vui.i_colorprim = -1;
+    if( expect_rejected_without_options( &h, &p, argv[3] ) )
+        return 14;
+
+    p.vui.i_colorprim = UINT16_MAX + 1;
+    if( expect_rejected_without_options( &h, &p, argv[3] ) )
+        return 15;
+
+    p.vui.i_colorprim = 2;
+    p.vui.i_transfer = -1;
+    if( expect_rejected_without_options( &h, &p, argv[3] ) )
+        return 16;
+
+    p.vui.i_transfer = UINT16_MAX + 1;
+    if( expect_rejected_without_options( &h, &p, argv[3] ) )
+        return 17;
+
+    p.vui.i_transfer = 2;
+    p.vui.i_colmatrix = UINT16_MAX + 1;
+    if( expect_rejected_without_options( &h, &p, argv[3] ) )
+        return 18;
+
+    p.vui.i_colmatrix = -1;
+    p.vui.b_fullrange = UINT8_MAX + 1;
+    if( expect_rejected_without_options( &h, &p, argv[3] ) )
+        return 19;
+
+    p.vui.b_fullrange = -1;
+    p.i_height = 16;
+    if( set_param( &h, &p ) )
+        return 20;
+    FILE *options = fopen( argv[3], "rb" );
+    if( !options )
+        return 21;
+    fclose( options );
+
+    return gop_close_file( &h.gop_file, "GOP index file" ) ? 22 : 0;
+}
+GOP_DIMENSION_C
+
+    rm -f "$gop_dimension_index" "$gop_dimension_options"
+    if ! ${CC:-cc} -std=gnu17 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200112L \
+        -Wall -Wextra -Werror -Wno-unused-parameter \
+        -I"$smoke_dir" -I"$root" \
+        -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8 \
+        "$gop_dimension_source" "$smoke_dir/libx264.a" \
+        $gop_dimension_ldflagscli $gop_dimension_ldflags \
+        -o "$gop_dimension_binary" >"$gop_dimension_log" 2>&1; then
+        printf '%s\n' "failed to build GOP dimension smoke: $gop_dimension_log" >&2
+        exit 1
+    fi
+    if ! "$gop_dimension_binary" "$gop_dimension_prefix" "$gop_dimension_index" "$gop_dimension_options" >>"$gop_dimension_log" 2>&1; then
+        printf '%s\n' "GOP dimension smoke failed: $gop_dimension_log" >&2
+        exit 1
+    fi
+}
+
+run_gpac_mp4_sar_smoke()
+{
+    gpac_mp4_source=$smoke_dir/gpac-mp4-sar.c
+    gpac_mp4_binary=$smoke_dir/gpac-mp4-sar$exe
+    gpac_mp4_log=$smoke_dir/gpac-mp4-sar.log
+    gpac_mp4_stub_dir=$smoke_dir/gpac-mp4-stub
+    gpac_mp4_ldflags=$(awk -F= '/^LDFLAGS=/ { print $2 }' "$smoke_dir/config.mak")
+    gpac_mp4_ldflagscli=$(awk -F= '/^LDFLAGSCLI=/ { print $2 }' "$smoke_dir/config.mak")
+
+    mkdir -p "$gpac_mp4_stub_dir/gpac"
+    cat > "$gpac_mp4_stub_dir/gpac/isomedia.h" <<'GPAC_ISOMEDIA_H'
+#ifndef GPAC_ISOMEDIA_H
+#define GPAC_ISOMEDIA_H
+
+#include <stdint.h>
+#include <stdlib.h>
+
+typedef uint32_t u32;
+typedef uint64_t u64;
+typedef int64_t  s64;
+typedef double   Double;
+
+typedef struct GF_ISOFile GF_ISOFile;
+typedef struct GF_AVCConfig GF_AVCConfig;
+typedef struct GF_AVCConfigSlot GF_AVCConfigSlot;
+typedef struct GF_ISOSample GF_ISOSample;
+typedef struct GF_ESD GF_ESD;
+typedef struct GF_Descriptor GF_Descriptor;
+
+struct GF_ISOFile { int dummy; };
+struct GF_AVCConfigSlot { uint32_t size; uint8_t *data; };
+struct GF_AVCConfig
+{
+    uint32_t configurationVersion;
+    uint32_t AVCProfileIndication;
+    uint32_t profile_compatibility;
+    uint32_t AVCLevelIndication;
+    uint32_t nal_unit_size;
+    void *sequenceParameterSets;
+    void *pictureParameterSets;
+};
+struct GF_ISOSample { uint8_t *data; uint32_t dataLength; uint64_t DTS; uint32_t CTS_Offset; int IsRAP; };
+typedef struct { uint32_t avgBitrate; uint32_t maxBitrate; uint32_t bufferSizeDB; } GF_DecoderConfig;
+struct GF_ESD { GF_DecoderConfig *decoderConfig; };
+struct GF_Descriptor { int dummy; };
+
+#define GF_ISOM_OPEN_WRITE 1
+#define GF_ISOM_BRAND_AVC1 1
+#define GF_ISOM_MEDIA_VISUAL 1
+#define GF_ISOM_PL_VISUAL 1
+#define GF_ISOM_STORE_FLAT 1
+#define GF_ISOM_EDIT_NORMAL 1
+
+GF_ISOFile *gf_isom_open( const char *name, int mode, void *tmp );
+void gf_isom_close( GF_ISOFile *file );
+void gf_isom_set_brand_info( GF_ISOFile *file, int brand, int minor );
+uint32_t gf_isom_new_track( GF_ISOFile *file, int track, int media, uint32_t timescale );
+GF_AVCConfig *gf_odf_avc_cfg_new( void );
+void gf_odf_avc_cfg_del( GF_AVCConfig *cfg );
+int gf_isom_avc_config_new( GF_ISOFile *file, int track, GF_AVCConfig *cfg, void *a, void *b, uint32_t *descidx );
+int gf_isom_avc_config_update( GF_ISOFile *file, int track, uint32_t descidx, GF_AVCConfig *cfg );
+void gf_isom_set_track_enabled( GF_ISOFile *file, int track, int enabled );
+void gf_isom_set_visual_info( GF_ISOFile *file, int track, uint32_t descidx, int width, int height );
+void gf_isom_set_pixel_aspect_ratio( GF_ISOFile *file, int track, uint32_t descidx, int sar_width, int sar_height, int force );
+void gf_isom_set_track_layout_info( GF_ISOFile *file, int track, uint32_t width, uint32_t height, int x, int y, int layer );
+GF_ISOSample *gf_isom_sample_new( void );
+void gf_isom_sample_del( GF_ISOSample **sample );
+int gf_isom_add_sample( GF_ISOFile *file, int track, uint32_t descidx, GF_ISOSample *sample );
+GF_ESD *gf_isom_get_esd( GF_ISOFile *file, int track, int descidx );
+uint32_t gf_isom_get_media_timescale( GF_ISOFile *file, int track );
+uint32_t gf_isom_get_sample_count( GF_ISOFile *file, int track );
+GF_ISOSample *gf_isom_get_sample_info( GF_ISOFile *file, int track, uint32_t sample, uint32_t *descidx, uint64_t *offset );
+uint64_t gf_isom_get_media_duration( GF_ISOFile *file, int track );
+uint64_t gf_isom_get_sample_dts( GF_ISOFile *file, int track, int sample );
+uint32_t gf_isom_get_timescale( GF_ISOFile *file );
+void gf_isom_set_last_sample_duration( GF_ISOFile *file, int track, uint32_t duration );
+void gf_isom_append_edit( GF_ISOFile *file, int track, uint64_t duration, uint32_t media_time, int mode );
+void gf_isom_append_edit_segment( GF_ISOFile *file, int track, uint64_t duration, uint32_t media_time, int mode );
+void gf_isom_change_mpeg4_description( GF_ISOFile *file, int track, int descidx, GF_ESD *esd );
+void gf_odf_desc_del( GF_Descriptor *desc );
+void gf_isom_set_pl_indication( GF_ISOFile *file, int indication, int value );
+void gf_isom_set_storage_mode( GF_ISOFile *file, int mode );
+int gf_list_add( void *list, void *item );
+
+#endif
+GPAC_ISOMEDIA_H
+
+    cat > "$gpac_mp4_source" <<'GPAC_MP4_C'
+#include <stdint.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
+
+static uint32_t layout_width;
+static uint32_t layout_height;
+static int layout_calls;
+static int track_calls;
+
+void x264_cli_log( const char *name, int i_level, const char *fmt, ... )
+{
+    (void)name;
+    (void)i_level;
+    va_list args;
+    va_start( args, fmt );
+    vfprintf( stderr, fmt, args );
+    va_end( args );
+}
+
+#include "output/mp4.c"
+
+GF_ISOFile *gf_isom_open( const char *name, int mode, void *tmp )
+{
+    (void)name; (void)mode; (void)tmp;
+    return calloc( 1, sizeof(GF_ISOFile) );
+}
+void gf_isom_close( GF_ISOFile *file ) { free( file ); }
+void gf_isom_set_brand_info( GF_ISOFile *file, int brand, int minor ) { (void)file; (void)brand; (void)minor; }
+uint32_t gf_isom_new_track( GF_ISOFile *file, int track, int media, uint32_t timescale )
+{
+    (void)file; (void)track; (void)media; (void)timescale;
+    track_calls++;
+    return 1;
+}
+GF_AVCConfig *gf_odf_avc_cfg_new( void ) { return calloc( 1, sizeof(GF_AVCConfig) ); }
+void gf_odf_avc_cfg_del( GF_AVCConfig *cfg ) { free( cfg ); }
+int gf_isom_avc_config_new( GF_ISOFile *file, int track, GF_AVCConfig *cfg, void *a, void *b, uint32_t *descidx )
+{
+    (void)file; (void)track; (void)cfg; (void)a; (void)b;
+    *descidx = 1;
+    return 0;
+}
+int gf_isom_avc_config_update( GF_ISOFile *file, int track, uint32_t descidx, GF_AVCConfig *cfg )
+{
+    (void)file; (void)track; (void)descidx; (void)cfg;
+    return 0;
+}
+void gf_isom_set_track_enabled( GF_ISOFile *file, int track, int enabled ) { (void)file; (void)track; (void)enabled; }
+void gf_isom_set_visual_info( GF_ISOFile *file, int track, uint32_t descidx, int width, int height )
+{
+    (void)file; (void)track; (void)descidx; (void)width; (void)height;
+}
+void gf_isom_set_pixel_aspect_ratio( GF_ISOFile *file, int track, uint32_t descidx, int sar_width, int sar_height, int force )
+{
+    (void)file; (void)track; (void)descidx; (void)sar_width; (void)sar_height; (void)force;
+}
+void gf_isom_set_track_layout_info( GF_ISOFile *file, int track, uint32_t width, uint32_t height, int x, int y, int layer )
+{
+    (void)file; (void)track; (void)x; (void)y; (void)layer;
+    layout_width = width;
+    layout_height = height;
+    layout_calls++;
+}
+GF_ISOSample *gf_isom_sample_new( void ) { return calloc( 1, sizeof(GF_ISOSample) ); }
+void gf_isom_sample_del( GF_ISOSample **sample )
+{
+    if( sample && *sample )
+    {
+        free( *sample );
+        *sample = NULL;
+    }
+}
+int gf_isom_add_sample( GF_ISOFile *file, int track, uint32_t descidx, GF_ISOSample *sample )
+{
+    (void)file; (void)track; (void)descidx; (void)sample;
+    return 0;
+}
+GF_ESD *gf_isom_get_esd( GF_ISOFile *file, int track, int descidx )
+{
+    (void)file; (void)track; (void)descidx;
+    return NULL;
+}
+uint32_t gf_isom_get_media_timescale( GF_ISOFile *file, int track ) { (void)file; (void)track; return 1; }
+uint32_t gf_isom_get_sample_count( GF_ISOFile *file, int track ) { (void)file; (void)track; return 0; }
+GF_ISOSample *gf_isom_get_sample_info( GF_ISOFile *file, int track, uint32_t sample, uint32_t *descidx, uint64_t *offset )
+{
+    (void)file; (void)track; (void)sample; (void)descidx; (void)offset;
+    return NULL;
+}
+uint64_t gf_isom_get_media_duration( GF_ISOFile *file, int track ) { (void)file; (void)track; return 0; }
+uint64_t gf_isom_get_sample_dts( GF_ISOFile *file, int track, int sample ) { (void)file; (void)track; (void)sample; return 0; }
+uint32_t gf_isom_get_timescale( GF_ISOFile *file ) { (void)file; return 1; }
+void gf_isom_set_last_sample_duration( GF_ISOFile *file, int track, uint32_t duration ) { (void)file; (void)track; (void)duration; }
+void gf_isom_append_edit( GF_ISOFile *file, int track, uint64_t duration, uint32_t media_time, int mode )
+{
+    (void)file; (void)track; (void)duration; (void)media_time; (void)mode;
+}
+void gf_isom_append_edit_segment( GF_ISOFile *file, int track, uint64_t duration, uint32_t media_time, int mode )
+{
+    (void)file; (void)track; (void)duration; (void)media_time; (void)mode;
+}
+void gf_isom_change_mpeg4_description( GF_ISOFile *file, int track, int descidx, GF_ESD *esd )
+{
+    (void)file; (void)track; (void)descidx; (void)esd;
+}
+void gf_odf_desc_del( GF_Descriptor *desc ) { (void)desc; }
+void gf_isom_set_pl_indication( GF_ISOFile *file, int indication, int value ) { (void)file; (void)indication; (void)value; }
+void gf_isom_set_storage_mode( GF_ISOFile *file, int mode ) { (void)file; (void)mode; }
+int gf_list_add( void *list, void *item ) { (void)list; (void)item; return 0; }
+
+static mp4_hnd_t *new_test_handle( void )
+{
+    mp4_hnd_t *h = calloc( 1, sizeof(*h) );
+    if( !h )
+        return NULL;
+    h->p_file = calloc( 1, sizeof(GF_ISOFile) );
+    h->p_sample = calloc( 1, sizeof(GF_ISOSample) );
+    if( !h->p_file || !h->p_sample )
+    {
+        free( h->p_file );
+        free( h->p_sample );
+        free( h );
+        return NULL;
+    }
+    return h;
+}
+
+static int expect_set_param_rejected( x264_param_t *p )
+{
+    mp4_hnd_t *h = new_test_handle();
+    if( !h )
+        return 1;
+    layout_calls = 0;
+    track_calls = 0;
+    int ret = set_param( h, p ) == 0 || layout_calls != 0 || track_calls != 0;
+    free( h->p_file );
+    free( h->p_sample );
+    free( h );
+    return ret;
+}
+
+int main( void )
+{
+    x264_param_t p;
+    x264_param_default( &p );
+    p.i_width = 16;
+    p.i_height = 16;
+    p.i_timebase_num = 1;
+    p.i_timebase_den = 25;
+    p.i_fps_num = 25;
+    p.i_fps_den = 1;
+
+    p.vui.i_sar_width = -1;
+    p.vui.i_sar_height = 1;
+    if( expect_set_param_rejected( &p ) )
+        return 1;
+
+    p.vui.i_sar_width = 1;
+    p.vui.i_sar_height = -1;
+    if( expect_set_param_rejected( &p ) )
+        return 2;
+
+    p.vui.i_sar_width = 1;
+    p.vui.i_sar_height = 1;
+    p.i_width = 65536;
+    if( expect_set_param_rejected( &p ) )
+        return 3;
+
+    p.vui.i_sar_width = 0;
+    p.vui.i_sar_height = 0;
+    p.i_height = 65536;
+    if( expect_set_param_rejected( &p ) )
+        return 4;
+
+    p.i_width = 16;
+    p.i_height = 16;
+    p.vui.i_sar_width = 4;
+    p.vui.i_sar_height = 3;
+    mp4_hnd_t *h = new_test_handle();
+    if( !h )
+        return 5;
+    layout_calls = 0;
+    track_calls = 0;
+    if( set_param( h, &p ) || layout_calls != 1 ||
+        track_calls != 1 ||
+        layout_width <= (16u << 16) || layout_height != (16u << 16) )
+    {
+        free( h->p_sample->data );
+        free( h->p_file );
+        free( h->p_sample );
+        free( h );
+        return 6;
+    }
+    close_file( h, 0, 0 );
+    return 0;
+}
+GPAC_MP4_C
+
+    if ! ${CC:-cc} -std=gnu17 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200112L \
+        -Wall -Wextra -Werror -Wno-unused-parameter \
+        -I"$gpac_mp4_stub_dir" -I"$smoke_dir" -I"$root" \
+        -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8 \
+        "$gpac_mp4_source" "$smoke_dir/libx264.a" \
+        $gpac_mp4_ldflagscli $gpac_mp4_ldflags \
+        -o "$gpac_mp4_binary" >"$gpac_mp4_log" 2>&1; then
+        printf '%s\n' "failed to build GPAC MP4 SAR smoke: $gpac_mp4_log" >&2
+        exit 1
+    fi
+    if ! "$gpac_mp4_binary" >>"$gpac_mp4_log" 2>&1; then
+        printf '%s\n' "GPAC MP4 SAR smoke failed: $gpac_mp4_log" >&2
+        exit 1
+    fi
+}
+
+run_crop_offset_smoke()
+{
+    crop_offset_source=$smoke_dir/crop-offset.c
+    crop_offset_binary=$smoke_dir/crop-offset$exe
+    crop_offset_log=$smoke_dir/crop-offset.log
+    crop_offset_ldflags=$(awk -F= '/^LDFLAGS=/ { print $2 }' "$smoke_dir/config.mak")
+    crop_offset_ldflagscli=$(awk -F= '/^LDFLAGSCLI=/ { print $2 }' "$smoke_dir/config.mak")
+
+    cat > "$crop_offset_source" <<'CROP_OFFSET_C'
+#include <stdint.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <limits.h>
+
+void x264_cli_log( const char *name, int i_level, const char *fmt, ... )
+{
+    (void)name;
+    (void)i_level;
+    va_list args;
+    va_start( args, fmt );
+    vfprintf( stderr, fmt, args );
+    va_end( args );
+}
+
+#include "filters/video/crop.c"
+
+int main( void )
+{
+    intptr_t offset = 0;
+
+    if( crop_plane_offset( &offset, 32, 2, 1, 4, 1, 1 ) || offset != 68 )
+        return 1;
+    if( crop_plane_offset( &offset, 32, 2, .5f, 4, .5f, 1 ) || offset != 34 )
+        return 7;
+    if( crop_plane_offset( &offset, -32, 2, 1, 4, 1, 1 ) || offset != -60 )
+        return 2;
+    if( crop_plane_offset( &offset, -32, 2, .5f, 4, .5f, 1 ) || offset != -30 )
+        return 8;
+    if( crop_plane_offset( &offset, INT_MAX, INT_MAX, 3, 0, 1, 1 ) == 0 )
+        return 3;
+    if( crop_plane_offset( &offset, -32, INT_MAX, (double)INT_MAX, 0, 1, 1 ) == 0 )
+        return 4;
+    if( crop_plane_offset( &offset, 0, 0, 1, INT_MAX, (double)INT_MAX, 3 ) == 0 )
+        return 5;
+    if( crop_plane_offset( &offset, INT_MAX, INT_MAX, 2, INT_MAX, 5, 1 ) == 0 )
+        return 6;
+
+    return 0;
+}
+CROP_OFFSET_C
+
+    if ! ${CC:-cc} -std=gnu17 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200112L \
+        -Wall -Wextra -Werror -Wno-unused-parameter \
+        -I"$smoke_dir" -I"$root" \
+        -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8 \
+        "$crop_offset_source" "$smoke_dir/input/input.o" "$smoke_dir/filters/filters.o" \
+        "$smoke_dir/libx264.a" \
+        $crop_offset_ldflagscli $crop_offset_ldflags \
+        -o "$crop_offset_binary" >"$crop_offset_log" 2>&1; then
+        printf '%s\n' "failed to build crop offset smoke: $crop_offset_log" >&2
+        exit 1
+    fi
+    if ! "$crop_offset_binary" >>"$crop_offset_log" 2>&1; then
+        printf '%s\n' "crop offset smoke failed: $crop_offset_log" >&2
+        exit 1
+    fi
+}
+
+run_pad_copy_params_smoke()
+{
+    pad_params_source=$smoke_dir/pad-copy-params.c
+    pad_params_binary=$smoke_dir/pad-copy-params$exe
+    pad_params_log=$smoke_dir/pad-copy-params.log
+    pad_params_ldflags=$(awk -F= '/^LDFLAGS=/ { print $2 }' "$smoke_dir/config.mak")
+    pad_params_ldflagscli=$(awk -F= '/^LDFLAGSCLI=/ { print $2 }' "$smoke_dir/config.mak")
+
+    cat > "$pad_params_source" <<'PAD_PARAMS_C'
+#include <stdint.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <limits.h>
+
+void x264_cli_log( const char *name, int i_level, const char *fmt, ... )
+{
+    (void)name;
+    (void)i_level;
+    va_list args;
+    va_start( args, fmt );
+    vfprintf( stderr, fmt, args );
+    va_end( args );
+}
+
+#include "filters/video/pad.c"
+
+int main( void )
+{
+    int offset = 0;
+    int width = 0;
+    int height = 0;
+
+    if( pad_plane_copy_params( &offset, &width, &height, 16, 16, 64, 2, 4, 1, 1, 1 ) ||
+        offset != 258 || width != 16 || height != 16 )
+        return 1;
+    if( pad_plane_copy_params( &offset, &width, &height, 16, 16, 64, 2, 4, .5f, .5f, 1 ) ||
+        offset != 129 || width != 8 || height != 8 )
+        return 7;
+    if( pad_plane_copy_params( &offset, &width, &height, 16, 8, 128, 4, 2, 1, 1, 2 ) ||
+        offset != 264 || width != 32 || height != 8 )
+        return 2;
+    if( pad_plane_copy_params( &offset, &width, &height, INT_MAX, 1, 64, 0, 0, 2, 1, 1 ) == 0 )
+        return 3;
+    if( pad_plane_copy_params( &offset, &width, &height, 1, 1, INT_MAX, 0, 2, 1, 1, 1 ) == 0 )
+        return 4;
+    if( pad_plane_copy_params( &offset, &width, &height, 1, 1, 64, INT_MAX, 0, 2, 1, 1 ) == 0 )
+        return 5;
+    if( pad_plane_copy_params( &offset, &width, &height, 1, 1, INT_MAX, INT_MAX, 1, 1, 1, 1 ) == 0 )
+        return 6;
+
+    return 0;
+}
+PAD_PARAMS_C
+
+    if ! ${CC:-cc} -std=gnu17 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200112L \
+        -Wall -Wextra -Werror -Wno-unused-parameter \
+        -I"$smoke_dir" -I"$root" \
+        -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8 \
+        "$pad_params_source" "$smoke_dir/input/input.o" "$smoke_dir/filters/filters.o" \
+        "$smoke_dir/filters/video/internal.o" "$smoke_dir/libx264.a" \
+        $pad_params_ldflagscli $pad_params_ldflags \
+        -o "$pad_params_binary" >"$pad_params_log" 2>&1; then
+        printf '%s\n' "failed to build pad copy-params smoke: $pad_params_log" >&2
+        exit 1
+    fi
+    if ! "$pad_params_binary" >>"$pad_params_log" 2>&1; then
+        printf '%s\n' "pad copy-params smoke failed: $pad_params_log" >&2
+        exit 1
+    fi
+}
+
+run_matroska_negative_sar_smoke()
+{
+    mk_sar_source=$smoke_dir/matroska-negative-sar.c
+    mk_sar_binary=$smoke_dir/matroska-negative-sar$exe
+    mk_sar_log=$smoke_dir/matroska-negative-sar.log
+    mk_sar_ldflags=$(awk -F= '/^LDFLAGS=/ { print $2 }' "$smoke_dir/config.mak")
+    mk_sar_ldflagscli=$(awk -F= '/^LDFLAGSCLI=/ { print $2 }' "$smoke_dir/config.mak")
+
+    cat > "$mk_sar_source" <<'MK_SAR_C'
+#include <stdint.h>
+#include <stdarg.h>
+#include <stdio.h>
+
+void x264_cli_log( const char *name, int i_level, const char *fmt, ... )
+{
+    (void)name;
+    (void)i_level;
+    va_list args;
+    va_start( args, fmt );
+    vfprintf( stderr, fmt, args );
+    va_end( args );
+}
+
+#include "output/matroska.c"
+
+int main( void )
+{
+    mkv_hnd_t h = { 0 };
+    x264_param_t p;
+
+    x264_param_default( &p );
+    p.i_width = 16;
+    p.i_height = 16;
+    p.i_timebase_num = 1;
+    p.i_timebase_den = 25;
+    p.i_fps_num = 25;
+    p.i_fps_den = 1;
+    p.vui.i_sar_width = -1;
+    p.vui.i_sar_height = -2;
+    if( set_video_track( &h, &p ) == 0 )
+        return 1;
+
+    p.vui.i_sar_width = 1;
+    p.vui.i_sar_height = 1;
+    p.b_vfr_input = 0;
+    p.i_fps_num = 0;
+    if( set_video_track( &h, &p ) == 0 )
+        return 2;
+
+    p.i_fps_num = 25;
+    p.i_fps_den = 0;
+    if( set_video_track( &h, &p ) == 0 )
+        return 3;
+
+    p.i_fps_den = 1;
+    p.vui.i_sar_width = 4;
+    p.vui.i_sar_height = 3;
+    if( set_video_track( &h, &p ) )
+        return 4;
+    if( h.tracks[1].info.v.display_width != 21 ||
+        h.tracks[1].info.v.display_height != 16 )
+        return 5;
+
+    return 0;
+}
+MK_SAR_C
+
+    if ! ${CC:-cc} -std=gnu17 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200112L \
+        -Wall -Wextra -Werror -Wno-unused-parameter \
+        -I"$smoke_dir" -I"$root" \
+        -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8 \
+        "$mk_sar_source" "$root/output/matroska_ebml.c" "$smoke_dir/libx264.a" \
+        $mk_sar_ldflagscli $mk_sar_ldflags \
+        -o "$mk_sar_binary" >"$mk_sar_log" 2>&1; then
+        printf '%s\n' "failed to build Matroska negative-SAR smoke: $mk_sar_log" >&2
+        exit 1
+    fi
+    if ! "$mk_sar_binary" >>"$mk_sar_log" 2>&1; then
+        printf '%s\n' "Matroska negative-SAR smoke failed: $mk_sar_log" >&2
+        exit 1
+    fi
 }
 
 run_audio_avs_object_smoke()
@@ -2683,6 +3878,48 @@ FAAC_H
         -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8 \
         -c "$root/audio/encoders/enc_faac.c" -o "$faac_object" >"$faac_object_log" 2>&1; then
         printf '%s\n' "failed to build audio/encoders/enc_faac.c stub object smoke: $faac_object_log" >&2
+        exit 1
+    fi
+}
+
+run_audio_amrwb_stub_object_smoke()
+{
+    amrwb_object_log=$smoke_dir/audio-amrwb-stub-object.log
+    amrwb_object=$smoke_dir/audio/encoders/enc_amrwb_3gpp-stub.o
+    amrwb_stub_dir=$smoke_dir/amrwb-stub
+
+    mkdir -p "$amrwb_stub_dir" "$smoke_dir/audio/encoders"
+    cat > "$amrwb_stub_dir/typedef.h" <<'AMRWB_TYPEDEF_H'
+#ifndef AMRWB_TYPEDEF_H
+#define AMRWB_TYPEDEF_H
+
+typedef short Word16;
+
+#endif
+AMRWB_TYPEDEF_H
+
+    cat > "$amrwb_stub_dir/enc_if.h" <<'AMRWB_ENC_IF_H'
+#ifndef AMRWB_ENC_IF_H
+#define AMRWB_ENC_IF_H
+
+#include "typedef.h"
+
+#define L_FRAME16k 320
+#define NB_SERIAL_MAX 61
+
+void *E_IF_init( void );
+void E_IF_exit( void *state );
+int E_IF_encode( void *state, Word16 mode, void *speech16k, unsigned char *serial, Word16 dtx );
+
+#endif
+AMRWB_ENC_IF_H
+
+    if ! ${CC:-cc} -std=gnu17 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200112L \
+        -Wall -Wextra -Werror -Wno-unused-parameter -Wno-sign-compare \
+        -I"$amrwb_stub_dir" -I"$smoke_dir" -I"$root" \
+        -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8 \
+        -c "$root/audio/encoders/enc_amrwb_3gpp.c" -o "$amrwb_object" >"$amrwb_object_log" 2>&1; then
+        printf '%s\n' "failed to build audio/encoders/enc_amrwb_3gpp.c stub object smoke: $amrwb_object_log" >&2
         exit 1
     fi
 }
@@ -2810,6 +4047,129 @@ HELPER_C
     fi
 }
 
+run_source_release_failure_smoke()
+{
+    source_source=$smoke_dir/source-release-failure.c
+    source_binary=$smoke_dir/source-release-failure$exe
+    source_log=$smoke_dir/source-release-failure.log
+
+    cat > "$source_source" <<'SOURCE_RELEASE_FAILURE_C'
+#include <stdlib.h>
+#include <string.h>
+
+#include "filters/video/video.h"
+
+static int release_calls = 0;
+
+static int stub_picture_alloc( cli_pic_t *pic, hnd_t handle, int csp, int width, int height )
+{
+    (void)handle;
+    (void)csp;
+    (void)width;
+    (void)height;
+    memset( pic, 0, sizeof(*pic) );
+    pic->img.plane[0] = malloc( 1 );
+    return pic->img.plane[0] ? 0 : -1;
+}
+
+static int stub_read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
+{
+    (void)handle;
+    pic->pts = i_frame;
+    return 0;
+}
+
+static int stub_release_frame( cli_pic_t *pic, hnd_t handle )
+{
+    (void)pic;
+    (void)handle;
+    release_calls++;
+    return release_calls == 1 ? -1 : 0;
+}
+
+static void stub_picture_clean( cli_pic_t *pic, hnd_t handle )
+{
+    (void)handle;
+    free( pic->img.plane[0] );
+    pic->img.plane[0] = NULL;
+}
+
+static int stub_close_file( hnd_t handle )
+{
+    (void)handle;
+    return 0;
+}
+
+static int dummy_get_frame( hnd_t handle, cli_pic_t *output, int frame )
+{
+    (void)handle;
+    (void)output;
+    (void)frame;
+    return 0;
+}
+
+static int dummy_release_frame( hnd_t handle, cli_pic_t *pic, int frame )
+{
+    (void)handle;
+    (void)pic;
+    (void)frame;
+    return 0;
+}
+
+static void dummy_free( hnd_t handle )
+{
+    (void)handle;
+}
+
+cli_input_t cli_input = { 0 };
+#include "filters/video/source.c"
+
+int main( void )
+{
+    cli_input.picture_alloc = stub_picture_alloc;
+    cli_input.read_frame = stub_read_frame;
+    cli_input.release_frame = stub_release_frame;
+    cli_input.picture_clean = stub_picture_clean;
+    cli_input.close_file = stub_close_file;
+
+    hnd_t input_handle = (hnd_t)0x1;
+    cli_vid_filter_t filter = { "prev", NULL, NULL, dummy_get_frame, dummy_release_frame, dummy_free, NULL };
+    video_info_t info = { 0 };
+    x264_param_t param;
+    cli_pic_t pic = { 0 };
+    hnd_t handle = input_handle;
+
+    info.csp = X264_CSP_I420;
+    info.width = 16;
+    info.height = 16;
+
+    x264_param_default( &param );
+    param.i_log_level = X264_LOG_NONE;
+
+    if( source_filter.init( &handle, &filter, &info, &param, NULL ) )
+        return 2;
+    if( source_filter.get_frame( handle, &pic, 0 ) )
+        return 3;
+    if( source_filter.release_frame( handle, &pic, 0 ) != -1 )
+        return 4;
+    filter.free( handle );
+    return release_calls == 2 ? 0 : 5;
+}
+SOURCE_RELEASE_FAILURE_C
+
+    if ! ${CC:-cc} -std=gnu17 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200112L \
+        -Wall -Wextra -Werror -Wno-unused-parameter \
+        -I"$smoke_dir" -I"$root" \
+        "$source_source" "$smoke_dir/libx264.a" -o "$source_binary" >"$source_log" 2>&1; then
+        printf '%s\n' "failed to build source release failure smoke: $source_log" >&2
+        exit 1
+    fi
+    if ! "$source_binary" >>"$source_log" 2>&1; then
+        printf '%s\n' "source release failure smoke failed: $source_log" >&2
+        exit 1
+    fi
+}
+
 run_smoke_cli()
 {
     configure_smoke_cli smoke-cli "--disable-lavf --disable-ffms --disable-lsmash --disable-audio"
@@ -2932,6 +4292,9 @@ run_smoke_cli()
     filter_bad_select_every_log=$smoke_dir/smoke-filter-bad-select-every.log
     filter_empty_select_every_out=$smoke_dir/smoke-filter-empty-select-every.264
     filter_empty_select_every_log=$smoke_dir/smoke-filter-empty-select-every.log
+    filter_select_every_count_y4m=$smoke_dir/smoke-filter-select-every-count.y4m
+    filter_select_every_count_out=$smoke_dir/smoke-filter-select-every-count.264
+    filter_select_every_count_log=$smoke_dir/smoke-filter-select-every-count.log
     filter_hqdn3d_out=$smoke_dir/smoke-filter-hqdn3d.264
     filter_bad_hqdn3d_out=$smoke_dir/smoke-filter-bad-hqdn3d.264
     filter_bad_hqdn3d_log=$smoke_dir/smoke-filter-bad-hqdn3d.log
@@ -3059,14 +4422,26 @@ run_smoke_cli()
     run_param_list_guard_smoke
     run_cqmfile_atomic_smoke
     run_raw_input_atomic_smoke
+    run_raw_output_header_smoke
     run_y4m_input_atomic_smoke
+    run_timecode_read_atomic_smoke
     run_pic_alloc_failure_smoke
+    run_public_pic_alloc_failure_smoke
     run_lavf_input_object_smoke
+    run_matroska_unfinished_frame_smoke
+    run_flv_metadata_position_smoke
+    run_gop_dimension_smoke
+    run_gpac_mp4_sar_smoke
+    run_crop_offset_smoke
+    run_pad_copy_params_smoke
+    run_matroska_negative_sar_smoke
     run_audio_avs_object_smoke
     run_audio_lavf_object_smoke
     run_audio_faac_stub_object_smoke
+    run_audio_amrwb_stub_object_smoke
     run_audio_lavc_object_smoke
     run_filter_option_helper_smoke
+    run_source_release_failure_smoke
     dd if=/dev/zero of="$raw" bs=384 count=1 2>/dev/null
     "$smoke_bin" --demuxer raw --input-res 16x16 --fps 25 --frames 1 --crf 30 -o "$raw_out" "$raw" >/dev/null
     [ -s "$raw_out" ] || { printf '%s\n' "missing raw smoke output: $raw_out (input: $raw)" >&2; exit 1; }
@@ -3672,6 +5047,17 @@ run_smoke_cli()
     grep -q "empty offset" "$filter_empty_select_every_log" ||
     {
         printf '%s\n' "missing empty select_every filter parse error in $filter_empty_select_every_log" >&2
+        exit 1
+    }
+    write_smoke_y4m_frames "$filter_select_every_count_y4m" 4 25:1
+    rm -f "$filter_select_every_count_log" "$filter_select_every_count_out"
+    "$smoke_bin" --demuxer y4m --frames 4 --vf select_every:3,0,2 \
+        --bframes 0 --sync-lookahead 0 --rc-lookahead 0 --crf 30 \
+        -o "$filter_select_every_count_out" "$filter_select_every_count_y4m" >"$filter_select_every_count_log" 2>&1
+    [ -s "$filter_select_every_count_out" ] || { printf '%s\n' "missing select_every count smoke output: $filter_select_every_count_out (input: $filter_select_every_count_y4m)" >&2; exit 1; }
+    grep -q "encoded 3 frames" "$filter_select_every_count_log" ||
+    {
+        printf '%s\n' "unexpected select_every tail frame count in $filter_select_every_count_log" >&2
         exit 1
     }
     rm -f "$filter_bad_yadif_log" "$filter_bad_yadif_out"

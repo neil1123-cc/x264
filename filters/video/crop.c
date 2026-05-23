@@ -26,6 +26,7 @@
 
 #include "video.h"
 #include <limits.h>
+#include <math.h>
 
 #define NAME "crop"
 #define FAIL_IF_ERROR( cond, ... ) FAIL_IF_ERR( cond, NAME, __VA_ARGS__ )
@@ -59,7 +60,7 @@ static int handle_opts( crop_hnd_t *h, video_info_t *info, char **opts, const ch
         FAIL_IF_ERROR( x264_otoi_checked( opt, &parsed_dim ),
                        "%s crop value `%s' is invalid\n", optlist[i], opt );
         FAIL_IF_ERROR( parsed_dim < 0, "%s crop value `%s' is less than 0\n", optlist[i], opt );
-        int dim_mod = i&1 ? (h->csp->mod_height << info->interlaced) : h->csp->mod_width;
+        int dim_mod = i&1 ? (unsigned)h->csp->mod_height << info->interlaced : h->csp->mod_width;
         FAIL_IF_ERROR( parsed_dim % dim_mod, "%s crop value `%s' is not a multiple of %d\n", optlist[i], opt, dim_mod );
         h->dims[i] = parsed_dim;
     }
@@ -129,6 +130,52 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
     return 0;
 }
 
+static int crop_mul_intptr( intptr_t *dst, intptr_t a, int b )
+{
+    if( !dst || b < 0 ||
+        (b && ((a > 0 && a > INTPTR_MAX / b) ||
+               (a < 0 && a < INTPTR_MIN / b))) )
+        return -1;
+    *dst = a * b;
+    return 0;
+}
+
+static int crop_add_intptr( intptr_t *dst, intptr_t a, intptr_t b )
+{
+    if( !dst ||
+        (b > 0 && a > INTPTR_MAX - b) ||
+        (b < 0 && a < INTPTR_MIN - b) )
+        return -1;
+    *dst = a + b;
+    return 0;
+}
+
+static int crop_scale_dimension( int value, double scale, int *out )
+{
+    double scaled = value * scale;
+    if( !out || !isfinite( scaled ) || scaled < 0.0 || scaled > (double)INT_MAX || scaled != floor( scaled ) )
+        return -1;
+    *out = (int)scaled;
+    return 0;
+}
+
+static int crop_plane_offset( intptr_t *offset, int stride, int top, double height_scale,
+                              int left, double width_scale, int depth_factor )
+{
+    int scaled_top;
+    int scaled_left;
+    intptr_t row_offset;
+    intptr_t col_offset;
+    if( !offset ||
+        crop_scale_dimension( top, height_scale, &scaled_top ) ||
+        crop_scale_dimension( left, width_scale, &scaled_left ) ||
+        crop_mul_intptr( &row_offset, stride, scaled_top ) ||
+        crop_mul_intptr( &col_offset, scaled_left, depth_factor ) ||
+        crop_add_intptr( offset, row_offset, col_offset ) )
+        return -1;
+    return 0;
+}
+
 static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 {
     crop_hnd_t *h = handle;
@@ -158,8 +205,14 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
     /* shift the plane pointers down 'top' rows and right 'left' columns. */
     for( int i = 0; i < img.planes; i++ )
     {
-        intptr_t offset = img.stride[i] * h->dims[1] * h->csp->height[i];
-        offset += h->dims[0] * h->csp->width[i] * x264_cli_csp_depth_factor( img.csp );
+        int depth_factor = x264_cli_csp_depth_factor( img.csp );
+        intptr_t offset;
+        if( crop_plane_offset( &offset, img.stride[i], h->dims[1], h->csp->height[i],
+                               h->dims[0], h->csp->width[i], depth_factor ) )
+        {
+            h->prev_filter.release_frame( h->prev_hnd, output, frame );
+            return -1;
+        }
         img.plane[i] += offset;
     }
     output->img = img;

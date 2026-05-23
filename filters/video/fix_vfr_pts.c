@@ -76,9 +76,12 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
     fix_vfr_pts_hnd_t *h = handle;
     cli_pic_t staged;
     int staged_held = 0;
+    int staged_buffer_duration = 0;
+    int64_t staged_last_duration;
     if( !h || !output || !h->prev_hnd ||
         !h->prev_filter.get_frame || !h->prev_filter.release_frame || frame < 0 )
         return -1;
+    staged_last_duration = h->last_duration;
     /* if we want the holder picture and it errored, return the error. */
     if( frame == h->holder_frame )
     {
@@ -134,12 +137,13 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
                 h->holder_frame = -1;
                 return -1;
             }
-            h->last_duration = h->holder.pts - h->buffer.pts;
+            staged_last_duration = h->holder.pts - h->buffer.pts;
         }
-        else if( h->last_duration <= 0 )
-            h->last_duration = 1;
-        h->buffer.duration = h->last_duration;
+        else if( staged_last_duration <= 0 )
+            staged_last_duration = 1;
         staged = h->buffer;
+        staged.duration = staged_last_duration;
+        staged_buffer_duration = 1;
     }
     else
     {
@@ -158,6 +162,11 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
         return -1;
     }
     h->pts += staged.duration;
+    if( staged_buffer_duration )
+    {
+        h->last_duration = staged.duration;
+        h->buffer.duration = staged.duration;
+    }
     *output = staged;
 
     return 0;

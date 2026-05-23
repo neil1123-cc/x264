@@ -28,7 +28,7 @@
 static ALWAYS_INLINE void x264_macroblock_cache_rect( void *dst, int w, int h, int s, uint32_t v )
 {
     uint8_t *d = dst;
-    uint16_t v2 = s >= 2 ? v : v * 0x101;
+    uint16_t v2 = (uint16_t)( s >= 2 ? v : v * 0x101 );
     uint32_t v4 = s >= 4 ? v : s >= 2 ? v * 0x10001 : v * 0x1010101;
     uint64_t v8 = v4 + ((uint64_t)v4 << 32);
     s *= 8;
@@ -155,9 +155,9 @@ static ALWAYS_INLINE void x264_macroblock_cache_ref( x264_t *h, int x, int y, in
 }
 static ALWAYS_INLINE void x264_macroblock_cache_skip( x264_t *h, int x, int y, int width, int height, int b_skip )
 {
-    x264_macroblock_cache_rect( &h->mb.cache.skip[X264_SCAN8_0+x+8*y], width, height, 1, b_skip );
+    x264_macroblock_cache_rect( &h->mb.cache.skip[X264_SCAN8_0+x+8*y], width, height, 1, (uint32_t)b_skip );
 }
 static ALWAYS_INLINE void x264_macroblock_cache_intra8x8_pred( x264_t *h, int x, int y, int i_mode )
 {
-    x264_macroblock_cache_rect( &h->mb.cache.intra4x4_pred_mode[X264_SCAN8_0+x+8*y], 2, 2, 1, i_mode );
+    x264_macroblock_cache_rect( &h->mb.cache.intra4x4_pred_mode[X264_SCAN8_0+x+8*y], 2, 2, 1, (uint32_t)i_mode );
 }

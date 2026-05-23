@@ -281,6 +281,15 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
     gop_hnd_t *hnd = (gop_hnd_t *)handle;
     if( !hnd || hnd->b_fail || !hnd->filename_prefix || !hnd->gop_file || !p_param )
         return -1;
+    if( p_param->i_width <= 0 || p_param->i_height <= 0 ||
+        p_param->i_timebase_num <= 0 || p_param->i_timebase_den <= 0 ||
+        !p_param->i_fps_num || !p_param->i_fps_den ||
+        p_param->vui.i_sar_width < 0 || p_param->vui.i_sar_height < 0 ||
+        p_param->vui.i_colorprim < 0 || p_param->vui.i_colorprim > UINT16_MAX ||
+        p_param->vui.i_transfer < 0 || p_param->vui.i_transfer > UINT16_MAX ||
+        p_param->vui.i_colmatrix > UINT16_MAX ||
+        p_param->vui.b_fullrange > UINT8_MAX )
+        return -1;
 
     /* Force Annex-B off and no repeat headers for GOP output. */
     x264_param_t adjusted_param = *p_param;

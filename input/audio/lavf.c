@@ -288,7 +288,7 @@ static struct AVPacket *next_packet( hnd_t handle )
             free_avpacket( pkt );
             return NULL;
         }
-    } while( pkt->stream_index != h->track );
+    } while( pkt->stream_index < 0 || (unsigned)pkt->stream_index != h->track );
 
     return pkt;
 }
@@ -690,6 +690,11 @@ static int buffer_next_frame( lavf_source_t *h )
     if( dec_size > h->bufsize - h->len )
     {
         intptr_t drop = X264_MIN( h->len, dec_size );
+        if( (uint64_t)drop > UINT64_MAX - h->bytepos )
+        {
+            free_avpacket( dec );
+            return 0;
+        }
         memmove( h->buffer, h->buffer + drop, (size_t)(h->len - drop) );
         h->len     -= drop;
         h->bytepos += (uint64_t)drop;

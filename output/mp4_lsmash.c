@@ -49,7 +49,7 @@
 #define MP4_LOG_WARNING( ... )              x264_cli_log( "mp4", X264_LOG_WARNING, __VA_ARGS__ )
 #define MP4_LOG_INFO( ... )                 x264_cli_log( "mp4", X264_LOG_INFO, __VA_ARGS__ )
 #define MP4_FAIL_IF_ERR( cond, ... )        FAIL_IF_ERR( cond, "mp4", __VA_ARGS__ )
-#define MP4_FIXED_POINT_SCALE               (1 << 16)
+#define MP4_FIXED_POINT_SCALE               (1u << 16)
 
 /* For close_file() */
 #define MP4_LOG_IF_ERR( cond, ... )\
@@ -101,6 +101,15 @@ static int mp4_double_to_duration( uint64_t *dst, double duration )
         return -1;
     *dst = (uint64_t)value;
     return 0;
+}
+
+static uint64_t mp4_double_to_u64_clamped( double value, uint64_t max )
+{
+    if( value != value || value <= 0.0 )
+        return 0;
+    if( (long double)value >= (long double)max + 1.0L )
+        return max;
+    return (uint64_t)value;
 }
 
 static int mp4_u64_mul_overflow( uint64_t a, uint64_t b, uint64_t *dst )
@@ -220,11 +229,12 @@ static void set_recovery_param( mp4_hnd_t *p_mp4, x264_param_t *p_param )
         p_mp4->i_max_frame_num = X264_MAX( p_mp4->i_max_frame_num, p_mp4->i_recovery_frame_cnt + 1 );
     }
 
-    int i_log2_max_frame_num = 4;
-    while( (1 << i_log2_max_frame_num) <= p_mp4->i_max_frame_num )
-        i_log2_max_frame_num++;
-
-    p_mp4->i_max_frame_num = 1 << i_log2_max_frame_num;
+    uint32_t max_frame_num = 1u << 4;
+    while( max_frame_num <= (uint32_t)p_mp4->i_max_frame_num && max_frame_num <= UINT32_MAX / 2 )
+        max_frame_num <<= 1;
+    if( max_frame_num > (uint32_t)INT_MAX )
+        max_frame_num = INT_MAX;
+    p_mp4->i_max_frame_num = (int)max_frame_num;
 }
 
 #if HAVE_AUDIO
@@ -890,7 +900,7 @@ static int set_param_audio( mp4_hnd_t* p_mp4, uint64_t i_media_timescale, lsmash
                      p_audio->info->framelen < 0,
                      "invalid audio summary parameter.\n" );
     p_audio->summary->sample_type      = p_audio->codec_type;
-    p_audio->summary->max_au_length    = ( 1 << 13 ) - 1;
+    p_audio->summary->max_au_length    = ( 1u << 13 ) - 1;
     p_audio->summary->frequency        = (uint32_t)p_audio->info->samplerate;
     p_audio->summary->channels         = (uint32_t)p_audio->info->channels;
     p_audio->summary->sample_size      = (uint32_t)p_audio->info->depth;
@@ -1142,7 +1152,7 @@ int remux_callback( void* param, uint64_t done, uint64_t total )
     double elapsed_sec = elapsed > 0 ? (double)elapsed / 1000000.0 : 0.0;
     double byterate = elapsed_sec > 0.0 ? (double)done / elapsed_sec : 0.0;
     double percent = total ? (double)done * 100.0 / (double)total : 100.0;
-    uint64_t byterate_kib = byterate > (double)(UINT64_MAX / 1024) ? UINT64_MAX / 1024 : (uint64_t)(byterate / 1024.0);
+    uint64_t byterate_kib = mp4_double_to_u64_clamped( byterate / 1024.0, UINT64_MAX / 1024 );
     fprintf( stderr, "remux [%5.2lf%%], %"PRIu64"/%"PRIu64" KiB, %"PRIu64" KiB/s, ",
         percent, done/1024, total/1024, byterate_kib );
     if( done == total )
@@ -1153,7 +1163,7 @@ int remux_callback( void* param, uint64_t done, uint64_t total )
     else
     {
         double eta_sec = byterate > 0.0 && total > done ? (double)(total - done) / byterate : 0.0;
-        uint64_t eta = eta_sec > (double)UINT64_MAX ? UINT64_MAX : (uint64_t)eta_sec;
+        uint64_t eta = mp4_double_to_u64_clamped( eta_sec, UINT64_MAX );
         fprintf( stderr, "eta %"PRIu64":%02"PRIu64":%02"PRIu64"\r", eta/3600, (eta/60)%60, eta%60 );
     }
     fflush( stderr ); // needed in windows
@@ -1355,6 +1365,9 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
     if( !p_mp4 || !p_mp4->p_root || !p_mp4->summary || !p_param )
         return -1;
 
+    MP4_FAIL_IF_ERR( p_param->i_width <= 0 || p_param->i_height <= 0,
+                     "invalid video dimensions.\n" );
+
     set_recovery_param( p_mp4, p_param );
 
     p_mp4->i_delay_frames = p_param->i_bframe ? (p_param->i_bframe_pyramid ? 2 : 1) : 0;
@@ -1440,8 +1453,6 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
     p_mp4->i_track = lsmash_create_track( p_mp4->p_root, ISOM_MEDIA_HANDLER_TYPE_VIDEO_TRACK );
     MP4_FAIL_IF_ERR( !p_mp4->i_track, "failed to create a video track.\n" );
 
-    MP4_FAIL_IF_ERR( p_param->i_width <= 0 || p_param->i_height <= 0,
-                     "invalid video dimensions.\n" );
     p_mp4->summary->width = (uint32_t)p_param->i_width;
     p_mp4->summary->height = (uint32_t)p_param->i_height;
     if( !p_mp4->b_force_display_size )

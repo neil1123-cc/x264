@@ -57,6 +57,22 @@ static int select_every_frame_number( selvry_hnd_t *h, int frame, int *pat_frame
     return 0;
 }
 
+static int select_every_num_frames( selvry_hnd_t *h, int num_frames )
+{
+    uint64_t selected = (uint64_t)(num_frames / h->step_size) * (uint64_t)h->pattern_len;
+    int tail_frames = num_frames % h->step_size;
+    /* The final partial cycle is consumed in pattern order. */
+    for( int i = 0; i < h->pattern_len; i++ )
+    {
+        if( h->pattern[i] >= tail_frames )
+            break;
+        selected++;
+    }
+    if( selected > INT_MAX )
+        return -1;
+    return (int)selected;
+}
+
 static void help( int longhelp )
 {
     printf( "      "NAME":step,offset1[,...]\n" );
@@ -162,13 +178,13 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
     {
         if( updated_info.num_frames > 0 )
         {
-            uint64_t num_frames = (uint64_t)updated_info.num_frames * (uint64_t)h->pattern_len / (uint64_t)h->step_size;
-            if( num_frames > INT_MAX )
+            int selected_frames = select_every_num_frames( h, updated_info.num_frames );
+            if( selected_frames < 0 )
             {
                 x264_cli_log( NAME, X264_LOG_ERROR, "selected frame count is too large\n" );
                 goto fail;
             }
-            updated_info.num_frames = (int)num_frames;
+            updated_info.num_frames = selected_frames;
         }
         if( updated_info.fps_den > UINT32_MAX / (uint32_t)h->step_size ||
             updated_info.fps_num > UINT32_MAX / (uint32_t)h->pattern_len )

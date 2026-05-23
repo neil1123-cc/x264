@@ -199,6 +199,9 @@ static int set_video_track( mkv_hnd_t *p_mkv, x264_param_t *p_param )
     if( !p_param->i_timebase_num || !p_param->i_timebase_den )
         return -1;
 
+    if( !p_param->b_vfr_input && ( !p_param->i_fps_num || !p_param->i_fps_den ) )
+        return -1;
+
     if( p_param->i_fps_num > 0 && !p_param->b_vfr_input )
     {
         if( mkv_default_duration_from_fps( &vtrack.default_frame_duration,
@@ -216,6 +219,8 @@ static int set_video_track( mkv_hnd_t *p_mkv, x264_param_t *p_param )
     v->height = (unsigned)p_param->i_height;
     v->display_size_units = DS_PIXELS;
     v->stereo_mode = -1;
+    if( p_param->vui.i_sar_width < 0 || p_param->vui.i_sar_height < 0 )
+        return -1;
     if( p_param->i_frame_packing >= 0 && p_param->i_frame_packing < STEREO_COUNT )
     {
         v->stereo_mode = stereo_modes[p_param->i_frame_packing];
@@ -390,10 +395,21 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
     if( !p_mkv || !p_mkv->w || !p_param )
         return -1;
 
-    FAIL_IF_ERR( set_video_track( p_mkv, p_param ), "mkv", "failed to create video track\n" );
+    mkv_hnd_t staged = *p_mkv;
+
+    FAIL_IF_ERR( set_video_track( &staged, p_param ), "mkv", "failed to create video track\n" );
 
 #if HAVE_AUDIO
-    FAIL_IF_ERR( p_mkv->a_mkv && set_audio_track( p_mkv, p_param ), "mkv", "failed to create audio track\n" );
+    FAIL_IF_ERR( staged.a_mkv && set_audio_track( &staged, p_param ), "mkv", "failed to create audio track\n" );
+#endif
+
+    memcpy( p_mkv->tracks, staged.tracks, sizeof(p_mkv->tracks) );
+    p_mkv->i_track_count = staged.i_track_count;
+    p_mkv->i_video_track = staged.i_video_track;
+    p_mkv->i_timebase_num = staged.i_timebase_num;
+    p_mkv->i_timebase_den = staged.i_timebase_den;
+#if HAVE_AUDIO
+    p_mkv->i_audio_track = staged.i_audio_track;
 #endif
 
     return 0;
@@ -649,8 +665,8 @@ static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest
     mkv_close_audio( p_mkv );
 #endif
 
-    int i;
-    for( i=1; i<=p_mkv->i_track_count && i<MK_MAX_TRACKS; i++ )
+    uint32_t i;
+    for( i=1; i<=p_mkv->i_track_count && i<(uint32_t)MK_MAX_TRACKS; i++ )
     {
         if( p_mkv->tracks[i].codec_private_size )
             free( p_mkv->tracks[i].codec_private );

@@ -83,15 +83,14 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 static int release_frame( hnd_t handle, cli_pic_t *pic, int frame )
 {
     source_hnd_t *h = handle;
-    int ret = 0;
     if( !h || !h->hin || !pic )
         return -1;
     if( !h->have_frame )
         return 0;
     if( cli_input.release_frame && cli_input.release_frame( &h->pic, h->hin ) )
-        ret = -1;
+        return -1;
     h->have_frame = 0;
-    return ret;
+    return 0;
 }
 
 static void free_filter( hnd_t handle )

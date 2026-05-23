@@ -159,14 +159,16 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
 
     const x264_cli_csp_t *csp = x264_cli_get_csp( updated_info.csp );
     FAIL_IF_ERROR_CLEANUP( !csp, "unsupported colorspace\n" );
+    int pixel_depth = x264_cli_csp_depth_factor( updated_info.csp );
+    FAIL_IF_ERROR_CLEANUP( pixel_depth <= 0, "invalid pixel depth\n" );
     for( int i = 0; i < csp->planes; i++ )
     {
-        h->plane_size[i] = x264_cli_pic_plane_size( updated_info.csp, updated_info.width, updated_info.height, i );
-        h->frame_size += h->plane_size[i];
+        int64_t plane_size = x264_cli_pic_plane_size( updated_info.csp, updated_info.width, updated_info.height, i );
+        FAIL_IF_ERROR_CLEANUP( plane_size <= 0 || h->frame_size > INT64_MAX - plane_size, "invalid frame size\n" );
+        h->frame_size += plane_size;
         /* x264_cli_pic_plane_size returns the size in bytes, we need the value in pixels from here on */
-        h->plane_size[i] /= x264_cli_csp_depth_factor( updated_info.csp );
+        h->plane_size[i] = plane_size / pixel_depth;
     }
-    FAIL_IF_ERROR_CLEANUP( h->frame_size <= 0, "invalid frame size\n" );
 
     if( x264_is_regular_file( h->fh ) )
     {
@@ -231,7 +233,7 @@ static int read_frame_internal( cli_pic_t *pic, raw_hnd_t *h, int bit_depth_uc )
             int64_t pixel_count = h->plane_size[i];
             int lshift = 16 - h->bit_depth;
             for( int64_t j = 0; j < pixel_count; j++ )
-                plane[j] = plane[j] << lshift;
+                plane[j] = (unsigned)plane[j] << lshift;
         }
     }
     return 0;

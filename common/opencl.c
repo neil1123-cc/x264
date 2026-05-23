@@ -149,7 +149,7 @@ static cl_program opencl_cache_load( x264_t *h, const char *dev_name, const char
 #define CHECK_STRING( STR )\
     do {\
         size_t len = strlen( STR );\
-        if( size <= len || strncmp( (char*)ptr, STR, len ) )\
+        if( size <= len || strncmp( (char*)ptr, STR, len ) || ptr[len] != '\n' )\
             goto fail;\
         else {\
             size -= (len+1); ptr += (len+1);\
@@ -161,6 +161,8 @@ static cl_program opencl_cache_load( x264_t *h, const char *dev_name, const char
     CHECK_STRING( driver_version );
     CHECK_STRING( x264_opencl_source_hash );
 #undef CHECK_STRING
+    if( !size )
+        goto fail;
 
     cl_int status;
     program = ocl->clCreateProgramWithBinary( h->opencl.context, 1, &h->opencl.device, &size, &ptr, NULL, &status );

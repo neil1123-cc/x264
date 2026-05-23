@@ -520,7 +520,7 @@ static int mk_flush_frame( mk_writer *w, uint32_t track_id )
     uint16_t delta_bits = (uint16_t)(int16_t)delta;
     c_delta_flags[0] = (uint8_t)(delta_bits >> 8);
     c_delta_flags[1] = (uint8_t)delta_bits;
-    c_delta_flags[2] = (uint8_t)((w->keyframe << 7) | w->skippable);
+    c_delta_flags[2] = (uint8_t)(((unsigned)w->keyframe << 7) | (unsigned)w->skippable);
     CHECK( mk_append_context_data( w->cluster, c_delta_flags, 3 ) ); // Timecode, Flags
     if( w->frame )
     {
@@ -604,6 +604,8 @@ int mk_close( mk_writer *w, int64_t *last_delta )
         free( w );
         return -1;
     }
+    if( w->in_frame )
+        ret = -1;
     if( mk_close_cluster( w ) < 0 )
         ret = -1;
     if( w->wrote_header && x264_is_regular_file( w->fp ) )

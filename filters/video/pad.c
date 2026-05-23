@@ -32,6 +32,7 @@
 #include "internal.h"
 #include "video.h"
 #include <limits.h>
+#include <math.h>
 #define NAME "pad"
 #define FAIL_IF_ERROR( cond, ... ) FAIL_IF_ERR( cond, NAME, __VA_ARGS__ )
 
@@ -86,20 +87,20 @@ static uint16_t get_luma( int *rgb, const double *coeffs, int fr, int bits )
 {
     int ret;
     if( fr )
-        ret = ((1<<bits)-1) * dot_product( rgb, coeffs ) / 255.0 + 0.5;
+        ret = ((1u<<bits)-1) * dot_product( rgb, coeffs ) / 255.0 + 0.5;
     else
-        ret = ((1<<(bits-8)) * (219.0/255.0 * dot_product( rgb, coeffs ) + 16)) + 0.5;
-    return x264_clip3( ret, 0, (1<<bits)-1 );
+        ret = ((1u<<(bits-8)) * (219.0/255.0 * dot_product( rgb, coeffs ) + 16)) + 0.5;
+    return x264_clip3( ret, 0, (1u<<bits)-1 );
 }
 
 static uint16_t get_chroma( int *rgb, const double *coeffs, int fr, int bits )
 {
     int ret;
     if( fr )
-        ret = ((1<<bits)-1) * dot_product( rgb, coeffs ) / 255.0 + (1<<(bits-1)) + 0.5;
+        ret = ((1u<<bits)-1) * dot_product( rgb, coeffs ) / 255.0 + (1u<<(bits-1)) + 0.5;
     else
-        ret = ((1<<(bits-8)) * (224.0/255.0 * dot_product( rgb, coeffs ) + 128)) + 0.5;
-    return x264_clip3( ret, 0, (1<<bits)-1 );
+        ret = ((1u<<(bits-8)) * (224.0/255.0 * dot_product( rgb, coeffs ) + 128)) + 0.5;
+    return x264_clip3( ret, 0, (1u<<bits)-1 );
 }
 
 static int get_colors( int *rgb, pad_handle_t *h, x264_param_t *param )
@@ -145,17 +146,17 @@ static int get_colors( int *rgb, pad_handle_t *h, x264_param_t *param )
             break;
         case X264_CSP_HIGH_DEPTH|X264_CSP_BGR:
         case X264_CSP_BGR:
-            h->color[0] = rgb[2]<<(bits-8) | rgb[2];
-            h->color[1] = rgb[1]<<(bits-8) | rgb[1];
-            h->color[2] = rgb[0]<<(bits-8) | rgb[0];
+            h->color[0] = (unsigned)rgb[2] << (bits-8) | rgb[2];
+            h->color[1] = (unsigned)rgb[1] << (bits-8) | rgb[1];
+            h->color[2] = (unsigned)rgb[0] << (bits-8) | rgb[0];
             break;
         case X264_CSP_HIGH_DEPTH|X264_CSP_BGRA:
         case X264_CSP_HIGH_DEPTH|X264_CSP_RGB:
         case X264_CSP_BGRA:
         case X264_CSP_RGB:
-            h->color[0] = rgb[0]<<(bits-8) | rgb[0];
-            h->color[1] = rgb[1]<<(bits-8) | rgb[1];
-            h->color[2] = rgb[2]<<(bits-8) | rgb[2];
+            h->color[0] = (unsigned)rgb[0] << (bits-8) | rgb[0];
+            h->color[1] = (unsigned)rgb[1] << (bits-8) | rgb[1];
+            h->color[2] = (unsigned)rgb[2] << (bits-8) | rgb[2];
             break;
         default:
             return 1;
@@ -249,7 +250,7 @@ static int handle_opts(int *arg, const x264_cli_csp_t *csp, video_info_t *info, 
 	
     for( int i = 0; i < 9; i++ )
     {
-        int mod = i&1 ? (csp->mod_height << info->interlaced) : csp->mod_width;
+        int mod = i&1 ? (unsigned)csp->mod_height << info->interlaced : csp->mod_width;
         opt = x264_get_option( optlist[i], opts );
         int parsed_arg = 0;
         if( opt )
@@ -274,6 +275,57 @@ static int pad_add3_int( int a, int b, int c, int *out )
     if( a < 0 || b < 0 || c < 0 || a > INT_MAX - b || a + b > INT_MAX - c )
         return -1;
     *out = a + b + c;
+    return 0;
+}
+
+static int pad_mul_int( int *out, int a, int b )
+{
+    if( !out || a < 0 || b < 0 || (b && a > INT_MAX / b) )
+        return -1;
+    *out = a * b;
+    return 0;
+}
+
+static int pad_add_int( int *out, int a, int b )
+{
+    if( !out || a < 0 || b < 0 || a > INT_MAX - b )
+        return -1;
+    *out = a + b;
+    return 0;
+}
+
+static int pad_scale_dimension( int value, double scale, int *out )
+{
+    double scaled = value * scale;
+    if( !out || !isfinite( scaled ) || scaled < 0.0 || scaled > (double)INT_MAX || scaled != floor( scaled ) )
+        return -1;
+    *out = (int)scaled;
+    return 0;
+}
+
+static int pad_plane_copy_params( int *offset, int *width, int *height,
+                                  int input_width, int input_height, int dst_stride,
+                                  int cols, int rows, double width_scale, double height_scale,
+                                  int depth_factor )
+{
+    int scaled_input_width;
+    int scaled_input_height;
+    int scaled_cols;
+    int scaled_rows;
+    int byte_width;
+    int byte_col_offset;
+    int row_offset;
+    if( pad_scale_dimension( input_width, width_scale, &scaled_input_width ) ||
+        pad_scale_dimension( input_height, height_scale, &scaled_input_height ) ||
+        pad_scale_dimension( cols, width_scale, &scaled_cols ) ||
+        pad_scale_dimension( rows, height_scale, &scaled_rows ) ||
+        pad_mul_int( &byte_width, scaled_input_width, depth_factor ) ||
+        pad_mul_int( &byte_col_offset, scaled_cols, depth_factor ) ||
+        pad_mul_int( &row_offset, scaled_rows, dst_stride ) ||
+        pad_add_int( offset, row_offset, byte_col_offset ) )
+        return -1;
+    *width = byte_width;
+    *height = scaled_input_height;
     return 0;
 }
 
@@ -431,13 +483,18 @@ static int get_frame( hnd_t handle, cli_pic_t *out, int frame )
 
     for( int i = 0; i < in.img.planes; i++ )
     {
-        float scale[2] = { h->csp->width[i] * depth_factor,
-                           h->csp->height[i] };
         int stride[2]  = { in.img.stride[i],
                            staged.img.stride[i] };
-        int in_dim[2]  = { in.img.width * scale[0],
-                           in.img.height * scale[1] };
-        int offset = h->cols*scale[0] + h->rows*scale[1]*stride[1];
+        int in_dim[2];
+        int offset;
+        if( pad_plane_copy_params( &offset, &in_dim[0], &in_dim[1],
+                                   in.img.width, in.img.height, stride[1],
+                                   h->cols, h->rows, h->csp->width[i],
+                                   h->csp->height[i], depth_factor ) )
+        {
+            h->prev_filter.release_frame( h->prev_handle, &in, frame );
+            return -1;
+        }
 
         x264_cli_plane_copy( staged.img.plane[i]+offset, stride[1],
                              in.img.plane[i], stride[0], in_dim[0], in_dim[1] );

@@ -29,6 +29,8 @@
 #   include "x86/yadif_filter_line.h"
 #endif
 
+#define YADIF_AVG(a,b) (((unsigned)(a) + (unsigned)(b)) >> 1)
+
 #define CHECK(j) \
     score = abs( cur[-refs-1+ j] - cur[+refs-1- j] ) \
           + abs( cur[-refs  + j] - cur[+refs  - j] ) \
@@ -36,14 +38,14 @@
     if( score < spatial_score ) \
     { \
         spatial_score = score; \
-        spatial_pred  = (cur[-refs  + j] + cur[+refs  - j]) >> 1;
+        spatial_pred  = YADIF_AVG( cur[-refs  + j], cur[+refs  - j] );
 
 #define FILTER \
     for( int x = 0; x < w; x++ ) \
     { \
         int score; \
         int c = cur[-refs]; \
-        int d = (prev2[0] + next2[0]) >> 1; \
+        int d = YADIF_AVG( prev2[0], next2[0] ); \
         int e = cur[+refs]; \
         int temporal_diff0 = abs( prev2[0] - next2[0] ); \
         int temporal_diff1 = (abs( prev[-refs] - c ) \
@@ -51,7 +53,7 @@
         int temporal_diff2 = (abs( next[-refs] - c ) \
                              + abs( next[+refs] - e )) >> 1; \
         int diff = X264_MAX3( temporal_diff0>>1, temporal_diff1, temporal_diff2 ); \
-        int spatial_pred = (c + e) >> 1; \
+        int spatial_pred = YADIF_AVG( c, e ); \
         int spatial_score = abs( cur[-refs-1] - cur[+refs-1] ) \
                           + abs( c-e ) \
                           + abs( cur[-refs+1] - cur[+refs+1] ) \
@@ -62,8 +64,8 @@
  \
         if( yctx->mode < 2 ) \
         { \
-            int b   = (prev2[-2*refs] + next2[-2*refs]) >> 1; \
-            int f   = (prev2[+2*refs] + next2[+2*refs]) >> 1; \
+            int b   = YADIF_AVG( prev2[-2*refs], next2[-2*refs] ); \
+            int f   = YADIF_AVG( prev2[+2*refs], next2[+2*refs] ); \
             int max = X264_MAX3( d-e, d-c, X264_MIN( b-c, f-e ) ); \
             int min = X264_MIN3( d-e, d-c, X264_MAX( b-c, f-e ) ); \
             diff    = X264_MAX3( diff, min, -max ); \
@@ -111,6 +113,8 @@ REALIGN_STACK static void filter_line_c_16bit( struct yadif_context *yctx )
 
     FILTER
 }
+
+#undef YADIF_AVG
 
 filter_line_func get_filter_func( unsigned int cpu, int high_depth ) {
     filter_line_func ret = filter_line_c;

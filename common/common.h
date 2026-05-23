@@ -153,7 +153,7 @@ void x264_cabac_init( x264_t *h );
 
 static ALWAYS_INLINE pixel x264_clip_pixel( int x )
 {
-    return ( (x & ~PIXEL_MAX) ? (-x)>>31 & PIXEL_MAX : x );
+    return (pixel)( (x & ~PIXEL_MAX) ? (-x)>>31 & PIXEL_MAX : x );
 }
 
 /****************************************************************************
@@ -863,8 +863,8 @@ static ALWAYS_INLINE int x264_predictor_roundclip( int16_t (*dst)[2], int16_t (*
         int my = (mvc[i][1] + 2) >> 2;
         uint32_t mv = pack16to32_mask(mx, my);
         if( !mv || mv == pmv ) continue;
-        dst[cnt][0] = x264_clip3( mx, mv_limit[0][0], mv_limit[1][0] );
-        dst[cnt][1] = x264_clip3( my, mv_limit[0][1], mv_limit[1][1] );
+        dst[cnt][0] = (int16_t)x264_clip3( mx, mv_limit[0][0], mv_limit[1][0] );
+        dst[cnt][1] = (int16_t)x264_clip3( my, mv_limit[0][1], mv_limit[1][1] );
         cnt++;
     }
     return cnt;
@@ -880,8 +880,8 @@ static ALWAYS_INLINE int x264_predictor_clip( int16_t (*dst)[2], int16_t (*mvc)[
         int mx = mvc[i][0];
         int my = mvc[i][1];
         if( !mv || mv == pmv ) continue;
-        dst[cnt][0] = x264_clip3( mx, qpel_limit[0], qpel_limit[2] );
-        dst[cnt][1] = x264_clip3( my, qpel_limit[1], qpel_limit[3] );
+        dst[cnt][0] = (int16_t)x264_clip3( mx, qpel_limit[0], qpel_limit[2] );
+        dst[cnt][1] = (int16_t)x264_clip3( my, qpel_limit[1], qpel_limit[3] );
         cnt++;
     }
     return cnt;

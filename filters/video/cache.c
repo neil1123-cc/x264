@@ -197,7 +197,8 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
     fill_cache( h, frame );
     if( (int64_t)frame > cache_last_frame( h ) ) /* eof */
         return -1;
-    int idx = frame - (h->eof ? h->eof - h->max_size : h->first_frame);
+    int64_t cache_start = h->eof ? (int64_t)h->eof - h->max_size : h->first_frame;
+    int64_t idx = (int64_t)frame - cache_start;
     if( idx < 0 || idx >= h->max_size )
         return -1;
     *output = *h->cache[idx];

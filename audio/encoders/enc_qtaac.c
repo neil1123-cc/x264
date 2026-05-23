@@ -152,6 +152,15 @@ static const char * const encoder_mode_names[][4] = {
     { "CBR", "ABR", "CVBR", },
 };
 
+static inline int midpoint_floor_int( int a, int b )
+{
+    int64_t sum = (int64_t)a + (int64_t)b;
+    int64_t midpoint = sum / 2;
+    if( sum < 0 && sum % 2 )
+        midpoint--;
+    return (int)midpoint;
+}
+
 static int available_quality_values[] = {
     0, 9 ,18 ,27 ,36 ,45 ,54 ,63 ,73, 82, 91, 100, 109, 118, 127,
 };
@@ -254,7 +263,7 @@ static int find_nearest_index( int value, int *val_list, int num )
 
     for( i=0; i<num-1; i++ )
     {
-        int center = ( val_list[i] + val_list[i+1] )>>1;
+        int center = midpoint_floor_int( val_list[i], val_list[i+1] );
 
         if( val_list[i] <= value && value < center )
             return i;
@@ -1002,12 +1011,14 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     if( !out )
         return NULL;
 
-    out->dts = h->last_dts;
-    if( add_frame_dts( &h->last_dts, h->info.framelen ) )
+    int64_t staged_last_dts = h->last_dts == INVALID_DTS ? h->last_sample : h->last_dts;
+    out->dts = staged_last_dts;
+    if( add_frame_dts( &staged_last_dts, h->info.framelen ) )
     {
         x264_af_free_packet( out );
         return NULL;
     }
+    h->last_dts = staged_last_dts;
 
     return out;
 }
@@ -1033,12 +1044,14 @@ static audio_packet_t *finish( hnd_t encoder )
     if( !( out = fill_buffer( h ) ) )
         return NULL;
 
-    out->dts = h->last_dts;
-    if( add_frame_dts( &h->last_dts, h->info.framelen ) )
+    int64_t staged_last_dts = h->last_dts == INVALID_DTS ? h->last_sample : h->last_dts;
+    out->dts = staged_last_dts;
+    if( add_frame_dts( &staged_last_dts, h->info.framelen ) )
     {
         x264_af_free_packet( out );
         return NULL;
     }
+    h->last_dts = staged_last_dts;
 
     return out;
 }

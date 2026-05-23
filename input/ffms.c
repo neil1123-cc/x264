@@ -58,7 +58,7 @@ static inline int64_t reduce_pts_floor( int64_t pts, int shift )
     if( shift >= 63 )
         return pts < 0 ? -1 : 0;
 
-    int64_t divisor = (int64_t)1 << shift;
+    int64_t divisor = (int64_t)(UINT64_C(1) << shift);
     if( pts >= 0 )
         return pts / divisor;
     return -1 - ( ( -1 - pts ) / divisor );

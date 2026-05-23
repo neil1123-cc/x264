@@ -355,9 +355,11 @@ static audio_packet_t *get_next_packet( hnd_t handle )
         out->size = get_next_mp3frame( h, out->data );
     } while( !out->size );
 
-    out->dts = h->last_dts;
-    if( add_frame_dts( &h->last_dts, h->info.framelen ) )
+    int64_t staged_last_dts = h->last_dts == INVALID_DTS ? h->last_sample : h->last_dts;
+    out->dts = staged_last_dts;
+    if( add_frame_dts( &staged_last_dts, h->info.framelen ) )
         goto error;
+    h->last_dts = staged_last_dts;
     return out;
 
 error:
@@ -405,9 +407,11 @@ static audio_packet_t *finish( hnd_t encoder )
     if( !out->size )
         goto error;
 
-    out->dts = h->last_dts;
-    if( add_frame_dts( &h->last_dts, h->info.framelen ) )
+    int64_t staged_last_dts = h->last_dts == INVALID_DTS ? h->last_sample : h->last_dts;
+    out->dts = staged_last_dts;
+    if( add_frame_dts( &staged_last_dts, h->info.framelen ) )
         goto error;
+    h->last_dts = staged_last_dts;
     return out;
 
 error:

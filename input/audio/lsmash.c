@@ -283,10 +283,14 @@ static audio_packet_t *get_next_au( hnd_t handle )
     out->info        = h->info;
     out->channels    = (unsigned)h->info.channels;
     out->samplecount = (unsigned)h->info.framelen;
-    out->dts         = h->last_dts;
 
     lsmash_sample_t sample = {0};
     lsmash_sample_t *psample = &sample;
+    if( h->summary->max_au_length > (uint32_t)INT_MAX )
+    {
+        x264_af_free_packet( out );
+        return NULL;
+    }
     lsmash_sample_alloc( &sample, h->summary->max_au_length );
     if( h->summary->max_au_length && !sample.data )
     {
@@ -313,13 +317,18 @@ static audio_packet_t *get_next_au( hnd_t handle )
     out->size = (int)sample.length;
     out->data = sample.data;
 
-    if( h->frame_count == INT64_MAX || h->info.framelen > INT64_MAX - h->last_dts )
+    int64_t staged_last_dts = h->last_dts;
+    int64_t staged_frame_count = h->frame_count;
+    if( staged_frame_count == INT64_MAX || h->info.framelen > INT64_MAX - staged_last_dts )
     {
         x264_af_free_packet( out );
         return NULL;
     }
-    h->last_dts += h->info.framelen;
-    h->frame_count++;
+    out->dts = staged_last_dts;
+    staged_last_dts += h->info.framelen;
+    staged_frame_count++;
+    h->last_dts = staged_last_dts;
+    h->frame_count = staged_frame_count;
 
     return out;
 }

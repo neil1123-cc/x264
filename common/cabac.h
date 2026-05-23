@@ -95,7 +95,7 @@ void x264_cabac_encode_flush( x264_t *h, x264_cabac_t *cb );
 
 static ALWAYS_INLINE int x264_cabac_pos( x264_cabac_t *cb )
 {
-    return (cb->p - cb->p_start + cb->i_bytes_outstanding) * 8 + cb->i_queue;
+    return (int)( (cb->p - cb->p_start + cb->i_bytes_outstanding) * 8 + cb->i_queue );
 }
 
 /* internal only. these don't write the bitstream, just calculate bit cost: */

@@ -27,6 +27,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <float.h>
+#include <limits.h>
 
 #define FAIL_IF_ERROR( cond, ... ) FAIL_IF_ERR( cond, "timecode", __VA_ARGS__ )
 
@@ -47,7 +48,7 @@ typedef struct
 static inline double sigexp10( double value, double *exponent )
 {
     /* This function separates significand and exp10 from double floating point. */
-    *exponent = pow( 10, floor( log10( value ) ) );
+    *exponent = pow( 10.0, floor( log10( value ) ) );
     return value / *exponent;
 }
 
@@ -57,6 +58,11 @@ static inline double sigexp10( double value, double *exponent )
 static int timecode_is_positive_finite( double value )
 {
     return value == value && value > 0.0 && value <= DBL_MAX;
+}
+
+static int timecode_seek_to_pos( FILE *file, int64_t file_pos )
+{
+    return file_pos < 0 || file_pos > LONG_MAX || fseek( file, (long)file_pos, SEEK_SET );
 }
 
 static const char *timecode_skip_space( const char *arg )
@@ -487,7 +493,7 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
         }
         timecodes_num = h->stored_pts_num;
         FAIL_IF_ERROR( timecodes_num <= 0 || (uint64_t)timecodes_num > SIZE_MAX / sizeof(double), "too many timecodes\n" );
-        FAIL_IF_ERROR( fseek( tcfile_in, (long)file_pos, SEEK_SET ), "tcfile seek failed\n" );
+        FAIL_IF_ERROR( timecode_seek_to_pos( tcfile_in, file_pos ), "tcfile seek failed\n" );
 
         timecodes = malloc( (size_t)timecodes_num * sizeof(double) );
         if( !timecodes )
@@ -517,7 +523,7 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
                 seq_fps = assume_fps;
             }
             for( ; num < start && num < timecodes_num - 1; num++ )
-                timecodes[num + 1] = timecodes[num] + 1 / assume_fps;
+                timecodes[num + 1] = timecodes[num] + 1.0 / assume_fps;
             if( num < timecodes_num - 1 )
             {
                 if( h->auto_timebase_den || h->auto_timebase_num )
@@ -526,11 +532,11 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
                 if( seq_fps < 0 )
                     goto fail;
                 for( num = start; num <= end && num < timecodes_num - 1; num++ )
-                    timecodes[num + 1] = timecodes[num] + 1 / seq_fps;
+                    timecodes[num + 1] = timecodes[num] + 1.0 / seq_fps;
             }
         }
         for( ; num < timecodes_num - 1; num++ )
-            timecodes[num + 1] = timecodes[num] + 1 / assume_fps;
+            timecodes[num + 1] = timecodes[num] + 1.0 / assume_fps;
         if( h->auto_timebase_den || h->auto_timebase_num )
             fpss[seq_num] = h->assume_fps;
 
@@ -540,7 +546,7 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
             double assume_fps_sig, seq_fps_sig;
             if( try_mkv_timebase_den( fpss, h, seq_num + 1 ) < 0 )
                 goto fail;
-            if( fseek( tcfile_in, (long)file_pos, SEEK_SET ) )
+            if( timecode_seek_to_pos( tcfile_in, file_pos ) )
                 goto fail;
             assume_fps_sig = sigexp10( h->assume_fps, &exponent );
             uint64_t assume_fps_den;
@@ -565,12 +571,12 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
                     goto fail;
                 seq_fps = (double)MKV_TIMEBASE_DEN / (double)seq_fps_den;
                 for( ; num < start && num < timecodes_num - 1; num++ )
-                    timecodes[num + 1] = timecodes[num] + 1 / assume_fps;
+                    timecodes[num + 1] = timecodes[num] + 1.0 / assume_fps;
                 for( num = start; num <= end && num < timecodes_num - 1; num++ )
-                    timecodes[num + 1] = timecodes[num] + 1 / seq_fps;
+                    timecodes[num + 1] = timecodes[num] + 1.0 / seq_fps;
             }
             for( ; num < timecodes_num - 1; num++ )
-                timecodes[num + 1] = timecodes[num] + 1 / assume_fps;
+                timecodes[num + 1] = timecodes[num] + 1.0 / assume_fps;
         }
         if( fpss )
         {
@@ -601,7 +607,7 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
         timecodes_num = h->stored_pts_num;
         FAIL_IF_ERROR( !timecodes_num, "input tcfile doesn't have any timecodes!\n" );
         FAIL_IF_ERROR( (uint64_t)timecodes_num > SIZE_MAX / sizeof(double), "too many timecodes\n" );
-        FAIL_IF_ERROR( file_pos < 0 || fseek( tcfile_in, (long)file_pos, SEEK_SET ), "tcfile seek failed\n" );
+        FAIL_IF_ERROR( timecode_seek_to_pos( tcfile_in, file_pos ), "tcfile seek failed\n" );
 
         timecodes = malloc( (size_t)timecodes_num * sizeof(double) );
         if( !timecodes )
@@ -642,7 +648,7 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
                 goto fail;
             for( size_t fpss_idx = 0; fpss_idx < fpss_num; fpss_idx++ )
             {
-                fpss[fpss_idx] = 1 / (timecodes[fpss_idx + 1] - timecodes[fpss_idx]);
+                fpss[fpss_idx] = 1.0 / (timecodes[fpss_idx + 1] - timecodes[fpss_idx]);
                 if( h->auto_timebase_den )
                 {
                     uint64_t i = 1;
@@ -682,7 +688,7 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
         }
 
         if( timecodes_num > 1 )
-            h->assume_fps = 1 / (timecodes[timecodes_num - 1] - timecodes[timecodes_num - 2]);
+            h->assume_fps = 1.0 / (timecodes[timecodes_num - 1] - timecodes[timecodes_num - 2]);
         else
             h->assume_fps = (double)info->fps_num / info->fps_den;
         h->last_timecode = timecodes[timecodes_num - 1];
@@ -813,7 +819,7 @@ fail:
     return -1;
 }
 
-static int get_frame_pts( timecode_hnd_t *h, int frame, int real_frame, int64_t *pts )
+static int get_frame_pts( timecode_hnd_t *h, int frame, int real_frame, double *last_timecode, int *drop_pts, int64_t *pts )
 {
     if( frame < 0 )
         return -1;
@@ -825,20 +831,15 @@ static int get_frame_pts( timecode_hnd_t *h, int frame, int real_frame, int64_t 
     else
     {
         if( h->pts && real_frame )
-        {
-            x264_cli_log( "timecode", X264_LOG_INFO, "input timecode file missing data for frame %d and later\n"
-                          "                 assuming constant fps %.6f\n", frame, h->assume_fps );
-            free( h->pts );
-            h->pts = NULL;
-        }
+            *drop_pts = 1;
         if( !timecode_is_positive_finite( h->assume_fps ) ||
-            (h->last_timecode != 0.0 && !timecode_is_positive_finite( h->last_timecode )) )
+            (*last_timecode != 0.0 && !timecode_is_positive_finite( *last_timecode )) )
             return -1;
-        double timecode = h->last_timecode + 1 / h->assume_fps;
+        double timecode = *last_timecode + 1.0 / h->assume_fps;
         if( !timecode_is_positive_finite( timecode ) )
             return -1;
         if( real_frame )
-            h->last_timecode = timecode;
+            *last_timecode = timecode;
         return timecode_seconds_to_pts( pts, timecode, h );
     }
 }
@@ -852,16 +853,28 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int frame )
     if( h->input.read_frame( pic, h->p_handle, frame ) )
         return -1;
 
+    int64_t pts;
     int64_t next_pts;
-    if( get_frame_pts( h, frame, 1, &pic->pts ) ||
-        get_frame_pts( h, frame + 1, 0, &next_pts ) ||
-        next_pts <= pic->pts )
+    double last_timecode = h->last_timecode;
+    int drop_pts = 0;
+    if( get_frame_pts( h, frame, 1, &last_timecode, &drop_pts, &pts ) ||
+        get_frame_pts( h, frame + 1, 0, &last_timecode, &drop_pts, &next_pts ) ||
+        next_pts <= pts )
     {
         if( h->input.release_frame )
             h->input.release_frame( pic, h->p_handle );
         return -1;
     }
-    pic->duration = next_pts - pic->pts;
+    if( drop_pts )
+    {
+        x264_cli_log( "timecode", X264_LOG_INFO, "input timecode file missing data for frame %d and later\n"
+                      "                 assuming constant fps %.6f\n", frame, h->assume_fps );
+        free( h->pts );
+        h->pts = NULL;
+    }
+    h->last_timecode = last_timecode;
+    pic->pts = pts;
+    pic->duration = next_pts - pts;
 
     return 0;
 }

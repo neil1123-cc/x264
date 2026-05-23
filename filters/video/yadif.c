@@ -227,11 +227,11 @@ static void interpolate( uint8_t *dst, uint8_t *cur0, uint8_t *cur2, int w,
         uint16_t *cur0_16 = (uint16_t *)cur0;
         uint16_t *cur2_16 = (uint16_t *)cur2;
         for( int x = 0; x < w; x++ )
-            dst_16[x] = (cur0_16[x] + cur2_16[x] + 1)>>1;
+            dst_16[x] = (uint16_t)(((unsigned)cur0_16[x] + (unsigned)cur2_16[x] + 1u) >> 1);
     }
     else
         for( int x = 0; x < w; x++ )
-            dst[x] = (cur0[x] + cur2[x] + 1)>>1;
+            dst[x] = (uint8_t)(((unsigned)cur0[x] + (unsigned)cur2[x] + 1u) >> 1);
 }
 
 static int get_frame( hnd_t handle, cli_pic_t *output, int frame_out )

@@ -59,7 +59,7 @@ const audio_encoder_entry_t registered_audio_encoders[] = {
     { "amrwb",      "amrnb_3gpp",        &audio_encoder_amrwb_3gpp, },
 #endif
 #endif /* HAVE_AUDIO */
-    { NULL, },
+    { NULL, NULL, NULL },
 };
 
 static int x264_audio_encoder_entry_valid( const audio_encoder_entry_t *entry )

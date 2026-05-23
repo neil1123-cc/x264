@@ -258,10 +258,28 @@ static void avs_build_filter_sequence( const char *filename_ext, const char *fil
 
 static AVS_Value update_clip( avs_hnd_t *h, const AVS_VideoInfo **vi, AVS_Value res, AVS_Value release )
 {
-    h->func.avs_release_clip( h->clip );
-    h->clip = h->func.avs_take_clip( res, h->env );
+    AVS_Clip *clip = h->func.avs_take_clip( res, h->env );
+    const AVS_VideoInfo *new_vi;
+
     h->func.avs_release_value( release );
-    *vi = h->clip ? h->func.avs_get_video_info( h->clip ) : NULL;
+    if( !clip )
+    {
+        *vi = NULL;
+        return res;
+    }
+
+    new_vi = h->func.avs_get_video_info( clip );
+    if( !new_vi )
+    {
+        h->func.avs_release_clip( clip );
+        *vi = NULL;
+        return res;
+    }
+
+    if( h->clip && h->func.avs_release_clip )
+        h->func.avs_release_clip( h->clip );
+    h->clip = clip;
+    *vi = new_vi;
     return res;
 }
 
@@ -467,10 +485,11 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     ansi_filename = NULL;
 #endif
     FAIL_IF_ERROR_CLEANUP( !avs_is_clip( res ), "`%s' didn't return a video clip\n", psz_filename );
-    h->clip = h->func.avs_take_clip( res, h->env );
-    FAIL_IF_ERROR_CLEANUP( !h->clip, "failed to take video clip\n" );
-    const AVS_VideoInfo *vi = h->func.avs_get_video_info( h->clip );
+    AVS_Clip *clip = h->func.avs_take_clip( res, h->env );
+    FAIL_IF_ERROR_CLEANUP( !clip, "failed to take video clip\n" );
+    const AVS_VideoInfo *vi = h->func.avs_get_video_info( clip );
     FAIL_IF_ERROR_CLEANUP( !vi, "failed to read video info\n" );
+    h->clip = clip;
     FAIL_IF_ERROR_CLEANUP( !avs_has_video( vi ), "`%s' has no video data\n", psz_filename );
     FAIL_IF_ERROR_CLEANUP( invalid_avs_dimensions( vi->width, vi->height, bit_depth > 8 ),
                            "invalid video dimensions (%dx%d)\n", vi->width, vi->height );

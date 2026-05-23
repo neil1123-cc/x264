@@ -104,8 +104,8 @@ static void dither_plane_##pitch( pixel *dst, int dst_stride, uint16_t *src, int
 { \
     const int lshift = 16-BIT_DEPTH; \
     const int rshift = 16-BIT_DEPTH+2; \
-    const int half = 1 << (16-BIT_DEPTH+1); \
-    const int pixel_max = (1 << BIT_DEPTH)-1; \
+    const int half = 1u << (16-BIT_DEPTH+1); \
+    const int pixel_max = (1u << BIT_DEPTH)-1; \
     memset( errors, 0, (width+1) * sizeof(int16_t) ); \
     for( int y = 0; y < height; y++, src += src_stride, dst += dst_stride ) \
     { \
@@ -176,7 +176,7 @@ static void scale_image( cli_image_t *output, cli_image_t *img )
         for( int j = 0; j < height; j++ )
         {
             for( int k = 0; k < width; k++ )
-                dst[k] = src[k] << shift;
+                dst[k] = (unsigned)src[k] << shift;
 
             src += img->stride[i];
             dst += output->stride[i]/2;

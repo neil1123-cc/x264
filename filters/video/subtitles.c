@@ -19,6 +19,7 @@
 *****************************************************************************/
 
 #include <windows.h>
+#include <float.h>
 #include "x264cli.h"
 #include "subtitles.h"
 #include "video.h"
@@ -225,16 +226,39 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
 		x264_cli_log( NAME, X264_LOG_ERROR, "unsupported colorspace\n");
 		fmt.pixfmt = -1;
 	}
+	double scale_factor;
+	if( info->vfr )
+	{
+		if( info->timebase_num <= 0 || info->timebase_den <= 0 ||
+		    info->timebase_convert_multiplier != info->timebase_convert_multiplier )
+		{
+			free(h);
+			return -1;
+		}
+		scale_factor = info->timebase_convert_multiplier * (double)info->timebase_num /
+		               (double)info->timebase_den;
+	}
+	else
+	{
+		if( info->fps_num <= 0 || info->fps_den <= 0 )
+		{
+			free(h);
+			return -1;
+		}
+		scale_factor = (double)info->fps_den / (double)info->fps_num;
+	}
+	if( scale_factor != scale_factor || scale_factor <= 0.0 || scale_factor > DBL_MAX )
+	{
+		free(h);
+		return -1;
+	}
 	if (fmt.pixfmt == -1 || !(h->subrenderinst = subtitles_new_renderer(&fmt, info->sar_width, info->sar_height)))
 	{
 		free(h);
 		return -1;
 	}
 	h->fmt = fmt.pixfmt;
-	if( info->vfr )
-        h->scale_factor = info->timebase_convert_multiplier * info->timebase_num / info->timebase_den;
-	else
-        h->scale_factor = (double)(info->fps_den) / info->fps_num;
+	h->scale_factor = scale_factor;
 	h->vfr = info->vfr;
 
 	h->prev_filter = *filter;

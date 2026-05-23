@@ -25,6 +25,7 @@
  *****************************************************************************/
 
 #include "input.h"
+#include <limits.h>
 
 #ifdef _WIN32
 #include <io.h>
@@ -68,7 +69,8 @@ int x264_cli_csp_depth_factor( int csp )
 int64_t x264_cli_pic_plane_size( int csp, int width, int height, int plane )
 {
     int csp_mask = csp & X264_CSP_MASK;
-    if( x264_cli_csp_is_invalid( csp ) || plane < 0 || plane >= x264_cli_csps[csp_mask].planes )
+    if( x264_cli_csp_is_invalid( csp ) || width <= 0 || height <= 0 ||
+        plane < 0 || plane >= x264_cli_csps[csp_mask].planes )
         return 0;
     int64_t size = (int64_t)width * height;
     size *= x264_cli_csps[csp_mask].width[plane] * x264_cli_csps[csp_mask].height[plane];
@@ -83,12 +85,41 @@ int64_t x264_cli_pic_size( int csp, int width, int height )
     int64_t size = 0;
     int csp_mask = csp & X264_CSP_MASK;
     for( int i = 0; i < x264_cli_csps[csp_mask].planes; i++ )
-        size += x264_cli_pic_plane_size( csp, width, height, i );
+    {
+        int64_t plane_size = x264_cli_pic_plane_size( csp, width, height, i );
+        if( plane_size <= 0 || size > INT64_MAX - plane_size )
+            return 0;
+        size += plane_size;
+    }
     return size;
+}
+
+static int cli_pic_plane_alloc_size( int csp, int csp_mask, int width, int height,
+                                     int plane, int align, int *stride, int64_t *size )
+{
+    if( !stride || !size )
+        return -1;
+    int depth = x264_cli_csp_depth_factor( csp );
+    int64_t plane_width = (int64_t)width * x264_cli_csps[csp_mask].width[plane];
+    int64_t plane_height = (int64_t)height * x264_cli_csps[csp_mask].height[plane];
+    if( depth <= 0 || align <= 0 || plane_width <= 0 || plane_height <= 0 ||
+        plane_width > INT_MAX / depth )
+        return -1;
+    int64_t byte_width = plane_width * depth;
+    if( byte_width > INT_MAX - (align - 1) )
+        return -1;
+    int aligned_stride = ALIGN( (int)byte_width, align );
+    if( aligned_stride < byte_width || plane_height > INT64_MAX / aligned_stride )
+        return -1;
+    *stride = aligned_stride;
+    *size = plane_height * aligned_stride;
+    return 0;
 }
 
 static int cli_pic_init_internal( cli_pic_t *pic, int csp, int width, int height, int align, int alloc )
 {
+    if( !pic )
+        return -1;
     memset( pic, 0, sizeof(cli_pic_t) );
     int csp_mask = csp & X264_CSP_MASK;
     if( x264_cli_csp_is_invalid( csp ) )
@@ -100,14 +131,14 @@ static int cli_pic_init_internal( cli_pic_t *pic, int csp, int width, int height
     pic->img.height = height;
     for( int i = 0; i < pic->img.planes; i++ )
     {
-        int stride = width * x264_cli_csps[csp_mask].width[i];
-        stride *= x264_cli_csp_depth_factor( csp );
-        stride = ALIGN( stride, align );
+        int stride;
+        int64_t size;
+        if( cli_pic_plane_alloc_size( csp, csp_mask, width, height, i, align, &stride, &size ) )
+            return -1;
         pic->img.stride[i] = stride;
 
         if( alloc )
         {
-            int64_t size = (int64_t)(height * x264_cli_csps[csp_mask].height[i]) * stride;
             pic->img.plane[i] = x264_malloc( size );
             if( !pic->img.plane[i] )
             {

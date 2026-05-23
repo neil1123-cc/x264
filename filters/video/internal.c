@@ -24,6 +24,7 @@
  *****************************************************************************/
 
 #include "internal.h"
+#include <limits.h>
 
 #define FAIL_IF_ERROR( cond, ... ) FAIL_IF_ERR( cond, "x264", __VA_ARGS__ )
 
@@ -35,6 +36,21 @@ void x264_cli_plane_copy( uint8_t *dst, int i_dst, uint8_t *src, int i_src, int 
         dst += i_dst;
         src += i_src;
     }
+}
+
+static int x264_cli_pic_plane_dims( cli_pic_t *pic, int csp, int plane, int *width, int *height )
+{
+    if( !pic || !width || !height )
+        return -1;
+    int depth = x264_cli_csp_depth_factor( pic->img.csp );
+    int64_t plane_width = (int64_t)pic->img.width * x264_cli_csps[csp].width[plane];
+    int64_t plane_height = (int64_t)pic->img.height * x264_cli_csps[csp].height[plane];
+    if( depth <= 0 || plane_width < 0 || plane_height < 0 ||
+        plane_width > INT_MAX / depth || plane_height > INT_MAX )
+        return -1;
+    *width = (int)(plane_width * depth);
+    *height = (int)plane_height;
+    return 0;
 }
 
 int x264_cli_pic_copy( cli_pic_t *out, cli_pic_t *in )
@@ -49,10 +65,8 @@ int x264_cli_pic_copy( cli_pic_t *out, cli_pic_t *in )
     FAIL_IF_ERROR( planes != x264_cli_csps[csp].planes || planes != out->img.planes, "invalid frame plane count\n" );
     for( int i = 0; i < planes; i++ )
     {
-        int height = in->img.height * x264_cli_csps[csp].height[i];
-        int width =  in->img.width  * x264_cli_csps[csp].width[i];
-        width *= x264_cli_csp_depth_factor( in->img.csp );
-        FAIL_IF_ERROR( width < 0 || height < 0 ||
+        int width, height;
+        FAIL_IF_ERROR( x264_cli_pic_plane_dims( in, csp, i, &width, &height ) ||
                        (width && height && (!out->img.plane[i] || !in->img.plane[i])),
                        "invalid frame plane data\n" );
     }
@@ -63,9 +77,9 @@ int x264_cli_pic_copy( cli_pic_t *out, cli_pic_t *in )
 
     for( int i = 0; i < planes; i++ )
     {
-        int height = in->img.height * x264_cli_csps[csp].height[i];
-        int width =  in->img.width  * x264_cli_csps[csp].width[i];
-        width *= x264_cli_csp_depth_factor( in->img.csp );
+        int width, height;
+        if( x264_cli_pic_plane_dims( in, csp, i, &width, &height ) )
+            return -1;
         x264_cli_plane_copy( out->img.plane[i], out->img.stride[i], in->img.plane[i],
                              in->img.stride[i], width, height );
     }

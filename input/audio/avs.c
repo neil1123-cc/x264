@@ -95,12 +95,26 @@ fail:
     return -1;
 }
 
-static void update_clip( avs_source_t *h, const AVS_VideoInfo **vi, AVS_Value *res )
+static int update_clip( avs_source_t *h, const AVS_VideoInfo **vi, AVS_Value *res )
 {
-    h->func.avs_release_clip( h->clip );
-    h->clip = h->func.avs_take_clip( *res, h->env );
-    *vi = h->func.avs_get_video_info( h->clip );
-    return;
+    AVS_Clip *clip = h->func.avs_take_clip( *res, h->env );
+    const AVS_VideoInfo *new_vi;
+
+    if( !clip )
+        return -1;
+
+    new_vi = h->func.avs_get_video_info( clip );
+    if( !new_vi )
+    {
+        h->func.avs_release_clip( clip );
+        return -1;
+    }
+
+    if( h->clip && h->func.avs_release_clip )
+        h->func.avs_release_clip( h->clip );
+    h->clip = clip;
+    *vi = new_vi;
+    return 0;
 }
 
 #if !USE_AVXSYNTH
@@ -372,14 +386,14 @@ static int init( hnd_t *handle, const char *opt_str )
 #endif
 
     GOTO_IF( !avs_is_clip( res ), error, "no valid clip is found\n" )
-    h->clip = h->func.avs_take_clip( res, h->env );
 
-    const AVS_VideoInfo *vi = h->func.avs_get_video_info( h->clip );
+    const AVS_VideoInfo *vi = NULL;
+    GOTO_IF( update_clip( h, &vi, &res ), error, "no valid audio track is found\n" )
     GOTO_IF( !avs_has_audio( vi ), error, "no valid audio track is found\n" )
 
     // video is unneeded, so disable it if any
     res = h->func.avs_invoke( h->env, "KillVideo", res, NULL );
-    update_clip( h, &vi, &res );
+    GOTO_IF( update_clip( h, &vi, &res ), error, "failed to update audio clip\n" )
 
     switch( avs_sample_type( vi ) )
     {
@@ -406,7 +420,7 @@ static int init( hnd_t *handle, const char *opt_str )
         x264_cli_log( "avs", X264_LOG_INFO, "detected %dbit sample format, converting to float\n", avs_bytes_per_channel_sample( vi )*8 );
         res = h->func.avs_invoke( h->env, "ConvertAudioToFloat", res, NULL );
         GOTO_IF( avs_is_error( res ), error, "failed to convert audio sample format\n" )
-        update_clip( h, &vi, &res );
+        GOTO_IF( update_clip( h, &vi, &res ), error, "failed to update audio clip\n" )
         h->sample_fmt = SMPFMT_FLT;
     }
 

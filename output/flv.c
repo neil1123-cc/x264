@@ -114,6 +114,15 @@ static int flv_write_timestamp( flv_buffer *c, int64_t timestamp )
     return 0;
 }
 
+static int flv_amf_payload_position( flv_buffer *c, uint64_t *position )
+{
+    if( !c || !position || c->d_total > UINT64_MAX - c->d_cur ||
+        c->d_total + c->d_cur == UINT64_MAX )
+        return -1;
+    *position = c->d_total + c->d_cur + 1;
+    return 0;
+}
+
 #if HAVE_AUDIO
 static int flv_get_raw_audio_framelen( int *dst, audio_info_t *info, x264_param_t *p_param )
 {
@@ -342,8 +351,9 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
     int raw_audio_framelen = 0;
 #endif
 
-    if( p_param->i_timebase_num <= 0 || p_param->i_timebase_den <= 0 ||
-        ( !p_param->b_vfr_input && ( !p_param->i_fps_num || !p_param->i_fps_den ) ) )
+    if( p_param->i_width <= 0 || p_param->i_height <= 0 ||
+        p_param->i_timebase_num <= 0 || p_param->i_timebase_den <= 0 ||
+        !p_param->i_fps_num || !p_param->i_fps_den )
         return -1;
 
     flv_put_byte( c, FLV_TAG_TYPE_META ); // Tag Type "script data"
@@ -371,7 +381,8 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
         flv_put_amf_double( c, (double)p_param->i_fps_num / p_param->i_fps_den );
     else
     {
-        p_flv->i_framerate_pos = c->d_cur + c->d_total + 1;
+        if( flv_amf_payload_position( c, &p_flv->i_framerate_pos ) )
+            return -1;
         flv_put_amf_double( c, 0 ); // written at end of encoding
     }
 
@@ -379,15 +390,18 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
     flv_put_amf_double( c, FLV_CODECID_H264 );
 
     flv_put_amf_string( c, "duration" );
-    p_flv->i_duration_pos = c->d_cur + c->d_total + 1;
+    if( flv_amf_payload_position( c, &p_flv->i_duration_pos ) )
+        return -1;
     flv_put_amf_double( c, 0 ); // written at end of encoding
 
     flv_put_amf_string( c, "filesize" );
-    p_flv->i_filesize_pos = c->d_cur + c->d_total + 1;
+    if( flv_amf_payload_position( c, &p_flv->i_filesize_pos ) )
+        return -1;
     flv_put_amf_double( c, 0 ); // written at end of encoding
 
     flv_put_amf_string( c, "videodatarate" );
-    p_flv->i_bitrate_pos = c->d_cur + c->d_total + 1;
+    if( flv_amf_payload_position( c, &p_flv->i_bitrate_pos ) )
+        return -1;
     flv_put_amf_double( c, 0 ); // written at end of encoding
 
 #if HAVE_AUDIO
@@ -839,7 +853,7 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
 
 static int rewrite_amf_double( FILE *fp, uint64_t position, double value )
 {
-    if( value != value || value < 0.0 || position > LONG_MAX )
+    if( value != value || value < 0.0 || value > DBL_MAX || position > LONG_MAX )
         return -1;
     uint64_t x = endian_fix64( flv_dbl2int( value ) );
     return !fseek( fp, (long)position, SEEK_SET ) && fwrite( &x, 8, 1, fp ) == 1 ? 0 : -1;

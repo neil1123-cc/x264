@@ -221,7 +221,7 @@ static ALWAYS_INLINE double x264_clip3f( double v, double f_min, double f_max )
  * qp to qscale. */
 static ALWAYS_INLINE int x264_exp2fix8( float x )
 {
-    int i = x*(-64.f/6.f) + 512.5f;
+    int i = (int)( x*(-64.f/6.f) + 512.5f );
     if( i < 0 ) return 0;
     if( i > 1023 ) return 0xffff;
     return (x264_exp2_lut[i&63]+256) << (i>>6) >> 8;
@@ -245,8 +245,8 @@ static ALWAYS_INLINE int x264_median( int a, int b, int c )
 
 static ALWAYS_INLINE void x264_median_mv( int16_t *dst, int16_t *a, int16_t *b, int16_t *c )
 {
-    dst[0] = x264_median( a[0], b[0], c[0] );
-    dst[1] = x264_median( a[1], b[1], c[1] );
+    dst[0] = (int16_t)x264_median( a[0], b[0], c[0] );
+    dst[1] = (int16_t)x264_median( a[1], b[1], c[1] );
 }
 
 static ALWAYS_INLINE int x264_predictor_difference( int16_t (*mvc)[2], intptr_t i_mvc )
@@ -266,7 +266,7 @@ static ALWAYS_INLINE uint16_t x264_cabac_mvd_sum( uint8_t *mvdleft, uint8_t *mvd
     int amvd1 = mvdleft[1] + mvdtop[1];
     amvd0 = (amvd0 > 2) + (amvd0 > 32);
     amvd1 = (amvd1 > 2) + (amvd1 > 32);
-    return amvd0 + (amvd1<<8);
+    return (uint16_t)( amvd0 + (amvd1<<8) );
 }
 
 /****************************************************************************

@@ -183,7 +183,7 @@ static ALWAYS_INLINE int x264_predictor_clip_mmx2( int16_t (*dst)[2], int16_t (*
         :"r"(dst), "g"(pmv), "m"(pd_32), "m"(MEM_DYN( mvc, const int16_t ))
         :"mm0", "mm1", "mm2", "mm3", "mm4", "mm5", "mm6", "cc"
     );
-    return i;
+    return (int)i;
 }
 
 /* Same as the above, except we do (mv + 2) >> 2 on the input. */
@@ -251,7 +251,7 @@ static ALWAYS_INLINE int x264_predictor_roundclip_mmx2( int16_t (*dst)[2], int16
         :"r"(dst), "m"(pw_2), "g"(pmv), "m"(pd_32), "m"(MEM_DYN( mvc, const int16_t ))
         :"mm0", "mm1", "mm2", "mm3", "mm4", "mm5", "mm6", "mm7", "cc"
     );
-    return i;
+    return (int)i;
 }
 
 #endif

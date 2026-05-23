@@ -75,6 +75,8 @@ typedef struct x264_api_t
 
 REALIGN_STACK x264_t *x264_encoder_open( x264_param_t *param )
 {
+    if( !param )
+        return NULL;
     x264_api_t *api = calloc( 1, sizeof( x264_api_t ) );
     if( !api )
         return NULL;
@@ -129,6 +131,8 @@ REALIGN_STACK x264_t *x264_encoder_open( x264_param_t *param )
 
 REALIGN_STACK void x264_encoder_close( x264_t *h )
 {
+    if( !h )
+        return;
     x264_api_t *api = (x264_api_t *)h;
 
     api->encoder_close( api->x264 );
@@ -137,6 +141,8 @@ REALIGN_STACK void x264_encoder_close( x264_t *h )
 
 REALIGN_STACK void x264_nal_encode( x264_t *h, uint8_t *dst, x264_nal_t *nal )
 {
+    if( !h || !dst || !nal )
+        return;
     x264_api_t *api = (x264_api_t *)h;
 
     api->nal_encode( api->x264, dst, nal );
@@ -144,6 +150,8 @@ REALIGN_STACK void x264_nal_encode( x264_t *h, uint8_t *dst, x264_nal_t *nal )
 
 REALIGN_STACK int x264_encoder_reconfig( x264_t *h, x264_param_t *param)
 {
+    if( !h || !param )
+        return -1;
     x264_api_t *api = (x264_api_t *)h;
 
     return api->encoder_reconfig( api->x264, param );
@@ -151,6 +159,8 @@ REALIGN_STACK int x264_encoder_reconfig( x264_t *h, x264_param_t *param)
 
 REALIGN_STACK void x264_encoder_parameters( x264_t *h, x264_param_t *param )
 {
+    if( !h || !param )
+        return;
     x264_api_t *api = (x264_api_t *)h;
 
     api->encoder_parameters( api->x264, param );
@@ -158,6 +168,8 @@ REALIGN_STACK void x264_encoder_parameters( x264_t *h, x264_param_t *param )
 
 REALIGN_STACK int x264_encoder_headers( x264_t *h, x264_nal_t **pp_nal, int *pi_nal )
 {
+    if( !h || !pp_nal || !pi_nal )
+        return -1;
     x264_api_t *api = (x264_api_t *)h;
 
     return api->encoder_headers( api->x264, pp_nal, pi_nal );
@@ -165,6 +177,8 @@ REALIGN_STACK int x264_encoder_headers( x264_t *h, x264_nal_t **pp_nal, int *pi_
 
 REALIGN_STACK int x264_encoder_encode( x264_t *h, x264_nal_t **pp_nal, int *pi_nal, x264_picture_t *pic_in, x264_picture_t *pic_out )
 {
+    if( !h || !pp_nal || !pi_nal || !pic_out )
+        return -1;
     x264_api_t *api = (x264_api_t *)h;
 
     return api->encoder_encode( api->x264, pp_nal, pi_nal, pic_in, pic_out );
@@ -172,6 +186,8 @@ REALIGN_STACK int x264_encoder_encode( x264_t *h, x264_nal_t **pp_nal, int *pi_n
 
 REALIGN_STACK int x264_encoder_delayed_frames( x264_t *h )
 {
+    if( !h )
+        return 0;
     x264_api_t *api = (x264_api_t *)h;
 
     return api->encoder_delayed_frames( api->x264 );
@@ -179,6 +195,8 @@ REALIGN_STACK int x264_encoder_delayed_frames( x264_t *h )
 
 REALIGN_STACK int x264_encoder_maximum_delayed_frames( x264_t *h )
 {
+    if( !h )
+        return 0;
     x264_api_t *api = (x264_api_t *)h;
 
     return api->encoder_maximum_delayed_frames( api->x264 );
@@ -186,6 +204,8 @@ REALIGN_STACK int x264_encoder_maximum_delayed_frames( x264_t *h )
 
 REALIGN_STACK void x264_encoder_intra_refresh( x264_t *h )
 {
+    if( !h )
+        return;
     x264_api_t *api = (x264_api_t *)h;
 
     api->encoder_intra_refresh( api->x264 );
@@ -193,6 +213,8 @@ REALIGN_STACK void x264_encoder_intra_refresh( x264_t *h )
 
 REALIGN_STACK int x264_encoder_invalidate_reference( x264_t *h, int64_t pts )
 {
+    if( !h )
+        return -1;
     x264_api_t *api = (x264_api_t *)h;
 
     return api->encoder_invalidate_reference( api->x264, pts );

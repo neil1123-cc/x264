@@ -90,7 +90,7 @@ static inline void bs_init( bs_t *s, void *p_data, int i_data )
     int offset = ((intptr_t)p_data & 3);
     s->p       = s->p_start = (uint8_t*)p_data - offset;
     s->p_end   = (uint8_t*)p_data + i_data;
-    s->i_left  = (WORD_SIZE - offset)*8;
+    s->i_left  = ((int)WORD_SIZE - offset) * 8;
     if( offset )
     {
         s->cur_bits = endian_fix32( M32(s->p) );
@@ -101,15 +101,15 @@ static inline void bs_init( bs_t *s, void *p_data, int i_data )
 }
 static inline int bs_pos( bs_t *s )
 {
-    return( 8 * (s->p - s->p_start) + (WORD_SIZE*8) - s->i_left );
+    return 8 * (int)( s->p - s->p_start ) + (int)WORD_SIZE * 8 - s->i_left;
 }
 
 /* Write the rest of cur_bits to the bitstream; results in a bitstream no longer 32-bit aligned. */
 static inline void bs_flush( bs_t *s )
 {
-    M32( s->p ) = endian_fix32( s->cur_bits << (s->i_left&31) );
-    s->p += WORD_SIZE - (s->i_left >> 3);
-    s->i_left = WORD_SIZE*8;
+    M32( s->p ) = endian_fix32( (uint32_t)( s->cur_bits << (s->i_left&31) ) );
+    s->p += (int)WORD_SIZE - (s->i_left >> 3);
+    s->i_left = (int)WORD_SIZE * 8;
 }
 /* The inverse of bs_flush: prepare the bitstream to be written to again. */
 static inline void bs_realign( bs_t *s )
@@ -119,7 +119,7 @@ static inline void bs_realign( bs_t *s )
     {
         uint32_t cur_bits;
         s->p       = (uint8_t*)s->p - offset;
-        s->i_left  = (WORD_SIZE - offset)*8;
+        s->i_left  = ((int)WORD_SIZE - offset) * 8;
         memcpy( &cur_bits, s->p, sizeof(cur_bits) );
         s->cur_bits = endian_fix32( cur_bits );
         s->cur_bits >>= (4-offset)*8;
@@ -135,9 +135,9 @@ static inline void bs_write( bs_t *s, int i_count, uint32_t i_bits )
         if( s->i_left <= 32 )
         {
 #if WORDS_BIGENDIAN
-            M32( s->p ) = s->cur_bits >> (32 - s->i_left);
+            M32( s->p ) = (uint32_t)( s->cur_bits >> (32 - s->i_left) );
 #else
-            M32( s->p ) = endian_fix( s->cur_bits << s->i_left );
+            M32( s->p ) = (uint32_t)endian_fix( s->cur_bits << s->i_left );
 #endif
             s->i_left += 32;
             s->p += 4;
@@ -154,7 +154,7 @@ static inline void bs_write( bs_t *s, int i_count, uint32_t i_bits )
         {
             i_count -= s->i_left;
             s->cur_bits = (s->cur_bits << s->i_left) | (i_bits >> i_count);
-            M32( s->p ) = endian_fix( s->cur_bits );
+            M32( s->p ) = endian_fix32( (uint32_t)s->cur_bits );
             s->p += 4;
             s->cur_bits = i_bits;
             s->i_left = 32 - i_count;
@@ -175,11 +175,11 @@ static inline void bs_write1( bs_t *s, uint32_t i_bit )
     s->cur_bits <<= 1;
     s->cur_bits |= i_bit;
     s->i_left--;
-    if( s->i_left == WORD_SIZE*8-32 )
+    if( s->i_left == (int)WORD_SIZE*8-32 )
     {
-        M32( s->p ) = endian_fix32( s->cur_bits );
+        M32( s->p ) = endian_fix32( (uint32_t)s->cur_bits );
         s->p += 4;
-        s->i_left = WORD_SIZE*8;
+        s->i_left = (int)WORD_SIZE * 8;
     }
 }
 
@@ -226,7 +226,7 @@ X264_STATIC_ASSERT( ARRAY_ELEMS(x264_ue_size_tab) == 256, "ue size table must co
 static inline void bs_write_ue_big( bs_t *s, unsigned int val )
 {
     int size = 0;
-    int tmp = ++val;
+    unsigned int tmp = ++val;
     if( tmp >= 0x10000 )
     {
         size = 32;
@@ -239,13 +239,13 @@ static inline void bs_write_ue_big( bs_t *s, unsigned int val )
     }
     size += x264_ue_size_tab[tmp];
     bs_write( s, size>>1, 0 );
-    bs_write( s, (size>>1)+1, val );
+    bs_write( s, (size>>1)+1, (uint32_t)val );
 }
 
 /* Only works on values under 255. */
 static inline void bs_write_ue( bs_t *s, int val )
 {
-    bs_write( s, x264_ue_size_tab[val+1], val+1 );
+    bs_write( s, x264_ue_size_tab[val+1], (uint32_t)( val + 1 ) );
 }
 
 static inline void bs_write_se( bs_t *s, int val )
@@ -263,13 +263,13 @@ static inline void bs_write_se( bs_t *s, int val )
         tmp >>= 8;
     }
     size += x264_ue_size_tab[tmp];
-    bs_write( s, size, val );
+    bs_write( s, size, (uint32_t)val );
 }
 
 static inline void bs_write_te( bs_t *s, int x, int val )
 {
     if( x == 1 )
-        bs_write1( s, 1^val );
+        bs_write1( s, (uint32_t)( 1 ^ val ) );
     else //if( x > 1 )
         bs_write_ue( s, val );
 }

@@ -267,13 +267,17 @@ static audio_packet_t *get_next_packet( hnd_t handle )
         goto error;
     }
 
-    h->finishing = finishing;
-    if( h->last_dts == INVALID_DTS )
-        h->last_dts = h->last_sample;
-    h->last_sample += input_samplecount;
-    out->dts = h->last_dts;
-    if( add_frame_dts( &h->last_dts, h->info.framelen ) )
+    if( input_samplecount > (uint64_t)(INT64_MAX - h->last_sample) )
         goto error;
+    int64_t staged_last_sample = h->last_sample + input_samplecount;
+    int64_t staged_last_dts = h->last_dts == INVALID_DTS ? h->last_sample : h->last_dts;
+    out->dts = staged_last_dts;
+    if( add_frame_dts( &staged_last_dts, h->info.framelen ) )
+        goto error;
+
+    h->finishing = finishing;
+    h->last_sample = staged_last_sample;
+    h->last_dts = staged_last_dts;
     return out;
 
 error:

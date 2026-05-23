@@ -246,12 +246,13 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         av_dict_free( &options );
     FAIL_IF_ERROR_CLEANUP( avformat_find_stream_info( h->lavf, NULL ) < 0, "could not find input stream info\n" );
     FAIL_IF_ERROR_CLEANUP( h->lavf->nb_streams > INT_MAX, "too many input streams\n" );
+    int nb_streams = (int)h->lavf->nb_streams;
 	
 #if HAVE_AUDIO
     h->filename = strdup( psz_filename );
     FAIL_IF_ERROR_CLEANUP( !h->filename, "malloc failed\n" );
     int j = 0;
-    while( j < h->lavf->nb_streams )
+    while( j < nb_streams )
     {
         AVStream *stream = h->lavf->streams[j++];
         h->has_audio |= !!( stream && stream->codecpar && stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO );
@@ -259,14 +260,14 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
 #endif
 
     int i = 0;
-    while( i < h->lavf->nb_streams )
+    while( i < nb_streams )
     {
         AVStream *stream = h->lavf->streams[i];
         if( stream && stream->codecpar && stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO )
             break;
         i++;
     }
-    FAIL_IF_ERROR_CLEANUP( i == h->lavf->nb_streams, "could not find video stream\n" );
+    FAIL_IF_ERROR_CLEANUP( i == nb_streams, "could not find video stream\n" );
     h->stream_id       = i;
     h->next_frame      = 0;
     h->lavc            = codec_from_stream( h->lavf->streams[i] );
@@ -274,16 +275,20 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         goto fail;
 
     AVStream *s        = h->lavf->streams[i];
-    FAIL_IF_ERROR_CLEANUP( s->avg_frame_rate.num < 0 || s->avg_frame_rate.den < 0 ||
-                           s->avg_frame_rate.num > UINT32_MAX || s->avg_frame_rate.den > UINT32_MAX,
+    int64_t fps_num = s->avg_frame_rate.num;
+    int64_t fps_den = s->avg_frame_rate.den;
+    int64_t timebase_num = s->time_base.num;
+    int64_t timebase_den = s->time_base.den;
+    FAIL_IF_ERROR_CLEANUP( fps_num < 0 || fps_den < 0 ||
+                           fps_num > UINT32_MAX || fps_den > UINT32_MAX,
                            "invalid framerate\n" );
-    FAIL_IF_ERROR_CLEANUP( s->time_base.num <= 0 || s->time_base.den <= 0 ||
-                           s->time_base.num > UINT32_MAX || s->time_base.den > UINT32_MAX,
+    FAIL_IF_ERROR_CLEANUP( timebase_num <= 0 || timebase_den <= 0 ||
+                           timebase_num > UINT32_MAX || timebase_den > UINT32_MAX,
                            "invalid timebase\n" );
-    updated_info.fps_num      = (uint32_t)s->avg_frame_rate.num;
-    updated_info.fps_den      = (uint32_t)s->avg_frame_rate.den;
-    updated_info.timebase_num = (uint32_t)s->time_base.num;
-    updated_info.timebase_den = (uint32_t)s->time_base.den;
+    updated_info.fps_num      = (uint32_t)fps_num;
+    updated_info.fps_den      = (uint32_t)fps_den;
+    updated_info.timebase_num = (uint32_t)timebase_num;
+    updated_info.timebase_den = (uint32_t)timebase_den;
     /* lavf is thread unsafe as calling av_read_frame invalidates previously read AVPackets */
     updated_info.thread_safe  = 0;
     h->vfr_input             = updated_info.vfr;
@@ -333,12 +338,13 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
             updated_info.num_frames = (int)frame_est;
         }
     }
-    FAIL_IF_ERROR_CLEANUP( h->lavc->sample_aspect_ratio.num < 0 || h->lavc->sample_aspect_ratio.den < 0 ||
-                           h->lavc->sample_aspect_ratio.num > UINT32_MAX ||
-                           h->lavc->sample_aspect_ratio.den > UINT32_MAX,
+    int64_t sar_width = h->lavc->sample_aspect_ratio.num;
+    int64_t sar_height = h->lavc->sample_aspect_ratio.den;
+    FAIL_IF_ERROR_CLEANUP( sar_width < 0 || sar_height < 0 ||
+                           sar_width > UINT32_MAX || sar_height > UINT32_MAX,
                            "invalid sample aspect ratio\n" );
-    updated_info.sar_height = (uint32_t)h->lavc->sample_aspect_ratio.den;
-    updated_info.sar_width  = (uint32_t)h->lavc->sample_aspect_ratio.num;
+    updated_info.sar_height = (uint32_t)sar_height;
+    updated_info.sar_width  = (uint32_t)sar_width;
     updated_info.fullrange |= h->lavc->color_range == AVCOL_RANGE_JPEG;
 	
     /* -1 = 'unset' (internal) , 2 from lavf|ffms = 'unset' */

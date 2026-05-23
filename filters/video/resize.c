@@ -477,7 +477,7 @@ static int init_sws_context( resizer_hnd_t *h )
     if( sws_setColorspaceDetails( h->ctx,
                                   sws_getCoefficients( ( h->scale.width > 1024 || h->scale.height > 576 ) ? SWS_CS_ITU709 : SWS_CS_ITU601 ), h->scale.range,
                                   sws_getCoefficients( (  h->dst.width  > 1024 ||  h->dst.height  > 576 ) ? SWS_CS_ITU709 : SWS_CS_ITU601 ), h->dst.range,
-                                  0, 1<<16, 1<<16 ) < 0 )
+                                  0, 1u<<16, 1u<<16 ) < 0 )
         goto fail;
 
     if( sws_init_context( h->ctx, NULL, NULL ) < 0 )

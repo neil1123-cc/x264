@@ -46,6 +46,7 @@
 #include <errno.h>
 #include <float.h>
 #include <getopt.h>
+#include <limits.h>
 #include <signal.h>
 #include <time.h>
 
@@ -76,6 +77,8 @@
 
 #define FAIL_IF_ERROR( cond, ... ) FAIL_IF_ERR( cond, "x264", __VA_ARGS__ )
 
+static int append_audio_option( char *dst, size_t dst_size, size_t *len, const char *fmt, ... ) X264_FORMAT_PRINTF( 4, 5 );
+
 static int append_audio_option( char *dst, size_t dst_size, size_t *len, const char *fmt, ... )
 {
     va_list args;
@@ -89,7 +92,36 @@ static int append_audio_option( char *dst, size_t dst_size, size_t *len, const c
     if( written < 0 || (size_t)written >= dst_size - *len )
         return -1;
 
-    *len += written;
+    *len += (size_t)written;
+    return 0;
+}
+
+static int cli_i64_add_overflow( int64_t a, int64_t b, int64_t *dst )
+{
+    if( (b > 0 && a > INT64_MAX - b) ||
+        (b < 0 && a < INT64_MIN - b) )
+        return -1;
+    *dst = a + b;
+    return 0;
+}
+
+static int cli_i64_sub_overflow( int64_t a, int64_t b, int64_t *dst )
+{
+    if( (b > 0 && a < INT64_MIN + b) ||
+        (b < 0 && a > INT64_MAX + b) )
+        return -1;
+    *dst = a - b;
+    return 0;
+}
+
+static int estimate_final_ts( int64_t *dst, int64_t last_ts, int64_t previous_ts, int64_t first_ts )
+{
+    int64_t delta;
+    int64_t end_ts;
+    if( cli_i64_sub_overflow( last_ts, previous_ts, &delta ) ||
+        cli_i64_add_overflow( last_ts, delta, &end_ts ) ||
+        cli_i64_sub_overflow( end_ts, first_ts, dst ) )
+        return -1;
     return 0;
 }
 
@@ -570,6 +602,10 @@ static int  encode( x264_param_t *param, cli_opt_t *opt );
 /* logging and printing for within the cli system */
 static char *psz_log_file       = NULL;
 static int   cli_log_file_level = -1;
+
+void x264_cli_log( const char *name, int i_level, const char *fmt, ... ) X264_FORMAT_PRINTF( 3, 4 );
+void x264_cli_log_file( char *p_file_name, int i_level, const char *psz_fmt, va_list arg ) X264_FORMAT_PRINTF( 3, 0 );
+void x264_cli_printf( int i_level, const char *fmt, ... ) X264_FORMAT_PRINTF( 2, 3 );
 
 static inline void x264_log_done( void )
 {
@@ -2582,12 +2618,12 @@ generic_option:
     info.interlaced = param->b_interlaced;
     if( param->vui.i_sar_width > 0 && param->vui.i_sar_height > 0 )
     {
-        info.sar_width  = param->vui.i_sar_width;
-        info.sar_height = param->vui.i_sar_height;
+        info.sar_width  = (uint32_t)param->vui.i_sar_width;
+        info.sar_height = (uint32_t)param->vui.i_sar_height;
     }
     info.tff        = param->b_tff;
     info.vfr        = param->b_vfr_input;
-	info.timebase_convert_multiplier = 1.;
+	info.timebase_convert_multiplier = 1.0;
 
     input_opt.seek = opt->i_seek;
     input_opt.progress = opt->b_progress;
@@ -2715,8 +2751,8 @@ generic_option:
     /* override detected values by those specified by the user */
     if( param->vui.i_sar_width > 0 && param->vui.i_sar_height > 0 )
     {
-        info.sar_width  = param->vui.i_sar_width;
-        info.sar_height = param->vui.i_sar_height;
+        info.sar_width  = (uint32_t)param->vui.i_sar_width;
+        info.sar_height = (uint32_t)param->vui.i_sar_height;
     }
     if( b_user_fps )
     {
@@ -2737,9 +2773,9 @@ generic_option:
         FAIL_IF_ERROR( i_user_timebase_num > UINT32_MAX || i_user_timebase_den > UINT32_MAX,
                        "timebase you specified exceeds H.264 maximum\n" );
         opt->timebase_convert_multiplier = ((double)i_user_timebase_den / info.timebase_den)
-                                         * ((double)info.timebase_num / i_user_timebase_num);
-        info.timebase_num = i_user_timebase_num;
-        info.timebase_den = i_user_timebase_den;
+                                         * ((double)info.timebase_num / (double)i_user_timebase_num);
+        info.timebase_num = (uint32_t)i_user_timebase_num;
+        info.timebase_den = (uint32_t)i_user_timebase_den;
         info.vfr = 1;
 
         /* useful for subtitles renderer
@@ -2768,8 +2804,10 @@ generic_option:
     param->i_timebase_num = info.timebase_num;
     param->i_timebase_den = info.timebase_den;
 	param->vui.i_colmatrix = info.colormatrix;
-    param->vui.i_sar_width  = info.sar_width;
-    param->vui.i_sar_height = info.sar_height;
+    FAIL_IF_ERROR( info.sar_width > INT_MAX || info.sar_height > INT_MAX,
+                   "sample aspect ratio exceeds supported range\n" );
+    param->vui.i_sar_width  = (int)info.sar_width;
+    param->vui.i_sar_height = (int)info.sar_height;
 
     info.num_frames = X264_MAX( info.num_frames - opt->i_seek, 0 );
     if( (!info.num_frames || param->i_frame_total < info.num_frames)
@@ -2817,6 +2855,11 @@ generic_option:
 
 
     return 0;
+}
+
+static int qpfile_seek_to_pos( FILE *file, int64_t file_pos )
+{
+    return file_pos < 0 || file_pos > LONG_MAX || fseek( file, (long)file_pos, SEEK_SET );
 }
 
 static void parse_qpfile( cli_opt_t *opt, x264_picture_t *pic, int i_frame )
@@ -2875,7 +2918,7 @@ static void parse_qpfile( cli_opt_t *opt, x264_picture_t *pic, int i_frame )
         pic->i_qpplus1 = X264_QP_AUTO;
         if( num > i_frame || ret == EOF )
         {
-            if( ret == EOF || file_pos < 0 || fseek( opt->qpfile, file_pos, SEEK_SET ) )
+            if( ret == EOF || qpfile_seek_to_pos( opt->qpfile, file_pos ) )
             {
                 if( ret != EOF )
                     x264_cli_log( "x264", X264_LOG_ERROR, "qpfile seeking failed\n" );
@@ -2931,16 +2974,19 @@ static int encode_frame( x264_t *h, hnd_t hout, x264_picture_t *pic, int64_t *la
 static int64_t print_status( int64_t i_start, int64_t i_previous, int i_frame, int i_frame_total, int64_t i_file, x264_param_t *param, int64_t last_ts )
 {
     char buf[200];
+    if( !param )
+        return i_previous;
     int64_t i_time = x264_mdate();
     if( i_previous && i_time - i_previous < UPDATE_INTERVAL )
         return i_previous;
     int64_t i_elapsed = i_time - i_start;
-    double fps = i_elapsed > 0 ? i_frame * 1000000. / i_elapsed : 0;
-    double bitrate;
-    if( last_ts )
-        bitrate = (double) i_file * 8 / ( (double) last_ts * 1000 * param->i_timebase_num / param->i_timebase_den );
-    else
-        bitrate = (double) i_file * 8 / ( (double) 1000 * param->i_fps_den / param->i_fps_num );
+    double fps = i_elapsed > 0 ? (double)i_frame * 1000000.0 / (double)i_elapsed : 0;
+    double bitrate_den = 0.0;
+    if( last_ts && param->i_timebase_den )
+        bitrate_den = (double) last_ts * 1000.0 * param->i_timebase_num / param->i_timebase_den;
+    else if( param->i_fps_num )
+        bitrate_den = 1000.0 * param->i_fps_den / param->i_fps_num;
+    double bitrate = bitrate_den > 0.0 ? (double) i_file * 8.0 / bitrate_den : 0.0;
 
     int eta, eta_hh, eta_mm, eta_ss, fps_prec, bitrate_prec, file_prec, estsz_prec;
     double percentage, estsz, file_num, estsz_num;
@@ -2948,16 +2994,19 @@ static int64_t print_status( int64_t i_start, int64_t i_previous, int i_frame, i
     fps_prec     = fps > 999.5 ? 0 : fps > 99.5 ? 1 : fps > 9.95 ? 2 : 3;
     bitrate_prec = bitrate > 9999.5 ? 0 : bitrate > 999.5 ? 1 : 2;
     file_prec    = i_file < 1048576000 ? 2 : i_file < 10485760000 ? 1 : 0;
-    file_num     = i_file < 1048576 ? (double) i_file / 1024. : (double) i_file / 1048576.;
+    file_num     = i_file < 1048576 ? (double) i_file / 1024.0 : (double) i_file / 1048576.0;
     file_unit    = i_file < 1048576 ? "K":"M";
     if( i_frame_total )
     {
-		eta        = i_elapsed * (i_frame_total - i_frame) / ((int64_t)i_frame * 1000000);
-        percentage = 100. * i_frame / i_frame_total;
+        double eta_seconds = i_elapsed > 0 && i_frame > 0 && i_frame < i_frame_total
+                           ? (double)i_elapsed * (double)(i_frame_total - i_frame) /
+                             ((double)i_frame * 1000000.0) : 0.0;
+        eta        = eta_seconds > INT_MAX ? INT_MAX : (int)eta_seconds;
+        percentage = 100.0 * i_frame / i_frame_total;
         eta_hh     = eta / 3600;
         eta_mm     = ( eta / 60 ) % 60;
         eta_ss     = eta % 60;
-        estsz      = (double) i_file * i_frame_total / (i_frame * 1024.);
+        estsz      = (double) i_file * i_frame_total / (i_frame * 1024.0);
         estsz_prec = estsz < 1024000 ? 2 : estsz < 10240000 ? 1 : 0;
         estsz_num  = estsz < 1024 ? estsz : estsz / 1024;
         estsz_unit = estsz < 1024 ? "K" : "M";
@@ -2981,7 +3030,8 @@ static int64_t print_status( int64_t i_start, int64_t i_previous, int i_frame, i
     if( param->b_stylish )
     {
         char buf_stylish[200];
-        int secs = i_elapsed / 1000000;
+        int64_t elapsed_seconds = i_elapsed / 1000000;
+        int secs = elapsed_seconds > INT_MAX ? INT_MAX : (int)elapsed_seconds;
         if( i_frame_total )
         {
             int buf_len = snprintf( buf_stylish, sizeof(buf_stylish), "x264 [%5.1f%%]  %6d/%-6d  %5.*f  %6.*f  %3d:%02d:%02d  %3d:%02d:%02d  %6.*f %1sB  %6.*f %1sB",
@@ -3065,9 +3115,11 @@ static int encode( x264_param_t *param, cli_opt_t *opt )
         param->b_pic_struct = 1;
         pulldown = &pulldown_values[opt->i_pulldown];
         param->i_timebase_num = param->i_fps_den;
-        FAIL_IF_ERROR2( fmod( param->i_fps_num * pulldown->fps_factor, 1 ),
+        double pulldown_timebase_den = (double)param->i_fps_num * (double)pulldown->fps_factor;
+        FAIL_IF_ERROR2( fmod( pulldown_timebase_den, 1.0 ) != 0.0 ||
+                        pulldown_timebase_den > UINT32_MAX,
                         "unsupported framerate for chosen pulldown\n" );
-        param->i_timebase_den = param->i_fps_num * pulldown->fps_factor;
+        param->i_timebase_den = (uint32_t)pulldown_timebase_den;
     }
 
     h = x264_encoder_open( param );
@@ -3131,8 +3183,8 @@ static int encode( x264_param_t *param, cli_opt_t *opt )
             pic.i_pts = (int64_t)( pulldown_pts + 0.5 );
             pulldown_pts += pulldown_frame_duration[pic.i_pic_struct];
         }
-        else if( opt->timebase_convert_multiplier )
-            pic.i_pts = (int64_t)( pic.i_pts * opt->timebase_convert_multiplier + 0.5 );
+        else if( opt->timebase_convert_multiplier != 0.0 )
+            pic.i_pts = (int64_t)( (double)pic.i_pts * opt->timebase_convert_multiplier + 0.5 );
 
         if( pic.i_pts <= largest_pts )
         {
@@ -3177,12 +3229,16 @@ static int encode( x264_param_t *param, cli_opt_t *opt )
 
         if( opt->tcfile_out )
             FAIL_IF_ERROR2( fprintf( opt->tcfile_out, "%.6f\n",
-                                     pic.i_pts * ((double)param->i_timebase_num / param->i_timebase_den) * 1e3 ) < 0,
+                                     (double)pic.i_pts * ((double)param->i_timebase_num / param->i_timebase_den) * 1e3 ) < 0,
                             "error writing timecode output file\n" );
 
         /* update status line (up to 1000 times per input file) */
         if( opt->b_progress && i_frame_output )
-            i_previous = print_status( i_start, i_previous, i_frame_output, param->i_frame_total, i_file, param, 2 * last_dts - prev_dts - first_dts );
+        {
+            int64_t estimated_last_ts = 0;
+            estimate_final_ts( &estimated_last_ts, last_dts, prev_dts, first_dts );
+            i_previous = print_status( i_start, i_previous, i_frame_output, param->i_frame_total, i_file, param, estimated_last_ts );
+        }
     }
     /* Flush delayed frames */
     while( !b_ctrl_c && x264_encoder_delayed_frames( h ) )
@@ -3202,7 +3258,11 @@ static int encode( x264_param_t *param, cli_opt_t *opt )
                 first_dts = prev_dts = last_dts;
         }
         if( opt->b_progress && i_frame_output )
-            i_previous = print_status( i_start, i_previous, i_frame_output, param->i_frame_total, i_file, param, 2 * last_dts - prev_dts - first_dts );
+        {
+            int64_t estimated_last_ts = 0;
+            estimate_final_ts( &estimated_last_ts, last_dts, prev_dts, first_dts );
+            i_previous = print_status( i_start, i_previous, i_frame_output, param->i_frame_total, i_file, param, estimated_last_ts );
+        }
     }
 fail:
     if( pts_warning_cnt >= MAX_PTS_WARNING && cli_log_level < X264_LOG_DEBUG )
@@ -3210,11 +3270,23 @@ fail:
 
     /* duration algorithm fails when only 1 frame is output */
     if( i_frame_output == 1 )
-        duration = (double)param->i_fps_den / param->i_fps_num;
+        duration = param->i_fps_num ? (double)param->i_fps_den / param->i_fps_num : 0.0;
     else if( b_ctrl_c )
-        duration = (double)(2 * last_dts - prev_dts - first_dts) * param->i_timebase_num / param->i_timebase_den;
+    {
+        int64_t estimated_last_ts;
+        duration = param->i_timebase_den &&
+                   !estimate_final_ts( &estimated_last_ts, last_dts, prev_dts, first_dts )
+                 ? (double)estimated_last_ts * param->i_timebase_num / param->i_timebase_den
+                 : 0.0;
+    }
     else
-        duration = (double)(2 * largest_pts - second_largest_pts) * param->i_timebase_num / param->i_timebase_den;
+    {
+        int64_t estimated_largest_pts;
+        duration = param->i_timebase_den &&
+                   !estimate_final_ts( &estimated_largest_pts, largest_pts, second_largest_pts, 0 )
+                 ? (double)estimated_largest_pts * param->i_timebase_num / param->i_timebase_den
+                 : 0.0;
+    }
 
     i_end = x264_mdate();
     if( opt->b_progress )
@@ -3226,7 +3298,9 @@ fail:
         }
         else if( i_frame_output )
         {
-            print_status( i_start, 0, i_frame_output, param->i_frame_total, i_file, param, 2 * last_dts - prev_dts - first_dts );
+            int64_t estimated_last_ts = 0;
+            estimate_final_ts( &estimated_last_ts, last_dts, prev_dts, first_dts );
+            print_status( i_start, 0, i_frame_output, param->i_frame_total, i_file, param, estimated_last_ts );
             fprintf( stderr, "\n" );
         }
     }
@@ -3244,21 +3318,25 @@ fail:
 
     if( i_frame_output > 0 )
     {
-        double fps = (double)i_frame_output * (double)1000000 /
-                     (double)( i_end - i_start );
+        int64_t elapsed = i_end - i_start;
+        double fps = elapsed > 0 ? (double)i_frame_output * 1000000.0 /
+                                   (double)elapsed : 0.0;
+        double bitrate = duration > 0.0 ? (double) i_file * 8.0 /
+                                          ( 1000.0 * duration ) : 0.0;
 
         x264_cli_printf( X264_LOG_INFO, "encoded %d frames, %.*f fps, %.2f kb/s, %.*f %sB\n",
                          i_frame_output, fps > 9.95 ? 2 : fps > 0.995 ? 3 : 4, fps,
-                         (double) i_file * 8 / ( 1000 * duration ),
+                         bitrate,
                          i_file < 1048576000 ? 2 : i_file < 10485760000 ? 1 : 0,
-                         i_file < 1048576 ? (double) i_file / 1024. : (double) i_file / 1048576.,
+                         i_file < 1048576 ? (double) i_file / 1024.0 : (double) i_file / 1048576.0,
                          i_file < 1048576 ? "K":"M" );
     }
 
     time_t tm2 = time(NULL);
     x264_cli_log( "x264", X264_LOG_INFO, "ended at %s", ctime(&tm2) );
     tm2 -= tm1;
-    x264_cli_log( "x264", X264_LOG_INFO, "encoding duration %d:%02d:%02d\n", tm2 / 3600, tm2 % 3600 / 60, tm2 % 60 );
+    x264_cli_log( "x264", X264_LOG_INFO, "encoding duration %"PRId64":%02"PRId64":%02"PRId64"\n",
+                  (int64_t)(tm2 / 3600), (int64_t)(tm2 % 3600 / 60), (int64_t)(tm2 % 60) );
 
     return retval;
 }

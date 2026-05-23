@@ -96,6 +96,15 @@ static int mp4_i64_add_overflow( int64_t a, int64_t b, int64_t *dst )
     return 0;
 }
 
+static int mp4_display_size_to_fixed( uint32_t *dst, double size )
+{
+    double fixed_size = size * (1u << 16);
+    if( fixed_size != fixed_size || fixed_size < 0.0 || fixed_size > UINT32_MAX )
+        return -1;
+    *dst = (uint32_t)fixed_size;
+    return 0;
+}
+
 static void recompute_bitrate_mp4( GF_ISOFile *p_file, int i_track )
 {
     u32 count, di, timescale, time_wnd, rate;
@@ -272,20 +281,50 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
 {
     mp4_hnd_t *p_mp4 = handle;
     uint64_t data_size;
+    uint32_t data_size_u32;
+    int delay_frames;
+    int dts_compress_multiplier;
+    uint64_t time_res;
+    int64_t time_inc;
+    uint32_t display_width = 0;
+    uint32_t display_height = 0;
 
     FAIL_IF_ERR( !p_mp4 || !p_mp4->p_file || !p_mp4->p_sample || !p_param, "mp4", "invalid muxer state\n" );
     FAIL_IF_ERR( p_param->i_width <= 0 || p_param->i_height <= 0, "mp4", "invalid video dimensions\n" );
     FAIL_IF_ERR( p_param->i_timebase_num <= 0 || p_param->i_timebase_den <= 0, "mp4", "invalid timebase\n" );
+    FAIL_IF_ERR( p_param->vui.i_sar_width < 0 || p_param->vui.i_sar_height < 0, "mp4", "invalid sample aspect ratio\n" );
+    if( p_param->vui.i_sar_width && p_param->vui.i_sar_height )
+    {
+        double sar = (double)p_param->vui.i_sar_width / p_param->vui.i_sar_height;
+        double width = sar > 1.0 ? (double)p_param->i_width * sar : p_param->i_width;
+        double height = sar > 1.0 ? p_param->i_height : (double)p_param->i_height / sar;
+        FAIL_IF_ERR( mp4_display_size_to_fixed( &display_width, width ) ||
+                     mp4_display_size_to_fixed( &display_height, height ),
+                     "mp4", "display size is out of range\n" );
+    }
 
-    p_mp4->i_delay_frames = p_param->i_bframe ? (p_param->i_bframe_pyramid ? 2 : 1) : 0;
-    p_mp4->i_dts_compress_multiplier = p_mp4->b_dts_compress * p_mp4->i_delay_frames + 1;
+    delay_frames = p_param->i_bframe ? (p_param->i_bframe_pyramid ? 2 : 1) : 0;
+    dts_compress_multiplier = p_mp4->b_dts_compress * delay_frames + 1;
 
-    FAIL_IF_ERR( (uint64_t)p_param->i_timebase_den > UINT64_MAX / (uint64_t)p_mp4->i_dts_compress_multiplier ||
-                 (uint64_t)p_param->i_timebase_num > (uint64_t)INT64_MAX / (uint64_t)p_mp4->i_dts_compress_multiplier,
+    FAIL_IF_ERR( (uint64_t)p_param->i_timebase_den > UINT64_MAX / (uint64_t)dts_compress_multiplier ||
+                 (uint64_t)p_param->i_timebase_num > (uint64_t)INT64_MAX / (uint64_t)dts_compress_multiplier,
                  "mp4", "MP4 timebase exceeds maximum\n" );
-    p_mp4->i_time_res = (uint64_t)p_param->i_timebase_den * p_mp4->i_dts_compress_multiplier;
-    p_mp4->i_time_inc = (uint64_t)p_param->i_timebase_num * p_mp4->i_dts_compress_multiplier;
-    FAIL_IF_ERR( p_mp4->i_time_res > UINT32_MAX, "mp4", "MP4 media timescale %"PRIu64" exceeds maximum\n", p_mp4->i_time_res );
+    time_res = (uint64_t)p_param->i_timebase_den * dts_compress_multiplier;
+    time_inc = (uint64_t)p_param->i_timebase_num * dts_compress_multiplier;
+    FAIL_IF_ERR( time_res > UINT32_MAX, "mp4", "MP4 media timescale %"PRIu64" exceeds maximum\n", time_res );
+
+    data_size = (uint64_t)p_param->i_width * p_param->i_height * 3 / 2;
+    FAIL_IF_ERR( data_size > UINT32_MAX, "mp4", "MP4 sample buffer size %"PRIu64" exceeds maximum\n", data_size );
+    data_size_u32 = (uint32_t)data_size;
+    p_mp4->p_sample->data = malloc( data_size_u32 );
+    if( !p_mp4->p_sample->data )
+        return -1;
+    p_mp4->i_data_size = data_size_u32;
+
+    p_mp4->i_delay_frames = delay_frames;
+    p_mp4->i_dts_compress_multiplier = dts_compress_multiplier;
+    p_mp4->i_time_res = time_res;
+    p_mp4->i_time_inc = time_inc;
 
     p_mp4->i_track = gf_isom_new_track( p_mp4->p_file, 0, GF_ISOM_MEDIA_VISUAL,
                                         p_mp4->i_time_res );
@@ -305,25 +344,8 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
 
     if( p_param->vui.i_sar_width && p_param->vui.i_sar_height )
     {
-        uint64_t dw = (uint64_t)p_param->i_width << 16;
-        uint64_t dh = (uint64_t)p_param->i_height << 16;
-        double sar = (double)p_param->vui.i_sar_width / p_param->vui.i_sar_height;
-        if( sar > 1.0 )
-            dw *= sar;
-        else
-            dh /= sar;
         gf_isom_set_pixel_aspect_ratio( p_mp4->p_file, p_mp4->i_track, p_mp4->i_descidx, p_param->vui.i_sar_width, p_param->vui.i_sar_height, 0 );
-        gf_isom_set_track_layout_info( p_mp4->p_file, p_mp4->i_track, dw, dh, 0, 0, 0 );
-    }
-
-    data_size = (uint64_t)p_param->i_width * p_param->i_height * 3 / 2;
-    FAIL_IF_ERR( data_size > UINT32_MAX, "mp4", "MP4 sample buffer size %"PRIu64" exceeds maximum\n", data_size );
-    p_mp4->i_data_size = (uint32_t)data_size;
-    p_mp4->p_sample->data = malloc( p_mp4->i_data_size );
-    if( !p_mp4->p_sample->data )
-    {
-        p_mp4->i_data_size = 0;
-        return -1;
+        gf_isom_set_track_layout_info( p_mp4->p_file, p_mp4->i_track, display_width, display_height, 0, 0, 0 );
     }
 
     return 0;
