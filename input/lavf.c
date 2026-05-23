@@ -191,20 +191,38 @@ static int read_frame_internal( cli_pic_t *p_pic, lavf_hnd_t *h, int i_frame, vi
                 while( !(ret = av_read_frame( h->lavf, pkt )) && pkt->stream_index != h->stream_id )
                     av_packet_unref( pkt );
 
-                if( ret )
+                if( ret == AVERROR_EOF )
                     ret = avcodec_send_packet( h->lavc, NULL );
+                else if( ret )
+                {
+                    char errbuf[AV_ERROR_MAX_STRING_SIZE];
+                    const char *err = av_strerror( ret, errbuf, sizeof(errbuf) ) < 0 ? "unknown ffmpeg error" : errbuf;
+                    x264_cli_log( "lavf", X264_LOG_ERROR, "video demux failed on frame %d: %s\n", next_frame, err );
+                    return -1;
+                }
                 else
                 {
                     ret = avcodec_send_packet( h->lavc, pkt );
                     av_packet_unref( pkt );
                 }
+
+                if( ret == AVERROR_EOF )
+                    return -1;
+                if( ret )
+                {
+                    char errbuf[AV_ERROR_MAX_STRING_SIZE];
+                    const char *err = av_strerror( ret, errbuf, sizeof(errbuf) ) < 0 ? "unknown ffmpeg error" : errbuf;
+                    x264_cli_log( "lavf", X264_LOG_ERROR, "failed to submit video packet for frame %d: %s\n", next_frame, err );
+                    return -1;
+                }
             }
             else if( ret == AVERROR_EOF )
                 return -1;
-
-            if( ret )
+            else
             {
-                x264_cli_log( "lavf", X264_LOG_WARNING, "video decoding failed on frame %d\n", next_frame );
+                char errbuf[AV_ERROR_MAX_STRING_SIZE];
+                const char *err = av_strerror( ret, errbuf, sizeof(errbuf) ) < 0 ? "unknown ffmpeg error" : errbuf;
+                x264_cli_log( "lavf", X264_LOG_ERROR, "video decode failed on frame %d: %s\n", next_frame, err );
                 return -1;
             }
         }

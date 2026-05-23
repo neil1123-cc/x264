@@ -65,6 +65,11 @@ static int timecode_seek_to_pos( FILE *file, int64_t file_pos )
     return file_pos < 0 || file_pos > LONG_MAX || fseek( file, (long)file_pos, SEEK_SET );
 }
 
+static int timecode_read_error( FILE *file )
+{
+    return ferror( file );
+}
+
 static const char *timecode_skip_space( const char *arg )
 {
     while( isspace( (unsigned char)*arg ) )
@@ -73,6 +78,12 @@ static const char *timecode_skip_space( const char *arg )
 }
 
 static int timecode_at_line_end( const char *arg )
+{
+    arg = timecode_skip_space( arg );
+    return !*arg || *arg == '#';
+}
+
+static int timecode_is_ignorable_line( const char *arg )
 {
     arg = timecode_skip_space( arg );
     return !*arg || *arg == '#';
@@ -432,14 +443,17 @@ static int timecode_advance_line_number( int *line )
 static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info )
 {
     char buff[256];
-    int ret, tcfv, num, seq_num, timecodes_num;
+    int ret, tcfv = 0, num, seq_num, timecodes_num;
     double *timecodes = NULL;
     double *fpss = NULL;
 
-    ret = fgets( buff, sizeof(buff), tcfile_in ) != NULL &&
-          !timecode_parse_header_version( buff, &tcfv );
-    FAIL_IF_ERROR( !ret || (tcfv != 1 && tcfv != 2), "unsupported timecode format\n" );
-#define NO_TIMECODE_LINE (buff[0] == '#' || buff[0] == '\n' || buff[0] == '\r')
+    ret = fgets( buff, sizeof(buff), tcfile_in ) != NULL;
+    if( !ret )
+        FAIL_IF_ERROR( timecode_read_error( tcfile_in ), "failed to read input tcfile\n" );
+    else
+        FAIL_IF_ERROR( timecode_parse_header_version( buff, &tcfv ), "unsupported timecode format\n" );
+    FAIL_IF_ERROR( tcfv != 1 && tcfv != 2, "unsupported timecode format\n" );
+#define NO_TIMECODE_LINE timecode_is_ignorable_line( buff )
     if( tcfv == 1 )
     {
         int64_t file_pos;
@@ -503,6 +517,7 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
                 ++seq_num;
             FAIL_IF_ERROR( timecode_advance_line_number( &num ), "too many tcfile lines\n" );
         }
+        FAIL_IF_ERROR( timecode_read_error( tcfile_in ), "failed to read input tcfile\n" );
         if( !h->stored_pts_num )
         {
             FAIL_IF_ERROR( end > INT_MAX - 2, "invalid tcfile frame count\n" );
@@ -554,6 +569,7 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
                     timecodes[num + 1] = timecodes[num] + 1.0 / seq_fps;
             }
         }
+        FAIL_IF_ERROR( timecode_read_error( tcfile_in ), "failed to read input tcfile\n" );
         for( ; num < timecodes_num - 1; num++ )
             timecodes[num + 1] = timecodes[num] + 1.0 / assume_fps;
         if( h->auto_timebase_den || h->auto_timebase_num )
@@ -594,6 +610,7 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
                 for( num = start; num <= end && num < timecodes_num - 1; num++ )
                     timecodes[num + 1] = timecodes[num] + 1.0 / seq_fps;
             }
+            FAIL_IF_ERROR( timecode_read_error( tcfile_in ), "failed to read input tcfile\n" );
             for( ; num < timecodes_num - 1; num++ )
                 timecodes[num + 1] = timecodes[num] + 1.0 / assume_fps;
         }
@@ -623,6 +640,7 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
             FAIL_IF_ERROR( h->stored_pts_num == INT_MAX, "too many timecodes\n" );
             h->stored_pts_num++;
         }
+        FAIL_IF_ERROR( timecode_read_error( tcfile_in ), "failed to read input tcfile\n" );
         timecodes_num = h->stored_pts_num;
         FAIL_IF_ERROR( !timecodes_num, "input tcfile doesn't have any timecodes!\n" );
         FAIL_IF_ERROR( (uint64_t)timecodes_num > SIZE_MAX / sizeof(double), "too many timecodes\n" );
@@ -653,6 +671,7 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
                                "invalid input tcfile for frame %d\n", num );
                 ++num;
             }
+            FAIL_IF_ERROR( timecode_read_error( tcfile_in ), "failed to read input tcfile\n" );
         }
         FAIL_IF_ERROR( num < timecodes_num, "failed to read input tcfile for frame %d", num );
 

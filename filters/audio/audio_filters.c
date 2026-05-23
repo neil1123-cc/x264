@@ -51,6 +51,9 @@ audio_filter_t *x264_af_get_filter( const char *name )
 #if HAVE_AVS
     CHECK( avs );
 #endif
+#if HAVE_LSMASH
+    CHECK( lsmash );
+#endif
 #undef CHECKFLT
 #undef CHECK
 #endif /* HAVE_AUDIO */

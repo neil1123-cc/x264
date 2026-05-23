@@ -499,7 +499,7 @@ int x264_cqm_parse_file( x264_t *h, const char *filename )
     char *buf = x264_slurp_file( filename );
     if( !buf )
     {
-        x264_log( h, X264_LOG_ERROR, "can't open file '%s'\n", filename );
+        x264_log( h, X264_LOG_ERROR, "can't read file '%s'\n", filename );
         return -1;
     }
 

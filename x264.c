@@ -2627,7 +2627,6 @@ generic_option:
 
     if( select_output( muxer, output_filename, param, &output_opt ) )
         return -1;
-    FAIL_IF_ERROR( cli_output.open_file( output_filename, &opt->hout, &output_opt, haud, audio_enc, NULL ) < 0, "could not open output file `%s'\n", output_filename );
     input_filename = argv[optind++];
     video_info_t info = {0};
     char demuxername[5];
@@ -2887,6 +2886,11 @@ static int qpfile_seek_to_pos( FILE *file, int64_t file_pos )
     return file_pos < 0 || file_pos > LONG_MAX || fseek( file, (long)file_pos, SEEK_SET );
 }
 
+static int qpfile_read_error( FILE *file )
+{
+    return ferror( file );
+}
+
 static void parse_qpfile( cli_opt_t *opt, x264_picture_t *pic, int i_frame )
 {
     int num = -1;
@@ -2910,6 +2914,22 @@ static void parse_qpfile( cli_opt_t *opt, x264_picture_t *pic, int i_frame )
                 b_truncated = c != '\n' && c != '\r';
                 ungetc( c, opt->qpfile );
             }
+            else if( qpfile_read_error( opt->qpfile ) )
+            {
+                x264_cli_log( "x264", X264_LOG_ERROR, "failed to read qpfile\n" );
+                if( fclose( opt->qpfile ) )
+                    x264_cli_log( "x264", X264_LOG_ERROR, "failed to close qpfile\n" );
+                opt->qpfile = NULL;
+                break;
+            }
+        }
+        if( ret == EOF && qpfile_read_error( opt->qpfile ) )
+        {
+            x264_cli_log( "x264", X264_LOG_ERROR, "failed to read qpfile\n" );
+            if( fclose( opt->qpfile ) )
+                x264_cli_log( "x264", X264_LOG_ERROR, "failed to close qpfile\n" );
+            opt->qpfile = NULL;
+            break;
         }
         if( ret == 1 )
         {

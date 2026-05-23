@@ -1615,7 +1615,7 @@ int x264_ratecontrol_new( x264_t *h )
         stats_buf = stats_in = x264_slurp_file( h->param.rc.psz_stat_in );
         if( !stats_buf )
         {
-            x264_log( h, X264_LOG_ERROR, "ratecontrol_init: can't open stats file\n" );
+            x264_log( h, X264_LOG_ERROR, "ratecontrol_init: can't read stats file\n" );
             goto fail;
         }
         if( h->param.rc.b_mb_tree )

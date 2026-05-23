@@ -3,7 +3,24 @@
 #include <limits.h>
 
 #include <lsmash.h>
+#if defined(__has_include)
+#if __has_include(<lsmash_importer.h>)
 #include <lsmash_importer.h>
+#define X264_HAVE_LSMASH_IMPORTER_H 1
+#endif
+#endif
+
+#ifndef X264_HAVE_LSMASH_IMPORTER_H
+/* Some liblsmash packages export importer symbols without installing lsmash_importer.h. */
+typedef struct importer_tag importer_t;
+importer_t *lsmash_importer_open( lsmash_root_t *root, const char *identifier, const char *format );
+void lsmash_importer_close( importer_t *importer );
+int lsmash_importer_get_access_unit( importer_t *importer, uint32_t track_number, lsmash_sample_t **p_sample );
+uint32_t lsmash_importer_get_last_delta( importer_t *importer, uint32_t track_number );
+int lsmash_importer_construct_timeline( importer_t *importer, uint32_t track_number );
+uint32_t lsmash_importer_get_track_count( importer_t *importer );
+lsmash_summary_t *lsmash_duplicate_summary( importer_t *importer, uint32_t track_number );
+#endif
 
 #include "audio/encoders.h"
 #include "filters/audio/internal.h"
@@ -15,13 +32,37 @@ typedef struct lsmash_source_t
     importer_t* importer;
     lsmash_audio_summary_t* summary;
     lsmash_root_t* root;
+    uint32_t track;
+    lsmash_sample_t *pending_sample;
 
-    int64_t frame_count;
-    int64_t last_dts;
     int copy_error;
 } lsmash_source_t;
 
+enum
+{
+    /* Public lsmash_importer.h hides importer_status unless building importer internals. */
+    LSMASH_IMPORTER_STATUS_CHANGE = 1,
+    LSMASH_IMPORTER_STATUS_EOF    = 2,
+};
+
 const audio_filter_t audio_filter_lsmash;
+
+static int lsmash_parse_audio_track( const char *trackstr, int *track )
+{
+    int parsed_track;
+
+    if( !trackstr || !strcmp( trackstr, "any" ) )
+    {
+        *track = TRACK_ANY;
+        return 0;
+    }
+
+    if( x264_otoi_checked( trackstr, &parsed_track ) || parsed_track < 0 )
+        return -1;
+
+    *track = parsed_track;
+    return 0;
+}
 
 static void lsmash_free_extradata( audio_info_t *info )
 {
@@ -58,6 +99,13 @@ static int lsmash_init( hnd_t *handle, const char *opt_str )
         x264_cli_log( "lsmash", X264_LOG_ERROR, "no filename given.\n" );
         goto fail2;
     }
+
+    int track;
+    if( lsmash_parse_audio_track( x264_get_option( "track", opts ), &track ) )
+    {
+        x264_cli_log( "lsmash", X264_LOG_ERROR, "no valid track requested ('any', 0 or a positive integer)\n" );
+        goto fail2;
+    }
     if( !strcmp( filename, "-" ) )
     {
         x264_cli_log( "lsmash", X264_LOG_ERROR, "pipe input is not supported.\n" );
@@ -71,17 +119,50 @@ static int lsmash_init( hnd_t *handle, const char *opt_str )
 	if( !h->root )
         goto error;
 	
-    h->importer = lsmash_importer_open(h->root, filename, "auto" );
+    h->importer = lsmash_importer_open( h->root, filename, "auto" );
     if( !h->importer )
         goto error;
 
-    h->summary = (lsmash_audio_summary_t *)lsmash_duplicate_summary( h->importer, 1 );
-    if( !h->summary )
-        goto error;
-
-    if( h->summary->summary_type != LSMASH_SUMMARY_TYPE_AUDIO )
+    if( track >= 0 )
     {
-        AF_LOG_ERR( h, "unsupported stream type.\n" );
+        h->track = (uint32_t)track + 1;
+        lsmash_summary_t *summary = lsmash_duplicate_summary( h->importer, h->track );
+        if( summary && summary->summary_type == LSMASH_SUMMARY_TYPE_AUDIO )
+            h->summary = (lsmash_audio_summary_t *)summary;
+        else
+        {
+            if( summary )
+                lsmash_cleanup_summary( summary );
+            AF_LOG_ERR( h, "requested track %d is unavailable or is not an audio track\n", track );
+            goto error;
+        }
+    }
+    else
+    {
+        uint32_t track_count = lsmash_importer_get_track_count( h->importer );
+        for( uint32_t track_number = 1; track_number <= track_count; track_number++ )
+        {
+            lsmash_summary_t *summary = lsmash_duplicate_summary( h->importer, track_number );
+            if( !summary )
+                continue;
+            if( summary->summary_type == LSMASH_SUMMARY_TYPE_AUDIO )
+            {
+                h->track = track_number;
+                h->summary = (lsmash_audio_summary_t *)summary;
+                break;
+            }
+            lsmash_cleanup_summary( summary );
+        }
+        if( !h->summary )
+        {
+            AF_LOG_ERR( h, "could not find any audio track\n" );
+            goto error;
+        }
+    }
+
+    if( lsmash_importer_construct_timeline( h->importer, h->track ) < 0 )
+    {
+        AF_LOG_ERR( h, "failed to construct importer timeline for audio track.\n" );
         goto error;
     }
 
@@ -219,9 +300,6 @@ static int lsmash_init( hnd_t *handle, const char *opt_str )
         }
     }
 
-    h->frame_count = 0;
-    h->last_dts    = 0;
-
     free( opts );
 
     x264_cli_log( "lsmash", X264_LOG_INFO, "opened L-SMASH importer for %s audio stream copy.\n", h->info.codec_name );
@@ -273,6 +351,8 @@ static void lsmash_close( hnd_t handle )
         return;
     lsmash_source_t *h = handle;
 
+    if( h->pending_sample )
+        lsmash_delete_sample( h->pending_sample );
     if( h->summary )
         lsmash_cleanup_summary( (lsmash_summary_t *)h->summary );
     if( h->importer )
@@ -286,11 +366,83 @@ static void lsmash_close( hnd_t handle )
         free( h );
 }
 
+static lsmash_sample_t *lsmash_fetch_access_unit( lsmash_source_t *h )
+{
+    if( !h || !h->importer || !h->track )
+        return NULL;
+
+    lsmash_sample_t *sample = NULL;
+    int ret = lsmash_importer_get_access_unit( h->importer, h->track, &sample );
+
+    if( ret < 0 )
+    {
+        AF_LOG_ERR( h, "failed to retrieve access unit from importer.\n" );
+        h->copy_error = 1;
+        lsmash_delete_sample( sample );
+        return NULL;
+    }
+    if( ret == LSMASH_IMPORTER_STATUS_CHANGE )
+    {
+        AF_LOG_ERR( h, "stream property changes are not supported in L-SMASH copy mode.\n" );
+        h->copy_error = 1;
+        lsmash_delete_sample( sample );
+        return NULL;
+    }
+    if( ret == LSMASH_IMPORTER_STATUS_EOF )
+    {
+        h->info.last_delta = lsmash_importer_get_last_delta( h->importer, h->track );
+        lsmash_delete_sample( sample );
+        return NULL;
+    }
+    if( ret > 0 )
+    {
+        AF_LOG_ERR( h, "importer returned an unsupported access unit status.\n" );
+        h->copy_error = 1;
+        lsmash_delete_sample( sample );
+        return NULL;
+    }
+    if( !sample )
+    {
+        AF_LOG_ERR( h, "importer returned no access unit.\n" );
+        h->copy_error = 1;
+        return NULL;
+    }
+    if( !sample->length )
+    {
+        h->info.last_delta = lsmash_importer_get_last_delta( h->importer, h->track );
+        lsmash_delete_sample( sample );
+        return NULL;
+    }
+    if( !sample->data )
+    {
+        AF_LOG_ERR( h, "importer returned a non-empty access unit without payload data.\n" );
+        h->copy_error = 1;
+        lsmash_delete_sample( sample );
+        return NULL;
+    }
+    if( sample->length > (uint32_t)INT_MAX )
+    {
+        AF_LOG_ERR( h, "audio access unit payload is too large.\n" );
+        h->copy_error = 1;
+        lsmash_delete_sample( sample );
+        return NULL;
+    }
+    if( sample->dts > (uint64_t)INT64_MAX )
+    {
+        AF_LOG_ERR( h, "audio timestamp state overflowed.\n" );
+        h->copy_error = 1;
+        lsmash_delete_sample( sample );
+        return NULL;
+    }
+
+    return sample;
+}
+
 static audio_packet_t *get_next_au( hnd_t handle )
 {
     lsmash_source_t *h = handle;
     if( !h || !h->summary || !h->importer ||
-        h->info.channels <= 0 || h->info.framelen <= 0 )
+        !h->track || h->info.channels <= 0 || h->info.framelen <= 0 )
         return NULL;
     if( h->copy_error )
         return NULL;
@@ -299,78 +451,66 @@ static audio_packet_t *get_next_au( hnd_t handle )
 
     if( !out )
     {
+        AF_LOG_ERR( h, "malloc failed while allocating output packet.\n" );
         h->copy_error = 1;
         return NULL;
     }
     unsigned packet_channels = (unsigned)h->info.channels;
-    unsigned packet_samplecount = (unsigned)h->info.framelen;
     out->info        = h->info;
     out->channels    = packet_channels;
-    out->samplecount = packet_samplecount;
-
-    lsmash_sample_t sample = {0};
-    lsmash_sample_t *psample = &sample;
-    if( h->summary->max_au_length > (uint32_t)INT_MAX )
+    lsmash_sample_t *sample = h->pending_sample;
+    h->pending_sample = NULL;
+    if( !sample )
+        sample = lsmash_fetch_access_unit( h );
+    if( !sample )
     {
-        h->copy_error = 1;
         x264_af_free_packet( out );
         return NULL;
     }
-    lsmash_sample_alloc( &sample, h->summary->max_au_length );
-    if( h->summary->max_au_length && !sample.data )
-    {
-        h->copy_error = 1;
-        x264_af_free_packet( out );
-        return NULL;
-    }
-
-    int ret = lsmash_importer_get_access_unit( h->importer, 1, &psample );
-
-    if( ret )
-    {
-        AF_LOG_ERR( h, "failed to retrieve access unit from importer.\n" );
-        h->copy_error = 1;
-        free( sample.data );
-        x264_af_free_packet( out );
-        return NULL;
-    }
-    if( !sample.length )
-    {
-        h->info.last_delta = lsmash_importer_get_last_delta( h->importer, 1 );
-        free( sample.data );
-        x264_af_free_packet( out );
-        return NULL;
-    }
-    if( !sample.data )
-    {
-        h->copy_error = 1;
-        x264_af_free_packet( out );
-        return NULL;
-    }
-    if( sample.length > (uint32_t)INT_MAX )
-    {
-        h->copy_error = 1;
-        free( sample.data );
-        x264_af_free_packet( out );
-        return NULL;
-    }
-    int sample_size = (int)sample.length;
+    int sample_size = (int)sample->length;
     out->size = sample_size;
-    out->data = sample.data;
-
-    int64_t staged_last_dts = h->last_dts;
-    int64_t staged_frame_count = h->frame_count;
-    if( staged_frame_count == INT64_MAX || h->info.framelen > INT64_MAX - staged_last_dts )
+    out->data = sample->data;
+    lsmash_sample_t *next = lsmash_fetch_access_unit( h );
+    uint32_t packet_samplecount = 0;
+    if( next )
     {
+        if( next->dts <= sample->dts || next->dts - sample->dts > UINT32_MAX )
+        {
+            AF_LOG_ERR( h, "invalid audio sample timeline.\n" );
+            h->copy_error = 1;
+            lsmash_delete_sample( next );
+            lsmash_delete_sample( sample );
+            x264_af_free_packet( out );
+            return NULL;
+        }
+        packet_samplecount = (uint32_t)(next->dts - sample->dts);
+        h->pending_sample = next;
+    }
+    else
+    {
+        if( h->copy_error )
+        {
+            lsmash_delete_sample( sample );
+            x264_af_free_packet( out );
+            return NULL;
+        }
+        packet_samplecount = h->info.last_delta;
+    }
+    if( !packet_samplecount )
+    {
+        AF_LOG_ERR( h, "audio sample duration is invalid.\n" );
         h->copy_error = 1;
+        lsmash_delete_sample( sample );
         x264_af_free_packet( out );
         return NULL;
     }
-    out->dts = staged_last_dts;
-    staged_last_dts += h->info.framelen;
-    staged_frame_count++;
-    h->last_dts = staged_last_dts;
-    h->frame_count = staged_frame_count;
+    out->samplecount = packet_samplecount;
+    out->info.last_delta = packet_samplecount;
+    h->info.last_delta = packet_samplecount;
+    out->dts = (int64_t)sample->dts;
+    /* Keep the AU payload but free the L-SMASH sample wrapper. */
+    sample->data = NULL;
+    lsmash_delete_sample( sample );
 
     return out;
 }
@@ -445,7 +585,7 @@ const audio_filter_t audio_filter_lsmash =
 {
     .name        = "lsmash",
     .description = "Demuxes raw audio streams using L-SMASH importer",
-    .help        = "Arguments: filename",
+    .help        = "Arguments: filename[:track]",
     .init        = lsmash_init,
     .close       = lsmash_close
 };

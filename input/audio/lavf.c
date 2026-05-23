@@ -255,7 +255,8 @@ static int init( hnd_t *handle, const char *opt_str )
     return 0;
 
 codecfail:
-    AF_LOG_ERR( h, "error decoding the %s audio for track %d\n", h->codec->name , h->track );
+    AF_LOG_ERR( h, "failed to initialize decoder %s for track %d\n", h->codec->name, h->track );
+    goto fail;
 codecnotfound:
     AF_LOG_ERR( h, "no decoder found for track %d\n", h->track );
 fail:

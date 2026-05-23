@@ -29,13 +29,16 @@
 
 #include "output.h"
 #include <lsmash.h>
-#include <lsmash_importer.h>
 
 #define H264_NALU_LENGTH_SIZE 4
 
 /*******************/
 
 #define USE_LSMASH_IMPORTER 0
+
+#if !HAVE_AUDIO && USE_LSMASH_IMPORTER
+#include <lsmash_importer.h>
+#endif
 
 #if ( defined(HAVE_AUDIO) && HAVE_AUDIO ) || ( defined(USE_LSMASH_IMPORTER) && USE_LSMASH_IMPORTER )
 #define HAVE_ANY_AUDIO 1
@@ -144,6 +147,12 @@ static int mp4_append_sample_owned( lsmash_root_t *root, uint32_t track, lsmash_
     return 0;
 }
 
+static int mp4_codec_type_is_unspecified( lsmash_codec_type_t codec_type )
+{
+    static const lsmash_codec_type_t unspecified = LSMASH_CODEC_TYPE_INITIALIZER;
+    return lsmash_check_codec_type_identical( codec_type, unspecified );
+}
+
 #if HAVE_ANY_AUDIO
 
 #if HAVE_AUDIO
@@ -158,15 +167,17 @@ typedef struct
     uint64_t i_video_timescale;    /* For interleaving. */
     lsmash_audio_summary_t *summary;
     lsmash_codec_type_t codec_type;
+    uint64_t total_samples;
+    uint32_t last_delta;
 #if HAVE_AUDIO
     audio_info_t *info;
     hnd_t encoder;
+    audio_packet_t *pending_frame;
     int has_sbr;
     int b_copy;
     int b_mdct;
 #else
     mp4sys_importer_t* p_importer;
-    uint32_t last_delta;
 #endif
 } mp4_audio_hnd_t;
 #endif /* #if HAVE_ANY_AUDIO */
@@ -402,6 +413,12 @@ static void remove_audio_hnd( mp4_audio_hnd_t *p_audio )
         p_audio->summary = NULL;
     }
 #if HAVE_AUDIO
+    if( p_audio->pending_frame )
+    {
+        if( p_audio->encoder )
+            x264_audio_free_frame( p_audio->encoder, p_audio->pending_frame );
+        p_audio->pending_frame = NULL;
+    }
     if( p_audio->encoder )
     {
         x264_audio_encoder_close( p_audio->encoder );
@@ -415,6 +432,20 @@ static void remove_audio_hnd( mp4_audio_hnd_t *p_audio )
     }
 #endif
     free( p_audio );
+}
+#endif
+
+#if HAVE_AUDIO
+static int mp4_get_audio_timestamp( uint64_t *dst, const audio_packet_t *frame, const lsmash_audio_summary_t *summary )
+{
+    if( !dst || !frame || !summary || !summary->frequency ||
+        frame->dts < 0 || frame->info.timebase.num <= 0 || frame->info.timebase.den <= 0 )
+        return -1;
+    int64_t converted = x264_from_timebase( frame->dts, frame->info.timebase, summary->frequency );
+    if( converted < 0 || converted == INT64_MAX )
+        return -1;
+    *dst = (uint64_t)converted;
+    return 0;
 }
 #endif
 
@@ -847,7 +878,7 @@ static int audio_init( hnd_t handle, cli_output_opt_t *opt, hnd_t filters, char 
             break;
     }
 
-    if( lsmash_check_codec_type_identical( p_audio->codec_type, LSMASH_CODEC_TYPE_UNSPECIFIED ) )
+    if( mp4_codec_type_is_unspecified( p_audio->codec_type ) )
     {
         MP4_LOG_ERROR( "unsupported audio codec '%s'.\n", info->codec_name );
         goto error;
@@ -1003,13 +1034,6 @@ static int write_audio_frames( mp4_hnd_t *p_mp4, double video_dts, int finish )
     for(;;)
     {
         uint64_t audio_timestamp;
-        if( p_audio->i_numframe < 0 || p_audio->i_numframe == INT_MAX ||
-            mp4_u64_mul_overflow( (uint64_t)p_audio->i_numframe, p_audio->summary->samples_in_frame, &audio_timestamp ) )
-            return -1;
-        /*
-         * means while( audio_dts <= video_dts )
-         * FIXME: I wonder if there's any way more effective.
-         */
 
         if( video_dts == 0.0 && p_mp4->b_fragments && !finish )
         {
@@ -1021,33 +1045,54 @@ static int write_audio_frames( mp4_hnd_t *p_mp4, double video_dts, int finish )
                             "failed to set timeline map for audio.\n" );
         }
 
-        if( !finish && (((double)audio_timestamp / (double)p_audio->summary->frequency > video_dts) || video_dts == 0.0) )
+        if( !finish && video_dts == 0.0 )
             break;
 
         /* read a audio frame */
 #if HAVE_AUDIO
-        if( finish )
-            frame = x264_audio_encoder_finish( p_audio->encoder );
-        else if( !(frame = x264_audio_encode_frame( p_audio->encoder )) )
-        {
-            if( x264_audio_encoder_failed( p_audio->encoder ) )
-                return -1;
-            finish = 1;
-            continue;
-        }
-
+        frame = p_audio->pending_frame;
         if( !frame )
         {
-            if( x264_audio_encoder_failed( p_audio->encoder ) )
-                return -1;
-            break;
-        }
+            if( finish )
+                frame = x264_audio_encoder_finish( p_audio->encoder );
+            else if( !(frame = x264_audio_encode_frame( p_audio->encoder )) )
+            {
+                if( x264_audio_encoder_failed( p_audio->encoder ) )
+                    return -1;
+                finish = 1;
+                continue;
+            }
 
-        if( frame->size < 0 || (frame->size && !frame->data) )
+            if( !frame )
+            {
+                if( x264_audio_encoder_failed( p_audio->encoder ) )
+                    return -1;
+                break;
+            }
+
+            if( frame->size < 0 || (frame->size && !frame->data) || !frame->samplecount )
+            {
+                x264_audio_free_frame( p_audio->encoder, frame );
+                return -1;
+            }
+            p_audio->pending_frame = frame;
+        }
+        frame = p_audio->pending_frame;
+        if( mp4_get_audio_timestamp( &audio_timestamp, frame, p_audio->summary ) )
         {
             x264_audio_free_frame( p_audio->encoder, frame );
+            p_audio->pending_frame = NULL;
             return -1;
         }
+        if( !finish && (double)audio_timestamp / (double)p_audio->summary->frequency > video_dts )
+            break;
+        if( p_audio->total_samples > UINT64_MAX - (uint64_t)frame->samplecount )
+        {
+            x264_audio_free_frame( p_audio->encoder, frame );
+            p_audio->pending_frame = NULL;
+            return -1;
+        }
+        p_audio->pending_frame = NULL;
         lsmash_sample_t *p_sample = lsmash_create_sample( (uint32_t)frame->size );
         if( !p_sample || (frame->size && !p_sample->data) )
         {
@@ -1058,10 +1103,18 @@ static int write_audio_frames( mp4_hnd_t *p_mp4, double video_dts, int finish )
         }
         if( frame->size )
             memcpy( p_sample->data, frame->data, (size_t)frame->size );
-        x264_audio_free_frame( p_audio->encoder, frame );
         p_sample->prop.pre_roll.distance = (uint32_t)p_audio->b_mdct;
 #else
         uint32_t audio_last_delta = 0;
+        if( p_audio->i_numframe < 0 || p_audio->i_numframe == INT_MAX ||
+            mp4_u64_mul_overflow( (uint64_t)p_audio->i_numframe, p_audio->summary->samples_in_frame, &audio_timestamp ) )
+            return -1;
+        /*
+         * means while( audio_dts <= video_dts )
+         * FIXME: I wonder if there's any way more effective.
+         */
+        if( !finish && (((double)audio_timestamp / (double)p_audio->summary->frequency > video_dts) || video_dts == 0.0) )
+            break;
         /* FIXME: mp4sys_importer_get_access_unit() returns 1 if there're any changes in stream's properties.
            If you want to support them, you have to retrieve summary again, and make some operation accordingly. */
         lsmash_sample_t *p_sample = lsmash_create_sample( p_audio->summary->max_au_length );
@@ -1087,11 +1140,21 @@ static int write_audio_frames( mp4_hnd_t *p_mp4, double video_dts, int finish )
         p_sample->index = p_audio->i_sample_entry;
         if( mp4_append_sample_owned( p_mp4->p_root, p_audio->i_track, &p_sample ) )
         {
+#if HAVE_AUDIO
+            x264_audio_free_frame( p_audio->encoder, frame );
+#endif
             MP4_LOG_ERROR( "failed to append a audio sample.\n" );
             return -1;
         }
 
-#if !HAVE_AUDIO
+#if HAVE_AUDIO
+        p_audio->total_samples += frame->samplecount;
+        p_audio->last_delta = frame->samplecount;
+        x264_audio_free_frame( p_audio->encoder, frame );
+#else
+        if( p_audio->total_samples > UINT64_MAX - (uint64_t)audio_last_delta )
+            return -1;
+        p_audio->total_samples += audio_last_delta;
         p_audio->last_delta = audio_last_delta;
 #endif
         p_audio->i_numframe++;
@@ -1121,11 +1184,7 @@ static int close_file_audio( mp4_hnd_t* p_mp4, double actual_duration )
      || lsmash_check_codec_type_identical( p_audio->codec_type, QT_CODEC_TYPE_IN32_AUDIO ) )
         last_delta = 1;     /* Actual sample duration of each LPCMFrame is one. */
     else
-#if HAVE_AUDIO
-        last_delta = p_audio->info->last_delta;
-#else
         last_delta = p_audio->last_delta;
-#endif
     if( p_audio->i_numframe > 0 && !last_delta )
         return -1;
     uint64_t audio_edit_duration = 0;
@@ -1133,7 +1192,7 @@ static int close_file_audio( mp4_hnd_t* p_mp4, double actual_duration )
     {
         MP4_CLOSE_LOG_IF_ERR( lsmash_flush_pooled_samples( p_mp4->p_root, p_audio->i_track, last_delta ),
                               "failed to flush the rest of audio samples.\n" );
-        long double audio_samples = (long double)(p_audio->i_numframe - 1) * (long double)p_audio->summary->samples_in_frame + (long double)last_delta;
+        long double audio_samples = (long double)p_audio->total_samples;
         long double primed_samples = audio_samples > p_audio->info->priming ? audio_samples - p_audio->info->priming : 0.0L;
         if( primed_samples != 0.0L )
         {
@@ -1855,8 +1914,9 @@ do\
                                 "failed to flush the rest of samples.\n" );
 #if HAVE_ANY_AUDIO
         if( p_audio )
-            MP4_SAMPLE_FAIL_IF_ERR( !p_audio->summary ||
-                                    lsmash_flush_pooled_samples( p_mp4->p_root, p_audio->i_track, p_audio->summary->samples_in_frame ),
+            MP4_SAMPLE_FAIL_IF_ERR( !p_audio->summary || ( p_audio->i_numframe && !p_audio->last_delta ) ||
+                                    ( p_audio->i_numframe &&
+                                      lsmash_flush_pooled_samples( p_mp4->p_root, p_audio->i_track, p_audio->last_delta ) ),
                                     "failed to flush the rest of samples for audio.\n" );
 #endif
         MP4_SAMPLE_FAIL_IF_ERR( lsmash_create_fragment_movie( p_mp4->p_root ),
