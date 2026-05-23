@@ -10,7 +10,9 @@ typedef struct enc_lame_t
     hnd_t filter_chain;
     int64_t packet_count;
 
+    int failed;
     int finishing;
+    int flushed;
     lame_global_flags *lame;
     int64_t last_sample;
     int64_t last_dts;
@@ -331,7 +333,7 @@ static int get_next_mp3frame( hnd_t handle, uint8_t *data )
 static audio_packet_t *get_next_packet( hnd_t handle )
 {
     enc_lame_t *h = handle;
-    if( !h || !h->filter_chain || !h->lame || !h->buffer || !h->bufsize )
+    if( !h || !h->filter_chain || !h->lame || !h->buffer || !h->bufsize || h->failed )
         return NULL;
     int len;
 
@@ -341,46 +343,53 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     int64_t out_packet_alloc_size = sizeof( audio_packet_t );
     audio_packet_t *out = calloc( 1, out_packet_alloc_size );
     if( !out )
+    {
+        h->failed = 1;
         return NULL;
+    }
     out->info = h->info;
     int64_t out_data_alloc_size = (int64_t)h->bufsize;
     out->data = malloc( out_data_alloc_size );
     if( !out->data )
-        goto error;
+        goto fail;
 
     do
     {
         if( h->in && h->in->flags & AUDIO_FLAG_EOF )
         {
             h->finishing = 1;
-            goto error; // Not an error here but it'd do the same handling
+            goto eof;
         }
         x264_af_free_packet( h->in );
         h->in = NULL;
 
         int64_t last_sample;
         if( get_sample_end( h->last_sample, h->info.framelen, &last_sample ) )
-            goto error;
+            goto fail;
 
         if( !( h->in = x264_af_get_samples( h->filter_chain, h->last_sample, last_sample ) ) )
-            goto error;
+        {
+            if( x264_af_failed( h->filter_chain ) )
+                goto fail;
+            goto eof;
+        }
 
         if( h->buf_index > h->bufsize )
-            goto error;
+            goto fail;
         if( h->in->channels != (unsigned)h->info.channels ||
             !h->in->samples || !h->in->samples[0] ||
             (h->info.channels > 1 && !h->in->samples[1]) )
-            goto error;
+            goto fail;
         if( h->in->samplecount > INT_MAX ||
             h->in->samplecount > (uint64_t)(INT64_MAX - h->last_sample) )
-            goto error;
+            goto fail;
         int64_t staged_last_sample = h->last_sample + h->in->samplecount;
         float *right = h->info.channels > 1 ? h->in->samples[1] : h->in->samples[0];
         len = lame_encode_buffer_float( h->lame, h->in->samples[0], right,
                                         h->in->samplecount, h->buffer + h->buf_index, h->bufsize - h->buf_index );
 
         if( len < 0 || (size_t)len > h->bufsize - h->buf_index )
-            goto error;
+            goto fail;
 
         h->buf_index += len;
         if( h->last_dts == INVALID_DTS )
@@ -393,11 +402,12 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     int64_t staged_last_dts = h->last_dts == INVALID_DTS ? h->last_sample : h->last_dts;
     out->dts = staged_last_dts;
     if( add_frame_dts( &staged_last_dts, h->info.framelen ) )
-        goto error;
+        goto fail;
+    out->samplecount = (unsigned)h->info.framelen;
     h->last_dts = staged_last_dts;
     return out;
 
-error:
+eof:
     if( h->in )
     {
         x264_af_free_packet( h->in );
@@ -405,6 +415,10 @@ error:
     }
     x264_af_free_packet( out );
     return NULL;
+
+fail:
+    h->failed = 1;
+    goto eof;
 }
 
 static void skip_samples( hnd_t handle, uint64_t samplecount )
@@ -418,42 +432,61 @@ static void skip_samples( hnd_t handle, uint64_t samplecount )
 static audio_packet_t *finish( hnd_t encoder )
 {
     enc_lame_t *h = encoder;
-    if( !h || !h->lame || !h->buffer || !h->bufsize )
+    if( !h || !h->lame || !h->buffer || !h->bufsize || h->failed )
         return NULL;
     int len;
+    if( !h->buf_index && h->flushed )
+        return NULL;
 
     int64_t finish_packet_alloc_size = sizeof( audio_packet_t );
     audio_packet_t *out = calloc( 1, finish_packet_alloc_size );
     if( !out )
+    {
+        h->failed = 1;
         return NULL;
+    }
     out->info = h->info;
     int64_t finish_data_alloc_size = (int64_t)h->bufsize;
     out->data = malloc( finish_data_alloc_size );
     if( !out->data )
-        goto error;
+        goto fail;
 
-    if( h->buf_index > h->bufsize )
-        goto error;
-    len = lame_encode_flush( h->lame, h->buffer + h->buf_index, h->bufsize - h->buf_index );
-    if( len < 0 || (size_t)len > h->bufsize - h->buf_index )
-        goto error;
-
-    h->buf_index += len;
+    if( !h->buf_index )
+    {
+        if( h->buf_index > h->bufsize )
+            goto fail;
+        len = lame_encode_flush( h->lame, h->buffer + h->buf_index, h->bufsize - h->buf_index );
+        if( len < 0 || (size_t)len > h->bufsize - h->buf_index )
+            goto fail;
+        h->buf_index += len;
+        h->flushed = 1;
+    }
 
     out->size = get_next_mp3frame( h, out->data );
     if( !out->size )
-        goto error;
+        goto eof;
 
     int64_t staged_last_dts = h->last_dts == INVALID_DTS ? h->last_sample : h->last_dts;
     out->dts = staged_last_dts;
     if( add_frame_dts( &staged_last_dts, h->info.framelen ) )
-        goto error;
+        goto fail;
+    out->samplecount = (unsigned)h->info.framelen;
     h->last_dts = staged_last_dts;
     return out;
 
-error:
+eof:
     x264_af_free_packet( out );
     return NULL;
+
+fail:
+    h->failed = 1;
+    goto eof;
+}
+
+static int mp3_is_failed( hnd_t handle )
+{
+    enc_lame_t *h = handle;
+    return h && h->failed;
 }
 
 static void mp3_close( hnd_t handle )
@@ -500,5 +533,6 @@ const audio_encoder_t audio_encoder_lame =
     .free_packet     = free_packet,
     .close           = mp3_close,
     .show_help       = mp3_help,
-    .is_valid_encoder = NULL
+    .is_valid_encoder = NULL,
+    .is_failed       = mp3_is_failed
 };

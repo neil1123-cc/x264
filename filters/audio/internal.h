@@ -6,7 +6,8 @@
 #define AUDIO_FILTER_COMMON     \
     const audio_filter_t *self; \
     audio_info_t info;          \
-    struct audio_hnd_t *prev;
+    struct audio_hnd_t *prev;   \
+    int failed;
 
 #define INIT_FILTER_STRUCT(filterstruct, structname)            \
     structname *h;                                              \

@@ -75,12 +75,25 @@ audio_packet_t *x264_af_get_samples( hnd_t handle, int64_t first_sample, int64_t
         out->owner = h;
         if( x264_af_validate_sample_packet( h, out, first_sample, requested_samplecount ) )
         {
+            h->failed = 1;
             x264_af_free_packet( out );
             return NULL;
         }
         return out;
     }
     return 0;
+}
+
+int x264_af_failed( hnd_t handle )
+{
+    audio_hnd_t *h = handle;
+    if( !h )
+        return 0;
+    if( h->failed )
+        return 1;
+    if( !h->self || !h->self->is_failed )
+        return 0;
+    return h->self->is_failed( h );
 }
 
 void x264_af_free_packet( audio_packet_t *pkt )

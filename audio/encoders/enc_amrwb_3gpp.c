@@ -12,6 +12,7 @@ typedef struct enc_amrwb_3gpp_t
     hnd_t filter_chain;
     int64_t packet_count;
 
+    int failed;
     void* amrwb_3gpp;
     Word16 dtx;
     Word16 mode;
@@ -106,7 +107,8 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
         return NULL;
     }
 
-    enc_amrwb_3gpp_t *h     = calloc( 1, sizeof( enc_amrwb_3gpp_t ) );
+    int64_t encoder_alloc_size = sizeof( enc_amrwb_3gpp_t );
+    enc_amrwb_3gpp_t *h     = calloc( 1, encoder_alloc_size );
     if( !h )
     {
         free( opts );
@@ -224,26 +226,35 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     enc_amrwb_3gpp_t *h = handle;
     audio_packet_t *in = NULL;
 
-    if( !h || !h->filter_chain || !h->amrwb_3gpp || !h->bufsize || h->finishing )
+    if( !h || !h->filter_chain || !h->amrwb_3gpp || !h->bufsize || h->failed || h->finishing )
         return NULL;
 
-    audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
+    int64_t out_packet_alloc_size = sizeof( audio_packet_t );
+    audio_packet_t *out = calloc( 1, out_packet_alloc_size );
     if( !out )
+    {
+        h->failed = 1;
         return NULL;
+    }
     out->info = h->info;
-    out->data = malloc( h->bufsize );
+    int64_t out_data_alloc_size = (int64_t)h->bufsize;
+    out->data = malloc( out_data_alloc_size );
     if( !out->data )
-        goto error;
+        goto fail;
 
     if( h->finishing )
-        goto error; // Not an error here but it'd do the same handling
+        goto eof; // Not an error here but it'd do the same handling
 
     int64_t last_sample;
     if( get_sample_end( h->last_sample, h->info.framelen, &last_sample ) )
-        goto error;
+        goto fail;
 
     if( !( in = x264_af_get_samples( h->filter_chain, h->last_sample, last_sample ) ) )
-        goto error;
+    {
+        if( x264_af_failed( h->filter_chain ) )
+            goto fail;
+        goto eof;
+    }
     /* ensure buffer length */
     unsigned input_samplecount = in->samplecount;
     int finishing = 0;
@@ -252,13 +263,13 @@ static audio_packet_t *get_next_packet( hnd_t handle )
         if( !(in->flags & AUDIO_FLAG_EOF) )
         {
             x264_cli_log( "amrwb_3gpp", X264_LOG_ERROR, "samples too few but not EOF???\n" );
-            goto error;
+            goto fail;
         }
         finishing = 1;
         if( x264_af_resize_fill_buffer( in->samples, h->info.framelen, h->info.channels, in->samplecount, 0.0f ) )
         {
             x264_cli_log( "amrwb_3gpp", X264_LOG_ERROR, "failed to expand buffer.\n" );
-            goto error;
+            goto fail;
         }
     }
     in->samplecount = h->info.framelen;
@@ -266,7 +277,7 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     /* convert to integer */
     void *samplebuffer = x264_af_interleave2( SMPFMT_S16, in->samples, h->info.channels, in->samplecount );
     if( in->samplecount && !samplebuffer )
-        goto error;
+        goto fail;
     x264_af_free_packet( in );
     in = NULL;
 
@@ -275,27 +286,32 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     if( out->size <= 0 || (size_t)out->size > h->bufsize )
     {
         x264_cli_log( "amrwb_3gpp", X264_LOG_ERROR, "failed to encode audio.\n" );
-        goto error;
+        goto fail;
     }
 
     if( input_samplecount > (uint64_t)(INT64_MAX - h->last_sample) )
-        goto error;
+        goto fail;
     int64_t staged_last_sample = h->last_sample + input_samplecount;
     int64_t staged_last_dts = h->last_dts == INVALID_DTS ? h->last_sample : h->last_dts;
     out->dts = staged_last_dts;
+    out->samplecount = input_samplecount;
     if( add_frame_dts( &staged_last_dts, h->info.framelen ) )
-        goto error;
+        goto fail;
 
     h->finishing = finishing;
     h->last_sample = staged_last_sample;
     h->last_dts = staged_last_dts;
     return out;
 
-error:
+eof:
     if( in )
         x264_af_free_packet( in );
     x264_af_free_packet( out );
     return NULL;
+
+fail:
+    h->failed = 1;
+    goto eof;
 }
 
 static void skip_samples( hnd_t handle, uint64_t samplecount )
@@ -309,6 +325,12 @@ static void skip_samples( hnd_t handle, uint64_t samplecount )
 static audio_packet_t *finish( hnd_t encoder )
 {
     return NULL;
+}
+
+static int amrwb_3gpp_is_failed( hnd_t handle )
+{
+    enc_amrwb_3gpp_t *h = handle;
+    return h && h->failed;
 }
 
 static void amrwb_3gpp_close( hnd_t handle )
@@ -341,5 +363,6 @@ const audio_encoder_t audio_encoder_amrwb_3gpp =
     .free_packet     = free_packet,
     .close           = amrwb_3gpp_close,
     .show_help       = amrwb_3gpp_help,
-    .is_valid_encoder = NULL
+    .is_valid_encoder = NULL,
+    .is_failed       = amrwb_3gpp_is_failed
 };

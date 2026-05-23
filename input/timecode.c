@@ -765,8 +765,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     if( !psz_filename || !p_handle || !*p_handle || !info || !opt )
         return -1;
 
-    int64_t timecode_alloc_size = sizeof(timecode_hnd_t);
-    h = calloc( 1, timecode_alloc_size );
+    h = calloc( 1, sizeof(timecode_hnd_t) );
     if( !h )
     {
         x264_cli_log( "timecode", X264_LOG_ERROR, "malloc failed\n" );

@@ -465,7 +465,8 @@ static int init( hnd_t *handle, const char *opt_str )
 
     h->num_samples = vi->num_audio_samples;
     h->bufsize = DEFAULT_BUFSIZE;
-    h->buffer = malloc( h->bufsize );
+    int64_t avs_buffer_alloc_size = (int64_t)h->bufsize;
+    h->buffer = malloc( avs_buffer_alloc_size );
     GOTO_IF( !h->buffer, error, "malloc failed\n" )
 
     free( opts );
@@ -562,8 +563,15 @@ static struct audio_packet_t *get_samples( hnd_t handle, int64_t first_sample, i
     return pkt;
 
 fail:
+    h->failed = 1;
     x264_af_free_packet( pkt );
     return NULL;
+}
+
+static int avs_is_failed( hnd_t handle )
+{
+    avs_source_t *h = handle;
+    return h && h->failed;
 }
 
 static void avs_close_file( hnd_t handle )
@@ -592,6 +600,7 @@ const audio_filter_t audio_filter_avs =
         .help        = "Arguments: filename",
         .init        = init,
         .get_samples = get_samples,
+        .is_failed   = avs_is_failed,
         .free_packet = free_packet,
         .close       = avs_close_file
 };

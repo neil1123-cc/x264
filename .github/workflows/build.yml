@@ -220,7 +220,10 @@ jobs:
             pkg-config --libs x264)
           libs="$sysroot/usr/local/lib/libx264.a"
           assert_pkg_config_install_paths "$label static" "$sysroot" "$pkg_config_cflags" "$pkg_config_libs"
-          assert_first_include_flag "$label static explicit include order" "$staged_cflags" $staged_cflags $cflags
+          (
+            eval "set -- $cflags"
+            assert_first_include_flag "$label static explicit include order" "$staged_cflags" "$staged_cflags" "$@"
+          )
 
           {
             printf '%s\n' '#include <stdint.h>'
@@ -239,15 +242,22 @@ jobs:
             printf '%s\n' '    return 0;'
             printf '%s\n' '}'
           } > "$source"
-          cc -std=gnu17 -Wall -Wextra -Werror "$source" $staged_cflags $cflags "$libs" -o "$binary"
+          (
+            eval "set -- $cflags"
+            cc -std=gnu17 -Wall -Wextra -Werror "$source" "$staged_cflags" "$@" "$libs" -o "$binary"
+          )
           "$binary"
-          cc -std=gnu17 -Wall -Wextra -Werror "$source" $staged_cflags $cflags $pkg_config_libs -o "$binary.pkg-config"
+          (
+            eval "set -- $cflags"
+            eval "set -- \"\$@\" $pkg_config_libs"
+            cc -std=gnu17 -Wall -Wextra -Werror "$source" "$staged_cflags" "$@" -o "$binary.pkg-config"
+          )
           "$binary.pkg-config"
 
           {
             printf '%s\n' '#include <stdint.h>'
             printf '%s\n' '#include <x264.h>'
-            printf '%s\n' '#if defined(_GNU_SOURCE) || defined(_POSIX_C_SOURCE)'
+            printf '%s\n' '#if defined(_GNU_SOURCE) || defined(_POSIX_C_SOURCE) || defined(_XOPEN_SOURCE) || defined(_DEFAULT_SOURCE)'
             printf '%s\n' '#error installed public cflags must not force feature-test macros'
             printf '%s\n' '#endif'
             printf '%s\n' '#if !defined(X264_BIT_DEPTH) || !defined(X264_CHROMA_FORMAT)'
@@ -259,7 +269,10 @@ jobs:
             printf '%s\n' '    return 0;'
             printf '%s\n' '}'
           } > "$strict_source"
-          cc -std=c17 -pedantic -Wall -Wextra -Werror "$strict_source" $staged_cflags $cflags "$libs" -o "$strict_binary"
+          (
+            eval "set -- $cflags"
+            cc -std=c17 -pedantic -Wall -Wextra -Werror "$strict_source" "$staged_cflags" "$@" "$libs" -o "$strict_binary"
+          )
           "$strict_binary"
         }
 
@@ -298,7 +311,7 @@ jobs:
           local assert_label="$1"
           local assert_text="$2"
           case " $assert_text " in
-            *"_GNU_SOURCE"*|*"_POSIX_C_SOURCE"*)
+            *"_GNU_SOURCE"*|*"_POSIX_C_SOURCE"*|*"_XOPEN_SOURCE"*|*"_DEFAULT_SOURCE"*)
               printf '%s\n' "feature-test macro leaked through $assert_label: $assert_text" >&2
               exit 1
               ;;
@@ -374,9 +387,15 @@ jobs:
             PKG_CONFIG_SYSROOT_DIR="$sysroot" \
             pkg-config --libs x264)
           assert_pkg_config_install_paths "8b cxx static" "$sysroot" "$pkg_config_cflags" "$pkg_config_libs"
-          assert_first_include_flag "8b cxx static explicit include order" "-I$sysroot/usr/local/include" "-I$sysroot/usr/local/include" $cxx_cflags
-          c++ -std=c++17 -Wall -Wextra -Werror "$prefix/consumer.cpp" "-I$sysroot/usr/local/include" $cxx_cflags \
-            "$sysroot/usr/local/lib/libx264.a" -o "$prefix/consumer.exe"
+          (
+            eval "set -- $cxx_cflags"
+            assert_first_include_flag "8b cxx static explicit include order" "-I$sysroot/usr/local/include" "-I$sysroot/usr/local/include" "$@"
+          )
+          (
+            eval "set -- $cxx_cflags"
+            c++ -std=c++17 -Wall -Wextra -Werror "$prefix/consumer.cpp" "-I$sysroot/usr/local/include" "$@" \
+              "$sysroot/usr/local/lib/libx264.a" -o "$prefix/consumer.exe"
+          )
           "$prefix/consumer.exe"
         }
 
@@ -425,7 +444,7 @@ jobs:
           local assert_label="$1"
           local assert_text="$2"
           case " $assert_text " in
-            *"_GNU_SOURCE"*|*"_POSIX_C_SOURCE"*)
+            *"_GNU_SOURCE"*|*"_POSIX_C_SOURCE"*|*"_XOPEN_SOURCE"*|*"_DEFAULT_SOURCE"*)
               printf '%s\n' "feature-test macro leaked through $assert_label: $assert_text" >&2
               exit 1
               ;;
@@ -503,7 +522,10 @@ jobs:
         test -s "$sysroot/usr/local/bin/$dll_name"
         assert_pkg_config_install_paths "shared-smoke shared" "$sysroot" "$cflags" "$pkg_config_libs"
         assert_token_present "shared-smoke shared pkg-config cflags" "$cflags" "-DX264_API_IMPORTS"
-        assert_first_include_flag "shared-smoke shared explicit include order" "$staged_cflags" $staged_cflags $cflags
+        (
+          eval "set -- $cflags"
+          assert_first_include_flag "shared-smoke shared explicit include order" "$staged_cflags" "$staged_cflags" "$@"
+        )
 
         {
           printf '%s\n' '#include <stdint.h>'
@@ -519,9 +541,16 @@ jobs:
           printf '%s\n' '    return 0;'
           printf '%s\n' '}'
         } > "$source"
-        cc -std=gnu17 -Wall -Wextra -Werror "$source" $staged_cflags $cflags "$libs" -o "$prefix/consumer.exe"
+        (
+          eval "set -- $cflags"
+          cc -std=gnu17 -Wall -Wextra -Werror "$source" "$staged_cflags" "$@" "$libs" -o "$prefix/consumer.exe"
+        )
         PATH="$sysroot/usr/local/bin:$PATH" "$prefix/consumer.exe"
-        cc -std=gnu17 -Wall -Wextra -Werror "$source" $staged_cflags $cflags $pkg_config_libs -o "$prefix/consumer.pkg-config.exe"
+        (
+          eval "set -- $cflags"
+          eval "set -- \"\$@\" $pkg_config_libs"
+          cc -std=gnu17 -Wall -Wextra -Werror "$source" "$staged_cflags" "$@" -o "$prefix/consumer.pkg-config.exe"
+        )
         PATH="$sysroot/usr/local/bin:$PATH" "$prefix/consumer.pkg-config.exe"
 
         {
@@ -530,7 +559,7 @@ jobs:
           printf '%s\n' '#if !defined(X264_API_IMPORTS)'
           printf '%s\n' '#error shared pkg-config cflags must request API imports'
           printf '%s\n' '#endif'
-          printf '%s\n' '#if defined(_GNU_SOURCE) || defined(_POSIX_C_SOURCE)'
+          printf '%s\n' '#if defined(_GNU_SOURCE) || defined(_POSIX_C_SOURCE) || defined(_XOPEN_SOURCE) || defined(_DEFAULT_SOURCE)'
           printf '%s\n' '#error installed shared cflags must not force feature-test macros'
           printf '%s\n' '#endif'
           printf '%s\n' '#if !defined(X264_BIT_DEPTH) || !defined(X264_CHROMA_FORMAT)'
@@ -542,7 +571,10 @@ jobs:
           printf '%s\n' '    return 0;'
           printf '%s\n' '}'
         } > "$strict_source"
-        cc -std=c17 -pedantic -Wall -Wextra -Werror "$strict_source" $staged_cflags $cflags "$libs" -o "$prefix/strict-consumer.exe"
+        (
+          eval "set -- $cflags"
+          cc -std=c17 -pedantic -Wall -Wextra -Werror "$strict_source" "$staged_cflags" "$@" "$libs" -o "$prefix/strict-consumer.exe"
+        )
         PATH="$sysroot/usr/local/bin:$PATH" "$prefix/strict-consumer.exe"
 
     - name: Checkasm smoke

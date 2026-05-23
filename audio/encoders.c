@@ -104,8 +104,7 @@ hnd_t x264_audio_encoder_open( const audio_encoder_t *encoder, hnd_t filter_chai
 {
     if( !encoder || !filter_chain || !encoder->init )
         return NULL;
-    int64_t encoder_alloc_size = sizeof( struct aenc_t );
-    struct aenc_t *enc = calloc( 1, encoder_alloc_size );
+    struct aenc_t *enc = calloc( 1, sizeof( struct aenc_t ) );
     if( !enc )
     {
         x264_af_close( filter_chain );
@@ -158,6 +157,15 @@ audio_packet_t *x264_audio_encoder_finish( hnd_t encoder )
         return NULL;
 
     return enc->enc->finish( enc->handle );
+}
+
+int x264_audio_encoder_failed( hnd_t encoder )
+{
+    struct aenc_t *enc = encoder;
+    if( !enc || !enc->enc || !enc->handle || !enc->enc->is_failed )
+        return 0;
+
+    return enc->enc->is_failed( enc->handle );
 }
 
 void x264_audio_free_frame( hnd_t encoder, audio_packet_t *frame )

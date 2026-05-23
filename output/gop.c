@@ -69,10 +69,9 @@ static size_t gop_frame_digits( int frame )
 static char *gop_alloc_copy( const char *src, size_t len )
 {
     size_t size = len;
-    if( !src || gop_add_size( &size, 1 ) )
+    if( !src || gop_add_size( &size, 1 ) || size > INT64_MAX )
         return NULL;
-    int64_t copy_alloc_size = (int64_t)size;
-    char *dst = malloc( copy_alloc_size );
+    char *dst = malloc( size );
     if( !dst )
         return NULL;
     memcpy( dst, src, len );
@@ -90,11 +89,11 @@ static char *gop_alloc_prefixed_filename( gop_hnd_t *hnd, const char *suffix )
     size_t filename_len = dir_len;
     if( gop_add_size( &filename_len, prefix_len ) ||
         gop_add_size( &filename_len, suffix_len ) ||
-        gop_add_size( &filename_len, 1 ) )
+        gop_add_size( &filename_len, 1 ) ||
+        filename_len > INT64_MAX )
         return NULL;
 
-    int64_t filename_alloc_size = (int64_t)filename_len;
-    char *filename = malloc( filename_alloc_size );
+    char *filename = malloc( filename_len );
     if( !filename )
         return NULL;
 
@@ -122,11 +121,11 @@ static char *gop_alloc_data_filename( gop_hnd_t *hnd )
         gop_add_size( &filename_len, 1 ) ||
         gop_add_size( &filename_len, frame_digits ) ||
         gop_add_size( &filename_len, suffix_len ) ||
-        gop_add_size( &filename_len, 1 ) )
+        gop_add_size( &filename_len, 1 ) ||
+        filename_len > INT64_MAX )
         return NULL;
 
-    int64_t filename_alloc_size = (int64_t)filename_len;
-    char *filename = malloc( filename_alloc_size );
+    char *filename = malloc( filename_len );
     if( !filename )
         return NULL;
 
@@ -217,8 +216,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
         return -1;
     *p_handle = NULL;
 
-    int64_t gop_alloc_size = sizeof(gop_hnd_t);
-    gop_hnd_t *hnd = calloc( 1, gop_alloc_size );
+    gop_hnd_t *hnd = calloc( 1, sizeof(gop_hnd_t) );
     if( !hnd )
         return -1;
 

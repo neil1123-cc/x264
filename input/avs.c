@@ -390,8 +390,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
 #ifdef _WIN32
     char *ansi_filename = NULL;
 #endif
-    int64_t avs_alloc_size = sizeof(avs_hnd_t);
-    avs_hnd_t *h = calloc( 1, avs_alloc_size );
+    avs_hnd_t *h = calloc( 1, sizeof(avs_hnd_t) );
     if( !h )
         return -1;
     video_info_t updated_info = *info;

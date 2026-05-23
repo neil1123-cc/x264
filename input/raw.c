@@ -88,8 +88,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         return -1;
     *p_handle = NULL;
 
-    int64_t raw_alloc_size = sizeof(raw_hnd_t);
-    raw_hnd_t *h = calloc( 1, raw_alloc_size );
+    raw_hnd_t *h = calloc( 1, sizeof(raw_hnd_t) );
     if( !h )
         return -1;
 

@@ -125,6 +125,7 @@ typedef struct audio_filter_t
 {
     int (*init)( hnd_t *handle, const char *opts );
     struct audio_packet_t *(*get_samples)( hnd_t handle, int64_t first_sample, int64_t last_sample );
+    int (*is_failed)( hnd_t handle );
     void (*free_packet)( hnd_t self, struct audio_packet_t *frame );
     void (*close)( hnd_t handle );
     char *name, *longname, *description, *help;
@@ -169,6 +170,7 @@ static inline int64_t x264_from_timebase( int64_t i, timebase_t from, int64_t sc
 audio_info_t *x264_af_get_info( hnd_t handle );
 audio_filter_t *x264_af_get_filter( const char *name );
 audio_packet_t *x264_af_get_samples( hnd_t handle, int64_t first_sample, int64_t last_sample );
+int x264_af_failed( hnd_t handle );
 void x264_af_free_packet( audio_packet_t *pkt );
 void x264_af_close( hnd_t chain );
 

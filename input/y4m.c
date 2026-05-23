@@ -171,8 +171,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         return -1;
     *p_handle = NULL;
 
-    int64_t y4m_alloc_size = sizeof(y4m_hnd_t);
-    y4m_hnd_t *h = calloc( 1, y4m_alloc_size );
+    y4m_hnd_t *h = calloc( 1, sizeof(y4m_hnd_t) );
     int i;
     uint32_t n, d;
     char header[Y4M_MAX_HEADER+10];

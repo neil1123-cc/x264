@@ -177,8 +177,7 @@ static int audio_init( hnd_t handle, hnd_t filters, char *audio_enc, char *audio
     }
     FAIL_IF_ERR( !henc, "flv", "error opening audio encoder\n" );
     flv_hnd_t *p_flv = handle;
-    int64_t audio_alloc_size = sizeof( flv_audio_hnd_t );
-    flv_audio_hnd_t *a_flv = calloc( 1, audio_alloc_size );
+    flv_audio_hnd_t *a_flv = calloc( 1, sizeof( flv_audio_hnd_t ) );
     if( !a_flv )
         goto error;
     a_flv->lastdts = INVALID_DTS;
@@ -300,8 +299,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
         return -1;
     *p_handle = NULL;
 
-    int64_t flv_alloc_size = sizeof(flv_hnd_t);
-    flv_hnd_t *p_flv = calloc( 1, flv_alloc_size );
+    flv_hnd_t *p_flv = calloc( 1, sizeof(flv_hnd_t) );
 	int ret = -1;
     if( p_flv )
     {
@@ -490,8 +488,7 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     /* It is within the spec to write this as-is but for
      * mplayer/ffmpeg playback this is deferred until before the first frame */
 
-    int64_t sei_alloc_size = sei_size;
-    uint8_t *sei = sei_size ? malloc( sei_alloc_size ) : NULL;
+    uint8_t *sei = sei_size ? malloc( sei_size ) : NULL;
     if( sei_size && !sei )
         return -1;
 
@@ -694,12 +691,18 @@ static int write_audio( flv_hnd_t *p_flv, int64_t video_dts, int finish )
             frame = x264_audio_encoder_finish( a_flv->encoder );
         else if( !(frame = x264_audio_encode_frame( a_flv->encoder )) )
         {
+            if( x264_audio_encoder_failed( a_flv->encoder ) )
+                return -1;
             finish = 1;
             continue;
         }
 
         if( !frame )
+        {
+            if( x264_audio_encoder_failed( a_flv->encoder ) )
+                return -1;
             break;
+        }
 
         if( frame->dts < 0 || frame->size < 0 || (frame->size && !frame->data) ||
             frame->size > 0xFFFFFF - 2 || frame->size > INT_MAX - 12 )

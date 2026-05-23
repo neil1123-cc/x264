@@ -42,6 +42,7 @@ typedef struct enc_qtaac_t
     hnd_t filter_chain;
     audio_packet_t *in;
 
+    int failed;
     int finishing;
     int64_t last_sample;
     uint8_t *samplebuffer;
@@ -626,7 +627,8 @@ static hnd_t qtaac_init( hnd_t filter_chain, const char *opt_str )
     }
 
     audio_hnd_t *chain = filter_chain;
-    enc_qtaac_t *h = calloc( 1, sizeof( enc_qtaac_t ) );
+    int64_t qtaac_alloc_size = sizeof( enc_qtaac_t );
+    enc_qtaac_t *h = calloc( 1, qtaac_alloc_size );
     if( !h )
     {
         free( opts );
@@ -766,7 +768,8 @@ static hnd_t qtaac_init( hnd_t filter_chain, const char *opt_str )
     h->info.depth          = 32;
     h->info.last_delta     = h->info.framelen;
 
-    audio_aac_info_t *aacinfo = malloc( sizeof( audio_aac_info_t ) );
+    int64_t aac_info_alloc_size = sizeof( audio_aac_info_t );
+    audio_aac_info_t *aacinfo = malloc( aac_info_alloc_size );
     if( !aacinfo )
         goto error;
     aacinfo->has_sbr          = !!h->config.he_flag;
@@ -783,7 +786,8 @@ static hnd_t qtaac_init( hnd_t filter_chain, const char *opt_str )
         goto error;
     int packet_bufsize = (int)size;
     h->bufsize = packet_bufsize;
-    if( ( h->buffer = malloc( h->bufsize )) == NULL )
+    int64_t qtaac_buffer_alloc_size = (int64_t)h->bufsize;
+    if( ( h->buffer = malloc( qtaac_buffer_alloc_size )) == NULL )
         goto error;
 
     UInt8 esds_buf[1024];
@@ -797,7 +801,8 @@ static hnd_t qtaac_init( hnd_t filter_chain, const char *opt_str )
     read_AudioSpecificConfig( esds_buf, size, &asc, &asc_size );
     if( asc_size <= 0 || asc_size > INT_MAX || !asc )
         goto error;
-    h->info.extradata      = calloc( 1, asc_size );
+    int64_t extradata_alloc_size = (int64_t)asc_size;
+    h->info.extradata      = calloc( 1, extradata_alloc_size );
     if( !h->info.extradata )
         goto error;
     h->info.extradata_size = asc_size;
@@ -884,7 +889,11 @@ static OSStatus pcmInputDataProc( ComponentInstance ci,
         goto error;
 
     if( !( in = x264_af_get_samples( h->filter_chain, h->last_sample, last_sample ) ) )
+    {
+        if( x264_af_failed( h->filter_chain ) )
+            goto error;
         goto eof_reached;
+    }
 
     if( in->samplecount < requested_packets )
         in->flags |= AUDIO_FLAG_EOF;
@@ -905,6 +914,7 @@ static OSStatus pcmInputDataProc( ComponentInstance ci,
     if( data_size64 > UINT32_MAX )
         goto error;
     UInt32 data_size = (UInt32)data_size64;
+    uint32_t staged_last_delta = packet_count;
 
     samplebuffer = x264_af_interleave3( SMPFMT_FLT, in->samples, h->info.channels, in->samplecount, qt_channel_map[h->info.channels-1] );
     if( in->samplecount && !samplebuffer )
@@ -915,6 +925,7 @@ static OSStatus pcmInputDataProc( ComponentInstance ci,
     samplebuffer = NULL;
     h->in = in;
     in = NULL;
+    h->info.last_delta = staged_last_delta;
     h->last_dts = staged_last_dts;
     h->last_sample = staged_last_sample;
 
@@ -934,6 +945,7 @@ error:
     if( h->in )
         x264_af_free_packet( h->in );
     h->in = NULL;
+    h->failed = 1;
     ioData->mNumberBuffers = 0;
     ioData->mBuffers[0].mData = NULL;
     ioData->mBuffers[0].mDataByteSize = 0;
@@ -958,7 +970,7 @@ static audio_packet_t *fill_buffer( enc_qtaac_t *h )
 {
     audio_packet_t *out = NULL;
 
-    if( !h || !h->ci || !h->buffer || h->bufsize <= 0 || h->info.channels <= 0 )
+    if( !h || !h->ci || !h->buffer || h->bufsize <= 0 || h->info.channels <= 0 || h->failed )
         return NULL;
 
     UInt32 npackets = 1;
@@ -975,30 +987,33 @@ static audio_packet_t *fill_buffer( enc_qtaac_t *h )
 
     if( err )
     {
-        h->finishing = 1;
+        h->failed = 1;
         return NULL;
     }
     if( desc.mDataByteSize == 0 || npackets == 0 )
         return NULL;
     if( desc.mDataByteSize > INT_MAX || desc.mDataByteSize > (UInt32)h->bufsize )
     {
-        h->finishing = 1;
+        h->failed = 1;
         return NULL;
     }
 
-    out = calloc( 1, sizeof(audio_packet_t) );
+    int64_t out_packet_alloc_size = sizeof( audio_packet_t );
+    out = calloc( 1, out_packet_alloc_size );
     if( !out )
     {
-        h->finishing = 1;
+        h->failed = 1;
         return NULL;
     }
     out->info = h->info;
     int output_size = (int)desc.mDataByteSize;
     out->size = output_size;
-    out->data = malloc( desc.mDataByteSize );
+    out->samplecount = h->info.last_delta ? h->info.last_delta : h->info.framelen;
+    int64_t out_data_alloc_size = (int64_t)desc.mDataByteSize;
+    out->data = malloc( out_data_alloc_size );
     if( !out->data )
     {
-        h->finishing = 1;
+        h->failed = 1;
         x264_af_free_packet( out );
         return NULL;
     }
@@ -1012,7 +1027,7 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     enc_qtaac_t *h = handle;
     audio_packet_t *out = NULL;
 
-    if( !h || h->finishing )
+    if( !h || h->failed || h->finishing )
         return NULL;
 
     do
@@ -1029,6 +1044,7 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     out->dts = staged_last_dts;
     if( add_frame_dts( &staged_last_dts, h->info.framelen ) )
     {
+        h->failed = 1;
         x264_af_free_packet( out );
         return NULL;
     }
@@ -1050,7 +1066,7 @@ static audio_packet_t *finish( hnd_t encoder )
     enc_qtaac_t *h = encoder;
     audio_packet_t *out = NULL;
 
-    if( !h )
+    if( !h || h->failed )
         return NULL;
 
     h->finishing = 1;
@@ -1062,12 +1078,19 @@ static audio_packet_t *finish( hnd_t encoder )
     out->dts = staged_last_dts;
     if( add_frame_dts( &staged_last_dts, h->info.framelen ) )
     {
+        h->failed = 1;
         x264_af_free_packet( out );
         return NULL;
     }
     h->last_dts = staged_last_dts;
 
     return out;
+}
+
+static int qtaac_is_failed( hnd_t handle )
+{
+    enc_qtaac_t *h = handle;
+    return h && h->failed;
 }
 
 static void qtaac_close( hnd_t handle )
@@ -1148,5 +1171,6 @@ const audio_encoder_t audio_encoder_qtaac =
     .free_packet     = free_packet,
     .close           = qtaac_close,
     .show_help       = qtaac_help,
-    .is_valid_encoder = is_quicktime_available
+    .is_valid_encoder = is_quicktime_available,
+    .is_failed       = qtaac_is_failed
 };

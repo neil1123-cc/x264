@@ -8,6 +8,7 @@
 #include "libavformat/avformat.h"
 #include "libavcodec/avcodec.h"
 #include "libavcodec/bsf.h"
+#include "libavutil/error.h"
 
 #if defined(__clang__)
 #pragma clang diagnostic pop
@@ -39,10 +40,19 @@ typedef struct lavf_source_t
     audio_packet_t *out;
     int copy;
     int eof;
+    int flushed;
     int decode_error;
+    int copy_error;
     uint8_t desync_warn;
     AVFrame *decode_frame;
 } lavf_source_t;
+
+enum
+{
+    LAVF_FLUSH_NONE = 0,
+    LAVF_FLUSH_SENT,
+    LAVF_FLUSH_DONE
+};
 
 #ifndef AVCODEC_MAX_AUDIO_FRAME_SIZE
 // 1 second of 192khz, 5.1 or 6 channel, 32bit audio
@@ -273,6 +283,31 @@ static inline void free_avpacket( AVPacket *pkt )
     free( pkt );
 }
 
+static AVPacket *lavf_copy_fail_packet( lavf_source_t *h, AVPacket *pkt )
+{
+    if( h )
+        h->copy_error = 1;
+    free_avpacket( pkt );
+    return NULL;
+}
+
+static audio_packet_t *lavf_copy_fail( lavf_source_t *h, AVPacket *pkt )
+{
+    if( h )
+        h->copy_error = 1;
+    free_avpacket( pkt );
+    return NULL;
+}
+
+static audio_packet_t *lavf_copy_fail_audio( lavf_source_t *h, AVPacket *pkt, audio_packet_t *out )
+{
+    if( h )
+        h->copy_error = 1;
+    free_avpacket( pkt );
+    x264_af_free_packet( out );
+    return NULL;
+}
+
 static void free_packet( hnd_t handle, audio_packet_t *pkt )
 {
     if( !pkt )
@@ -291,6 +326,7 @@ static struct AVPacket *next_packet( hnd_t handle )
     if( !pkt )
     {
         AF_LOG_ERR( h, "malloc failed\n" );
+        h->copy_error = 1;
         return NULL;
     }
 
@@ -302,7 +338,12 @@ static struct AVPacket *next_packet( hnd_t handle )
         if( (ret = av_read_frame( h->lavf, pkt )) )
         {
             if( ret != AVERROR_EOF )
-                AF_LOG_ERR( h, "read error: %s\n", strerror( -ret ) );
+            {
+                char errbuf[AV_ERROR_MAX_STRING_SIZE];
+                const char *err = av_strerror( ret, errbuf, sizeof(errbuf) ) < 0 ? "unknown ffmpeg error" : errbuf;
+                AF_LOG_ERR( h, "read error: %s\n", err );
+                return lavf_copy_fail_packet( h, pkt );
+            }
             else
             {
                 AF_LOG( h, X264_LOG_INFO, "end of file reached\n" );
@@ -424,7 +465,8 @@ static int copy_packet_payload( lavf_source_t *h, audio_packet_t *out, const uin
     out->data        = NULL;
     if( size )
     {
-        out->data = malloc( (size_t)size );
+        int64_t out_data_alloc_size = (int64_t)size;
+        out->data = malloc( out_data_alloc_size );
         if( !out->data )
             return -1;
         memcpy( out->data, data, (size_t)size );
@@ -438,26 +480,15 @@ static audio_packet_t *convert_to_audio_packet( hnd_t handle, AVPacket *pkt, uin
     int64_t out_alloc_size = sizeof( audio_packet_t );
     audio_packet_t *out = calloc( 1, out_alloc_size );
     if( !h || !pkt || pkt->size < 0 )
-    {
-        free_avpacket( pkt );
-        free( out );
-        return NULL;
-    }
+        return lavf_copy_fail_audio( h, pkt, out );
     if( !out )
-    {
-        free_avpacket( pkt );
-        return NULL;
-    }
+        return lavf_copy_fail( h, pkt );
 
     int64_t packet_dts = pkt->dts != AV_NOPTS_VALUE ? pkt->dts :
                          pkt->pts != AV_NOPTS_VALUE ? pkt->pts : INVALID_DTS;
     out->dts = x264_convert_timebase( packet_dts, h->origtb, h->info.timebase );
     if( packet_dts != INVALID_DTS && (out->dts == INT64_MAX || out->dts == INT64_MIN) )
-    {
-        free_avpacket( pkt );
-        free( out );
-        return NULL;
-    }
+        return lavf_copy_fail_audio( h, pkt, out );
     out->info        = h->info;
     out->info.last_delta = last_delta;
     unsigned packet_channels = (unsigned)h->info.channels;
@@ -471,9 +502,7 @@ static audio_packet_t *convert_to_audio_packet( hnd_t handle, AVPacket *pkt, uin
         {
             if( in_pkt ) av_packet_free( &in_pkt );
             if( out_pkt ) av_packet_free( &out_pkt );
-            free_avpacket( pkt );
-            free( out );
-            return NULL;
+            return lavf_copy_fail_audio( h, pkt, out );
         }
         in_pkt->data = pkt->data;
         in_pkt->size = pkt->size;
@@ -486,27 +515,21 @@ static audio_packet_t *convert_to_audio_packet( hnd_t handle, AVPacket *pkt, uin
             if( copy_packet_payload( h, out, out_pkt->data, out_pkt->size, last_delta ) )
             {
                 av_packet_free( &out_pkt );
-                free_avpacket( pkt );
-                x264_af_free_packet( out );
-                return NULL;
+                return lavf_copy_fail_audio( h, pkt, out );
             }
         }
         else
         {
-            out->samplecount = 0;
-            out->size = 0;
-            out->data = NULL;
+            AF_LOG_ERR( h, "bitstream filter failed\n" );
+            av_packet_free( &out_pkt );
+            return lavf_copy_fail_audio( h, pkt, out );
         }
         av_packet_free( &out_pkt );
     }
     else
     {
         if( copy_packet_payload( h, out, pkt->data, pkt->size, last_delta ) )
-        {
-            free_avpacket( pkt );
-            x264_af_free_packet( out );
-            return NULL;
-        }
+            return lavf_copy_fail_audio( h, pkt, out );
     }
     free_avpacket( pkt );
     return out;
@@ -518,6 +541,8 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     if( !h || !h->copy || !h->ctx )
         return NULL;
 
+    if( h->copy_error )
+        return NULL;
     if( h->eof )
         return NULL;
 
@@ -549,7 +574,19 @@ static audio_packet_t *get_next_packet( hnd_t handle )
 
 static audio_packet_t *copy_finish( hnd_t handle )
 {
-    return NULL; // Any other sensible thing to do?
+    return get_next_packet( handle );
+}
+
+static int copy_is_failed( hnd_t handle )
+{
+    lavf_source_t *h = handle;
+    return h && h->copy_error;
+}
+
+static int decode_is_failed( hnd_t handle )
+{
+    lavf_source_t *h = handle;
+    return h && h->decode_error;
 }
 
 static void skip_samples( hnd_t handle, uint64_t samplecount )
@@ -636,24 +673,64 @@ static int low_decode_audio( lavf_source_t *h, uint8_t *buf, intptr_t buflen )
     if( !h || !h->ctx || !h->decode_frame || !buf || buflen <= 0 )
         return -1;
 
-    // Try to get a decoded frame first (might already have one buffered)
-    ret = decode_audio_frame( h, buf, buflen );
-    if( ret > 0 )
-        return ret;
-    if( ret < 0 && ret != AVERROR( EAGAIN ) )
-    {
-        if( !h->desync_warn++ )
-            AF_LOG_WARN( h, "Decoding errors may cause audio desync\n" );
-    }
-
-    // Need more data, send packets until we get a frame
     while( 1 )
     {
+        // Try to get a decoded frame first (might already have one buffered)
+        ret = decode_audio_frame( h, buf, buflen );
+        if( ret > 0 )
+            return ret;
+        if( ret == AVERROR_EOF )
+        {
+            h->flushed = LAVF_FLUSH_DONE;
+            return ret;
+        }
+        if( ret < 0 && ret != AVERROR( EAGAIN ) )
+        {
+            if( h->eof )
+            {
+                h->decode_error = 1;
+                return -1;
+            }
+            if( !h->desync_warn++ )
+                AF_LOG_WARN( h, "Decoding errors may cause audio desync\n" );
+        }
+
+        // Need more data, send packets until we get a frame
         if( !h->pkt )
         {
+            if( h->eof )
+            {
+                if( h->flushed == LAVF_FLUSH_DONE )
+                    return AVERROR_EOF;
+                if( h->flushed == LAVF_FLUSH_SENT )
+                {
+                    h->decode_error = 1;
+                    return -1;
+                }
+                ret = avcodec_send_packet( h->ctx, NULL );
+                if( ret == AVERROR( EAGAIN ) )
+                    continue;
+                if( ret < 0 )
+                {
+                    if( ret == AVERROR_EOF )
+                    {
+                        h->flushed = LAVF_FLUSH_DONE;
+                        return AVERROR_EOF;
+                    }
+                    h->decode_error = 1;
+                    return -1;
+                }
+                h->flushed = LAVF_FLUSH_SENT;
+                continue;
+            }
+
             h->pkt = next_packet( h );
             if( !h->pkt )
-                return -1; // EOF
+            {
+                if( h->eof )
+                    continue;
+                return -1;
+            }
         }
 
         ret = avcodec_send_packet( h->ctx, h->pkt );
@@ -671,16 +748,6 @@ static int low_decode_audio( lavf_source_t *h, uint8_t *buf, intptr_t buflen )
             // Packet was consumed
             free_avpacket( h->pkt );
             h->pkt = NULL;
-        }
-
-        // Try to get a frame
-        ret = decode_audio_frame( h, buf, buflen );
-        if( ret > 0 )
-            return ret;
-        if( ret < 0 && ret != AVERROR( EAGAIN ) )
-        {
-            if( !h->desync_warn++ )
-                AF_LOG_WARN( h, "Decoding errors may cause audio desync\n" );
         }
     }
 }
@@ -700,7 +767,7 @@ static struct AVPacket *decode_next_frame( lavf_source_t *h )
     {
         // Read more
     }
-    if( len < 0 ) // EOF or demuxing error
+    if( len < 0 )
     {
         free_avpacket( dst );
         return NULL;
@@ -715,19 +782,19 @@ static int buffer_next_frame( lavf_source_t *h )
 {
     AVPacket *dec = decode_next_frame( h );
     if( !dec )
-        return 0;
+        return h && h->eof && !h->decode_error ? 0 : -1;
 
     if( dec->size < 0 || dec->size > h->bufsize )
     {
         free_avpacket( dec );
-        return 0;
+        return -1;
     }
     intptr_t dec_size = dec->size;
 
     if( h->len < 0 || h->len > h->bufsize )
     {
         free_avpacket( dec );
-        return 0;
+        return -1;
     }
 
     if( dec_size > h->bufsize - h->len )
@@ -736,7 +803,7 @@ static int buffer_next_frame( lavf_source_t *h )
         if( (uint64_t)drop > UINT64_MAX - h->bytepos )
         {
             free_avpacket( dec );
-            return 0;
+            return -1;
         }
         memmove( h->buffer, h->buffer + drop, (size_t)(h->len - drop) );
         h->len     -= drop;
@@ -745,7 +812,7 @@ static int buffer_next_frame( lavf_source_t *h )
     if( dec_size > h->bufsize - h->len )
     {
         free_avpacket( dec );
-        return 0;
+        return -1;
     }
     memcpy( h->buffer + h->len, dec->data, (size_t)dec_size );
     h->len += dec_size;
@@ -794,10 +861,14 @@ static int64_t fill_buffer_until( lavf_source_t *h, int64_t lastsample )
     int ret;
     while( ( ret = not_in_cache( h, lastsample ) ) > 0 )
     {
-        if( !buffer_next_frame( h ) )
+        int frame_status = buffer_next_frame( h );
+        if( frame_status < 0 )
         {
-            // libavcodec already warns for us
             h->decode_error = 1;
+            return -1;
+        }
+        if( frame_status == 0 )
+        {
             break;
         }
     }
@@ -949,6 +1020,8 @@ static struct audio_packet_t *get_samples( hnd_t handle, int64_t first_sample, i
     return pkt;
 
 fail:
+    h->decode_error = 1;
+    h->failed = 1;
     x264_af_free_packet( pkt );
     return NULL;
 }
@@ -983,6 +1056,7 @@ const audio_filter_t audio_filter_lavf =
     .help        = "Arguments: filename[:track]",
     .init        = init,
     .get_samples = get_samples,
+    .is_failed   = decode_is_failed,
     .free_packet = free_packet,
     .close       = lavf_close
 };
@@ -996,4 +1070,5 @@ const audio_encoder_t audio_copy_lavf =
     .finish          = copy_finish,
     .free_packet     = free_packet,
     .close           = copy_close,
+    .is_failed       = copy_is_failed,
 };

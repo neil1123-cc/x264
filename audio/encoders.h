@@ -13,6 +13,7 @@ typedef struct audio_encoder_t
     audio_packet_t *(*finish)( hnd_t handle );
     void (*free_packet)( hnd_t handle, audio_packet_t *samples );
     void (*close)( hnd_t handle );
+    int (*is_failed)( hnd_t handle );
     void (*show_help)( const char * const encoder_name );
     int (*is_valid_encoder)( const char * const encoder_name, void **priv );
 } audio_encoder_t;
@@ -62,6 +63,7 @@ audio_info_t *x264_audio_encoder_info( hnd_t encoder );
 void x264_audio_encoder_skip_samples( hnd_t encoder, uint64_t samplecount );
 audio_packet_t *x264_audio_encode_frame( hnd_t encoder );
 audio_packet_t *x264_audio_encoder_finish( hnd_t encoder );
+int x264_audio_encoder_failed( hnd_t encoder );
 void x264_audio_free_frame( hnd_t encoder, audio_packet_t *frame );
 
 void x264_audio_encoder_close( hnd_t encoder );

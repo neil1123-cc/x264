@@ -2327,14 +2327,13 @@ void x264_ratecontrol_delete( x264_t *h )
             b_regular_file = 0;
         }
         if( h->i_frame >= rc->num_entries && b_regular_file )
-		{
-			remove( h->param.rc.psz_stat_out );
+        {
             if( x264_rename( rc->psz_stat_file_tmpname, h->param.rc.psz_stat_out ) != 0 )
             {
                 x264_log( h, X264_LOG_ERROR, "failed to rename \"%s\" to \"%s\"\n",
                           rc->psz_stat_file_tmpname, h->param.rc.psz_stat_out );
             }
-		}
+        }
         x264_free( rc->psz_stat_file_tmpname );
     }
     if( rc->p_mbtree_stat_file_out )
@@ -2346,14 +2345,13 @@ void x264_ratecontrol_delete( x264_t *h )
             b_regular_file = 0;
         }
         if( h->i_frame >= rc->num_entries && b_regular_file )
-		{
-			remove( rc->psz_mbtree_stat_file_name );
+        {
             if( x264_rename( rc->psz_mbtree_stat_file_tmpname, rc->psz_mbtree_stat_file_name ) != 0 )
             {
                 x264_log( h, X264_LOG_ERROR, "failed to rename \"%s\" to \"%s\"\n",
                           rc->psz_mbtree_stat_file_tmpname, rc->psz_mbtree_stat_file_name );
             }
-		}
+        }
         x264_free( rc->psz_mbtree_stat_file_tmpname );
         x264_free( rc->psz_mbtree_stat_file_name );
     }
@@ -4171,21 +4169,29 @@ static int init_pass2( x264_t *h )
         for( int i = 0; i < rcc->num_entries; i++ )
             avgq += rcc->entry[i].new_qscale;
         avgq = (double)qscale2qp( (float)(avgq / (double)rcc->num_entries) );
+        int hit_qp_min = expected_bits < (double)all_available_bits &&
+                         avgq < (double)h->param.rc.i_qp_min[h->sh.i_type] + 2.0;
+        int hit_qp_max = expected_bits > (double)all_available_bits &&
+                         avgq > (double)h->param.rc.i_qp_max[h->sh.i_type] - 2.0;
 
-        if( expected_bits > (double)all_available_bits || !rcc->b_vbv )
+        if( hit_qp_min )
+            x264_log( h, X264_LOG_WARNING, "2pass curve reached qp_min before target bitrate\n" );
+        else if( hit_qp_max )
+            x264_log( h, X264_LOG_WARNING, "2pass curve reached qp_max before target bitrate\n" );
+        else if( expected_bits > (double)all_available_bits || !rcc->b_vbv )
             x264_log( h, X264_LOG_WARNING, "Error: 2pass curve failed to converge\n" );
         x264_log( h, X264_LOG_WARNING, "target: %.2f kbit/s, expected: %.2f kbit/s, avg QP: %.4f\n",
                   (double)h->param.rc.i_bitrate,
                   expected_bits * rcc->fps / ((double)rcc->num_entries * 1000.),
                   avgq );
-        if( expected_bits < (double)all_available_bits && avgq < (double)h->param.rc.i_qp_min[h->sh.i_type] + 2.0 )
+        if( hit_qp_min )
         {
             if( h->param.rc.i_qp_min[h->sh.i_type] > 0 )
                 x264_log( h, X264_LOG_WARNING, "try reducing target bitrate or reducing qp_min (currently %d)\n", h->param.rc.i_qp_min[h->sh.i_type] );
             else
                 x264_log( h, X264_LOG_WARNING, "try reducing target bitrate\n" );
         }
-        else if( expected_bits > (double)all_available_bits && avgq > (double)h->param.rc.i_qp_max[h->sh.i_type] - 2.0 )
+        else if( hit_qp_max )
         {
             if( h->param.rc.i_qp_max[h->sh.i_type] < QP_MAX )
                 x264_log( h, X264_LOG_WARNING, "try increasing target bitrate or increasing qp_max (currently %d)\n", h->param.rc.i_qp_max[h->sh.i_type] );

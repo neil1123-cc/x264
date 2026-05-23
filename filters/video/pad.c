@@ -427,8 +427,7 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info,
     if( !opts )
         return -1;
 
-    int64_t pad_alloc_size = sizeof(pad_handle_t);
-    pad_handle_t *h = calloc( 1, pad_alloc_size );
+    pad_handle_t *h = calloc( 1, sizeof(pad_handle_t) );
     if( !h )
     {
         free( opts );

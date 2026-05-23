@@ -10,6 +10,7 @@ typedef struct enc_faac_t
     hnd_t filter_chain;
     int64_t packet_count;
 
+    int failed;
     int finishing;
     faacEncHandle faac;
     int64_t last_sample;
@@ -305,50 +306,57 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     enc_faac_t *h = handle;
     int ret;
 
-    if( !h || !h->filter_chain || !h->faac || !h->bufsize || h->finishing )
+    if( !h || !h->filter_chain || !h->faac || !h->bufsize || h->failed || h->finishing )
         return NULL;
 
     int64_t out_packet_alloc_size = sizeof( audio_packet_t );
     audio_packet_t *out = calloc( 1, out_packet_alloc_size );
     if( !out )
+    {
+        h->failed = 1;
         return NULL;
+    }
     out->info = h->info;
     int64_t out_data_alloc_size = (int64_t)h->bufsize;
     out->data = malloc( out_data_alloc_size );
     if( !out->data )
-        goto error;
+        goto fail;
 
     do
     {
         if( h->in && h->in->flags & AUDIO_FLAG_EOF )
         {
             h->finishing = 1;
-            goto error; // Not an error here but it'd do the same handling
+            goto eof;
         }
         x264_af_free_packet( h->in );
         h->in = NULL;
 
         int64_t last_sample;
         if( get_sample_end( h->last_sample, h->info.framelen, &last_sample ) )
-            goto error;
+            goto fail;
 
         if( !( h->in = x264_af_get_samples( h->filter_chain, h->last_sample, last_sample ) ) )
-            goto error;
+        {
+            if( x264_af_failed( h->filter_chain ) )
+                goto fail;
+            goto eof;
+        }
         if( h->info.channels <= 0 ||
             h->in->samplecount > (unsigned)(INT_MAX / h->info.channels) ||
             h->in->samplecount > (uint64_t)(INT64_MAX - h->last_sample) )
-            goto error;
+            goto fail;
         int64_t staged_last_sample = h->last_sample + h->in->samplecount;
         int64_t input_samples64 = h->in->samplecount * h->info.channels;
         if( input_samples64 > INT_MAX )
-            goto error;
+            goto fail;
         int input_samples = (int)input_samples64;
 
         free( h->samplebuffer );
         h->samplebuffer = NULL;
         h->samplebuffer = x264_af_interleave2( SMPFMT_FLT, h->in->samples, h->info.channels, h->in->samplecount );
         if( input_samples && !h->samplebuffer )
-            goto error;
+            goto fail;
         for( int i=0; i<input_samples; i++ )
             ((float *)h->samplebuffer)[i] *= 32768.0f;
 
@@ -356,7 +364,7 @@ static audio_packet_t *get_next_packet( hnd_t handle )
         if( ret < 0 || (size_t)ret > h->bufsize )
         {
             x264_cli_log( "faac", X264_LOG_ERROR, "failed to encode audio\n" );
-            goto error;
+            goto fail;
         }
         out->size = ret;
 
@@ -369,11 +377,12 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     int64_t staged_last_dts = h->last_dts == INVALID_DTS ? h->last_sample : h->last_dts;
     out->dts = staged_last_dts;
     if( add_frame_dts( &staged_last_dts, h->info.framelen ) )
-        goto error;
+        goto fail;
+    out->samplecount = (unsigned)h->info.framelen;
     h->last_dts = staged_last_dts;
     return out;
 
-error:
+eof:
     if( h->in )
     {
         x264_af_free_packet( h->in );
@@ -381,6 +390,10 @@ error:
     }
     x264_af_free_packet( out );
     return NULL;
+
+fail:
+    h->failed = 1;
+    goto eof;
 }
 
 static void skip_samples( hnd_t handle, uint64_t samplecount )
@@ -396,33 +409,49 @@ static audio_packet_t *finish( hnd_t encoder )
     enc_faac_t *h = encoder;
     int ret;
 
-    if( !h || !h->faac || !h->bufsize )
+    if( !h || !h->faac || !h->bufsize || h->failed )
         return NULL;
 
     int64_t finish_packet_alloc_size = sizeof( audio_packet_t );
     audio_packet_t *out = calloc( 1, finish_packet_alloc_size );
     if( !out )
+    {
+        h->failed = 1;
         return NULL;
+    }
     out->info = h->info;
     int64_t finish_data_alloc_size = (int64_t)h->bufsize;
     out->data = malloc( finish_data_alloc_size );
     if( !out->data )
-        goto error;
+        goto fail;
 
     ret = faacEncEncode( h->faac, NULL, 0, out->data, h->bufsize );
-    if( ret <= 0 || (size_t)ret > h->bufsize )
-        goto error;
+    if( ret < 0 || (size_t)ret > h->bufsize )
+        goto fail;
+    if( ret == 0 )
+        goto eof;
     out->size = ret;
     int64_t staged_last_dts = h->last_dts == INVALID_DTS ? h->last_sample : h->last_dts;
     out->dts = staged_last_dts;
     if( add_frame_dts( &staged_last_dts, h->info.framelen ) )
-        goto error;
+        goto fail;
+    out->samplecount = (unsigned)h->info.framelen;
     h->last_dts = staged_last_dts;
     return out;
 
-error:
+eof:
     x264_af_free_packet( out );
     return NULL;
+
+fail:
+    h->failed = 1;
+    goto eof;
+}
+
+static int faac_is_failed( hnd_t handle )
+{
+    enc_faac_t *h = handle;
+    return h && h->failed;
 }
 
 static void faac_close( hnd_t handle )
@@ -469,5 +498,6 @@ const audio_encoder_t audio_encoder_faac =
     .free_packet     = free_packet,
     .close           = faac_close,
     .show_help       = faac_help,
-    .is_valid_encoder = NULL
+    .is_valid_encoder = NULL,
+    .is_failed       = faac_is_failed
 };

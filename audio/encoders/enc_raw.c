@@ -4,6 +4,7 @@
 typedef struct enc_raw_t
 {
     audio_info_t info;
+    int failed;
     int finishing;
     hnd_t filter_chain;
     int64_t last_sample;
@@ -92,18 +93,25 @@ static audio_info_t *get_info( hnd_t handle )
 static audio_packet_t *get_next_packet( hnd_t handle )
 {
     enc_raw_t *h = handle;
-    if( !h || !h->filter_chain )
+    if( !h || !h->filter_chain || h->failed )
         return NULL;
     if( h->finishing )
         return NULL;
 
     int64_t last_sample;
     if( get_sample_end( h->last_sample, h->info.framelen, &last_sample ) )
+    {
+        h->failed = 1;
         return NULL;
+    }
 
     audio_packet_t *smp = x264_af_get_samples( h->filter_chain, h->last_sample, last_sample );
     if( !smp )
+    {
+        if( x264_af_failed( h->filter_chain ) )
+            h->failed = 1;
         return NULL;
+    }
 
     int64_t out_packet_alloc_size = sizeof( audio_packet_t );
     audio_packet_t *out = calloc( 1, out_packet_alloc_size );
@@ -140,6 +148,7 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     return out;
 
 error:
+    h->failed = 1;
     x264_af_free_packet( smp );
     x264_af_free_packet( out );
     return NULL;
@@ -156,10 +165,16 @@ static void skip_samples( hnd_t handle, uint64_t samplecount )
 static audio_packet_t *finish( hnd_t handle )
 {
     enc_raw_t *h = handle;
-    if( !h )
+    if( !h || h->failed )
         return NULL;
     h->finishing = 1;
     return NULL;
+}
+
+static int raw_is_failed( hnd_t handle )
+{
+    enc_raw_t *h = handle;
+    return h && h->failed;
 }
 
 static void free_packet( hnd_t handle, audio_packet_t *packet )
@@ -190,5 +205,6 @@ const audio_encoder_t audio_encoder_raw =
     .free_packet     = free_packet,
     .close           = raw_close,
     .show_help       = raw_help,
-    .is_valid_encoder = NULL
+    .is_valid_encoder = NULL,
+    .is_failed       = raw_is_failed
 };

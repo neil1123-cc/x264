@@ -108,8 +108,7 @@ static int audio_init( hnd_t handle, hnd_t filters, char *audio_enc, char *audio
     FAIL_IF_ERR( !henc, "mkv", "error opening audio encoder\n" );
 
     mkv_hnd_t *p_mkv = handle;
-    int64_t audio_alloc_size = sizeof( mkv_audio_hnd_t );
-    mkv_audio_hnd_t *a_mkv = calloc( 1, audio_alloc_size );
+    mkv_audio_hnd_t *a_mkv = calloc( 1, sizeof( mkv_audio_hnd_t ) );
     if( !a_mkv )
     {
         x264_cli_log( "mkv", X264_LOG_ERROR, "malloc failed!\n" );
@@ -152,8 +151,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
     if( !psz_filename || !p_handle )
         return -1;
     *p_handle = NULL;
-    int64_t mkv_alloc_size = sizeof(mkv_hnd_t);
-    mkv_hnd_t *p_mkv = calloc( 1, mkv_alloc_size );
+    mkv_hnd_t *p_mkv = calloc( 1, sizeof(mkv_hnd_t) );
     if( !p_mkv )
         return -1;
 
@@ -394,8 +392,7 @@ static int set_audio_track( mkv_hnd_t *p_mkv, x264_param_t *p_param )
             return -1;
         unsigned codec_private_size_u = (unsigned)codec_private_size;
         atrack.codec_private_size = codec_private_size_u;
-        int64_t codec_private_alloc_size = (int64_t)codec_private_size;
-        atrack.codec_private = malloc( codec_private_alloc_size );
+        atrack.codec_private = malloc( codec_private_size );
         if( !atrack.codec_private )
             return -1;
         memcpy( atrack.codec_private, info->extradata, codec_private_size );
@@ -465,8 +462,7 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
 
     int ret;
     unsigned codec_private_size = 5 + 1 + 2 + sps_size_u + 1 + 2 + pps_size_u;
-    int64_t codec_private_alloc_size = codec_private_size;
-    uint8_t *codec_private = malloc( codec_private_alloc_size );
+    uint8_t *codec_private = malloc( codec_private_size );
 
     if( !codec_private )
         return -1;
@@ -554,12 +550,18 @@ static int write_audio( mkv_hnd_t *p_mkv, int64_t video_dts, int finish )
             frame = x264_audio_encoder_finish( a_mkv->encoder );
         else if( !(frame = x264_audio_encode_frame( a_mkv->encoder )) )
         {
+            if( x264_audio_encoder_failed( a_mkv->encoder ) )
+                return -1;
             finish = 1;
             continue;
         }
 
         if( !frame )
+        {
+            if( x264_audio_encoder_failed( a_mkv->encoder ) )
+                return -1;
             break;
+        }
 
         if( frame->dts < 0 || frame->size < 0 || (frame->size && !frame->data) )
         {

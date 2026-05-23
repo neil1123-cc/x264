@@ -72,8 +72,7 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
     if( !handle || !*handle || !filter || !info || !filter->get_frame || !filter->release_frame || !filter->free )
         return -1;
     FAIL_IF_ERROR( x264_cli_csp_is_invalid( info->csp ), "invalid csp %d\n", info->csp );
-    int64_t crop_alloc_size = sizeof(crop_hnd_t);
-    crop_hnd_t *h = calloc( 1, crop_alloc_size );
+    crop_hnd_t *h = calloc( 1, sizeof(crop_hnd_t) );
     if( !h )
         return -1;
 

@@ -150,25 +150,37 @@ static int read_frame_internal( cli_pic_t *p_pic, lavf_hnd_t *h, int i_frame, vi
 {
     if( !p_pic || !h || !h->lavf || !h->lavc || !h->frame || !h->pkt || i_frame < 0 || i_frame == INT_MAX )
         return -1;
-    if( h->first_pic && !info )
+    int next_frame = h->next_frame;
+    int vfr_input = h->vfr_input;
+    int info_vfr = info ? info->vfr : 0;
+    int info_fullrange = 0;
+    int info_interlaced = 0;
+    int info_tff = 0;
+    cli_pic_t *first_pic = h->first_pic;
+    int clear_first_pic = first_pic && !info;
+    cli_image_t img = p_pic->img;
+    int64_t pts = 0;
+    int64_t duration = 0;
+
+    if( first_pic && !info && !i_frame )
     {
         /* see if the frame we are requesting is the frame we have already read and stored.
          * if so, retrieve the pts and image data before freeing it. */
-        if( !i_frame )
-        {
-            XCHG( cli_image_t, p_pic->img, h->first_pic->img );
-            p_pic->pts = h->first_pic->pts;
-        }
-        lavf_input.picture_clean( h->first_pic, h );
-        free( h->first_pic );
+        XCHG( cli_image_t, img, first_pic->img );
+        pts = first_pic->pts;
+        duration = first_pic->duration;
+        p_pic->img = img;
+        p_pic->pts = pts;
+        p_pic->duration = duration;
+        lavf_input.picture_clean( first_pic, h );
+        free( first_pic );
         h->first_pic = NULL;
-        if( !i_frame )
-            return 0;
+        return 0;
     }
 
     AVPacket *pkt = h->pkt;
 
-    while( i_frame >= h->next_frame )
+    while( i_frame >= next_frame )
     {
         int ret;
 
@@ -192,18 +204,18 @@ static int read_frame_internal( cli_pic_t *p_pic, lavf_hnd_t *h, int i_frame, vi
 
             if( ret )
             {
-                x264_cli_log( "lavf", X264_LOG_WARNING, "video decoding failed on frame %d\n", h->next_frame );
+                x264_cli_log( "lavf", X264_LOG_WARNING, "video decoding failed on frame %d\n", next_frame );
                 return -1;
             }
         }
 
-        h->next_frame++;
+        next_frame++;
     }
 
     FAIL_IF_ERROR( invalid_dimensions( h->frame->width, h->frame->height ),
                    "invalid video dimensions\n" );
-    memcpy( p_pic->img.stride, h->frame->linesize, sizeof(p_pic->img.stride) );
-    memcpy( p_pic->img.plane, h->frame->data, sizeof(p_pic->img.plane) );
+    memcpy( img.stride, h->frame->linesize, sizeof(img.stride) );
+    memcpy( img.plane, h->frame->data, sizeof(img.plane) );
     int is_fullrange   = 0;
     int csp            = handle_jpeg( h->frame->format, &is_fullrange );
     int planes         = required_pixel_planes( csp );
@@ -211,36 +223,54 @@ static int read_frame_internal( cli_pic_t *p_pic, lavf_hnd_t *h, int i_frame, vi
     FAIL_IF_ERROR( decoded_video_planes_are_invalid( csp, h->frame->width, h->frame->data,
                                                      h->frame->linesize, planes ),
                    "invalid frame plane data\n" );
-    p_pic->img.width   = h->frame->width;
-    p_pic->img.height  = h->frame->height;
-    p_pic->img.csp     = csp | X264_CSP_OTHER;
+    img.width   = h->frame->width;
+    img.height  = h->frame->height;
+    img.csp     = csp | X264_CSP_OTHER;
 
     if( info )
     {
-        info->fullrange  = is_fullrange;
+        info_fullrange   = is_fullrange;
 #if LIBAVUTIL_VERSION_MAJOR < 60
-        info->interlaced = h->frame->interlaced_frame;
-        info->tff        = h->frame->top_field_first;
+        info_interlaced  = h->frame->interlaced_frame;
+        info_tff         = h->frame->top_field_first;
 #else
-        info->interlaced = !!(h->frame->flags & AV_FRAME_FLAG_INTERLACED);
-        info->tff        = !!(h->frame->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST);
+        info_interlaced  = !!(h->frame->flags & AV_FRAME_FLAG_INTERLACED);
+        info_tff         = !!(h->frame->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST);
 #endif
     }
 
-    if( h->vfr_input )
+    if( vfr_input )
     {
-        p_pic->pts = p_pic->duration = 0;
+        pts = duration = 0;
         if( h->frame->pts != AV_NOPTS_VALUE )
-            p_pic->pts = h->frame->pts;
+            pts = h->frame->pts;
         else if( h->frame->pkt_dts != AV_NOPTS_VALUE )
-            p_pic->pts = h->frame->pkt_dts; // for AVI files
+            pts = h->frame->pkt_dts; // for AVI files
         else if( info )
         {
-            h->vfr_input = info->vfr = 0;
-            return 0;
+            vfr_input = 0;
+            info_vfr = 0;
         }
     }
 
+    p_pic->img = img;
+    p_pic->pts = pts;
+    p_pic->duration = duration;
+    h->next_frame = next_frame;
+    h->vfr_input = vfr_input;
+    if( info )
+    {
+        info->fullrange = info_fullrange;
+        info->interlaced = info_interlaced;
+        info->tff = info_tff;
+        info->vfr = info_vfr;
+    }
+    if( clear_first_pic )
+    {
+        lavf_input.picture_clean( first_pic, h );
+        free( first_pic );
+        h->first_pic = NULL;
+    }
     return 0;
 }
 
@@ -250,8 +280,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         return -1;
     *p_handle = NULL;
 
-    int64_t lavf_alloc_size = sizeof(lavf_hnd_t);
-    lavf_hnd_t *h = calloc( 1, lavf_alloc_size );
+    lavf_hnd_t *h = calloc( 1, sizeof(lavf_hnd_t) );
     if( !h )
         return -1;
     AVDictionary *options = NULL;
@@ -354,9 +383,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         av_dict_free( &avcodec_opts );
 
     /* prefetch the first frame and set/confirm flags */
-    int64_t first_pic_alloc_size = sizeof(cli_pic_t);
-    h->first_pic = malloc( first_pic_alloc_size );
-    FAIL_IF_ERROR_CLEANUP( !h->first_pic || lavf_input.picture_alloc( h->first_pic, h, X264_CSP_OTHER, updated_info.width, updated_info.height ),
+    h->first_pic = malloc( sizeof(cli_pic_t) );
+    FAIL_IF_ERROR_CLEANUP( !h->first_pic || lavf_input.picture_alloc( h->first_pic, h, X264_CSP_OTHER, 1, 1 ),
                            "malloc failed\n" );
     if( read_frame_internal( h->first_pic, h, 0, &updated_info ) )
         goto fail;
@@ -446,7 +474,7 @@ static int picture_alloc( cli_pic_t *pic, hnd_t handle, int csp, int width, int 
 {
     if( !pic )
         return -1;
-    if( x264_cli_pic_alloc( pic, X264_CSP_NONE, width, height ) )
+    if( x264_cli_pic_init_noalloc( pic, X264_CSP_NONE, width, height ) )
         return -1;
     pic->img.csp = csp;
     pic->img.planes = 4;

@@ -207,8 +207,8 @@ static void frame_dump( x264_t *h )
                 checked_int_add( chroma_size, 32, &chroma_plane_offset ) ||
                 checked_int_mul( chroma_plane_offset, 2, &chroma_alloc_size ) )
                 goto fail;
-            int64_t chroma_alloc_bytes = chroma_alloc_size;
-            pixel *planeu = x264_malloc( chroma_alloc_bytes );
+            int64_t chroma_plane_alloc_size = chroma_alloc_size;
+            pixel *planeu = x264_malloc( chroma_plane_alloc_size );
             if( planeu )
             {
                 pixel *planev = planeu + chroma_plane_offset / SIZEOF_PIXEL;

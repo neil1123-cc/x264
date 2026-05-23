@@ -32,7 +32,18 @@ typedef struct
     uint8_t *data;
     unsigned d_max;
     unsigned d_cur;
+    int header_written;
 } avi_hnd_t;
+
+static void reset_buffer( avi_hnd_t *h )
+{
+    if( !h )
+        return;
+    free( h->data );
+    h->data = NULL;
+    h->d_max = 0;
+    h->d_cur = 0;
+}
 
 static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest_pts )
 {
@@ -52,7 +63,7 @@ static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest
     {
         if( h->video_stm->codec )
         {
-            if( av_write_trailer( h->mux_fc ) < 0 )
+            if( h->header_written && av_write_trailer( h->mux_fc ) < 0 )
                 ret = -1;
             av_freep( &h->video_stm->codec->extradata );
             av_freep( &h->video_stm->codec );
@@ -156,8 +167,12 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
     c->codec_id = AV_CODEC_ID_H264;
     c->codec_tag = MKTAG('H','2','6','4');
 
-    if( !(c->flags & AV_CODEC_FLAG_GLOBAL_HEADER) && avformat_write_header( h->mux_fc, NULL ) )
-        return -1;
+    if( !(c->flags & AV_CODEC_FLAG_GLOBAL_HEADER) )
+    {
+        if( avformat_write_header( h->mux_fc, NULL ) )
+            return -1;
+        h->header_written = 1;
+    }
 
     return 0;
 }
@@ -232,13 +247,18 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
     {
         int extradata_size = i_size - p_nal[2].i_payload;
         uint8_t *extradata_pos;
+        uint8_t *old_extradata = c->extradata;
+        int old_extradata_size = c->extradata_size;
         if( extradata_size <= 0 || !p_nal[0].p_payload )
             return -1;
         c->extradata_size = extradata_size;
-        av_freep( &c->extradata );
         c->extradata = av_malloc( c->extradata_size );
         if( !c->extradata )
+        {
+            c->extradata = old_extradata;
+            c->extradata_size = old_extradata_size;
             return -1;
+        }
         /* Write the SPS/PPS to the extradata */
         extradata_pos = c->extradata;
         for( int i = 0; i < 2; i++ )
@@ -248,9 +268,22 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
         }
         /* Write the SEI as part of the first frame */
         if( write_buffer( h, p_nal[2].p_payload, p_nal[2].i_payload ) < 0 )
+        {
+            av_freep( &c->extradata );
+            c->extradata = old_extradata;
+            c->extradata_size = old_extradata_size;
             return -1;
+        }
         if( avformat_write_header( h->mux_fc, NULL ) )
+        {
+            av_freep( &c->extradata );
+            c->extradata = old_extradata;
+            c->extradata_size = old_extradata_size;
+            reset_buffer( h );
             return -1;
+        }
+        av_freep( &old_extradata );
+        h->header_written = 1;
     }
     else
     {
@@ -269,10 +302,13 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
 
     if( !h || !p_picture || !h->mux_fc || !h->video_stm )
         return -1;
+    if( !h->header_written )
+        return -1;
 
     av_init_packet(&pkt);
     pkt.stream_index = h->video_stm->index;
     pkt.flags |= p_picture->b_keyframe ? AV_PKT_FLAG_KEY : 0;
+    unsigned old_d_cur = h->d_cur;
     if( h->d_cur )
     {
         if( write_buffer( h, p_nalu, i_size ) < 0 )
@@ -290,7 +326,10 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
     pkt.pts = AV_NOPTS_VALUE; //av_rescale_q( p_picture->i_pts, h->video_stm->codec->time_base, h->video_stm->time_base );
     pkt.dts = AV_NOPTS_VALUE; //av_rescale_q( p_picture->i_dts, h->video_stm->codec->time_base, h->video_stm->time_base );
     if( av_interleaved_write_frame( h->mux_fc, &pkt ) )
+    {
+        h->d_cur = old_d_cur;
         return -1;
+    }
 
     h->d_cur = 0;
 

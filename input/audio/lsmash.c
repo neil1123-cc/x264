@@ -14,10 +14,11 @@ typedef struct lsmash_source_t
 
     importer_t* importer;
     lsmash_audio_summary_t* summary;
-	lsmash_root_t* root;
+    lsmash_root_t* root;
 
     int64_t frame_count;
     int64_t last_dts;
+    int copy_error;
 } lsmash_source_t;
 
 const audio_filter_t audio_filter_lsmash;
@@ -291,11 +292,16 @@ static audio_packet_t *get_next_au( hnd_t handle )
     if( !h || !h->summary || !h->importer ||
         h->info.channels <= 0 || h->info.framelen <= 0 )
         return NULL;
+    if( h->copy_error )
+        return NULL;
     int64_t packet_alloc_size = sizeof( audio_packet_t );
     audio_packet_t *out = calloc( 1, packet_alloc_size );
 
     if( !out )
+    {
+        h->copy_error = 1;
         return NULL;
+    }
     unsigned packet_channels = (unsigned)h->info.channels;
     unsigned packet_samplecount = (unsigned)h->info.framelen;
     out->info        = h->info;
@@ -306,33 +312,44 @@ static audio_packet_t *get_next_au( hnd_t handle )
     lsmash_sample_t *psample = &sample;
     if( h->summary->max_au_length > (uint32_t)INT_MAX )
     {
+        h->copy_error = 1;
         x264_af_free_packet( out );
         return NULL;
     }
     lsmash_sample_alloc( &sample, h->summary->max_au_length );
     if( h->summary->max_au_length && !sample.data )
     {
+        h->copy_error = 1;
         x264_af_free_packet( out );
         return NULL;
     }
 
     int ret = lsmash_importer_get_access_unit( h->importer, 1, &psample );
 
-    if( ret || !sample.length )
+    if( ret )
     {
-        if( !sample.length )
-            h->info.last_delta = lsmash_importer_get_last_delta( h->importer, 1 );
+        AF_LOG_ERR( h, "failed to retrieve access unit from importer.\n" );
+        h->copy_error = 1;
+        free( sample.data );
+        x264_af_free_packet( out );
+        return NULL;
+    }
+    if( !sample.length )
+    {
+        h->info.last_delta = lsmash_importer_get_last_delta( h->importer, 1 );
         free( sample.data );
         x264_af_free_packet( out );
         return NULL;
     }
     if( !sample.data )
     {
+        h->copy_error = 1;
         x264_af_free_packet( out );
         return NULL;
     }
     if( sample.length > (uint32_t)INT_MAX )
     {
+        h->copy_error = 1;
         free( sample.data );
         x264_af_free_packet( out );
         return NULL;
@@ -345,6 +362,7 @@ static audio_packet_t *get_next_au( hnd_t handle )
     int64_t staged_frame_count = h->frame_count;
     if( staged_frame_count == INT64_MAX || h->info.framelen > INT64_MAX - staged_last_dts )
     {
+        h->copy_error = 1;
         x264_af_free_packet( out );
         return NULL;
     }
@@ -412,6 +430,12 @@ static audio_packet_t *copy_finish( hnd_t handle )
     return get_next_au( handle );
 }
 
+static int copy_is_failed( hnd_t handle )
+{
+    lsmash_source_t *h = handle;
+    return h && h->copy_error;
+}
+
 static void copy_close( hnd_t handle )
 {
     // do nothing or a double-free will happen when the filter chain is freed
@@ -434,5 +458,6 @@ const audio_encoder_t audio_copy_lsmash =
     .skip_samples    = skip_samples,
     .finish          = copy_finish,
     .free_packet     = free_packet,
-    .close           = copy_close
+    .close           = copy_close,
+    .is_failed       = copy_is_failed
 };

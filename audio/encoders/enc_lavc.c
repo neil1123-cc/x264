@@ -14,6 +14,7 @@ typedef struct enc_lavc_t
     audio_info_t info;
     audio_info_t preinfo;
     hnd_t        filter_chain;
+    int          failed;
     int          finishing;
     int64_t      last_sample;
     int          buf_size;
@@ -619,29 +620,36 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     enc_lavc_t *h = handle;
     if( !h || !h->filter_chain || !h->ctx || !h->frame || !h->avr || h->buf_size <= 0 )
         return NULL;
-    if( h->finishing )
+    if( h->failed || h->finishing )
         return NULL;
 
     audio_packet_t *smp = NULL;
     int64_t out_packet_alloc_size = sizeof( audio_packet_t );
     audio_packet_t *out = calloc( 1, out_packet_alloc_size );
     if( !out )
+    {
+        h->failed = 1;
         return NULL;
+    }
     out->info = h->info;
     int64_t out_data_alloc_size = h->buf_size;
     out->data = malloc( out_data_alloc_size );
     if( !out->data )
-        goto error;
+        goto fail;
 
     while( out->size == 0 )
     {
         int64_t last_sample;
         if( get_sample_end( h->last_sample, h->info.framelen, &last_sample ) )
-            goto error;
+            goto fail;
 
         smp = x264_af_get_samples( h->filter_chain, h->last_sample, last_sample );
         if( !smp )
-            goto error; // not an error but need same handling
+        {
+            if( x264_af_failed( h->filter_chain ) )
+                goto fail;
+            goto eof;
+        }
 
         out->samplecount = smp->samplecount;
         out->channels    = smp->channels;
@@ -660,7 +668,7 @@ static audio_packet_t *get_next_packet( hnd_t handle )
             if( !(smp->flags & AUDIO_FLAG_EOF) )
             {
                 x264_cli_log( "lavc", X264_LOG_ERROR, "samples too few but not EOF???\n" );
-                goto error;
+                goto fail;
             }
 
             if( h->ctx->codec->capabilities & AV_CODEC_CAP_SMALL_LAST_FRAME )
@@ -673,7 +681,7 @@ static audio_packet_t *get_next_packet( hnd_t handle )
                 if( x264_af_resize_fill_buffer( smp->samples, h->info.framelen, h->info.channels, smp->samplecount, 0.0f ) )
                 {
                     x264_cli_log( "lavc", X264_LOG_ERROR, "failed to expand buffer.\n" );
-                    goto error;
+                    goto fail;
                 }
                 smp->samplecount = h->info.framelen;
                 staged_last_delta = h->info.framelen;
@@ -682,7 +690,7 @@ static audio_packet_t *get_next_packet( hnd_t handle )
 
         if( smp->samplecount > INT_MAX ||
             smp->samplecount > (uint64_t)(INT64_MAX - h->last_sample) )
-            goto error;
+            goto fail;
         int64_t staged_last_sample = h->last_sample + smp->samplecount;
         h->ctx->frame_size = staged_frame_size;
         h->frame->nb_samples  = (int)smp->samplecount;
@@ -691,16 +699,17 @@ static audio_packet_t *get_next_packet( hnd_t handle )
         {
             x264_cli_log( "lavc", X264_LOG_ERROR, "error resampling audio!\n" );
             h->ctx->frame_size = original_frame_size;
-            goto error;
+            goto fail;
         }
 
         if( encode_audio( h->ctx, out, h->buf_size, h->frame ) < 0 )
         {
             x264_cli_log( "lavc", X264_LOG_ERROR, "error encoding audio! (%s)\n", strerror( -out->size ) );
             h->ctx->frame_size = original_frame_size;
-            goto error;
+            goto fail;
         }
 
+        out->samplecount = smp->samplecount;
         h->finishing = staged_finishing;
         h->info.last_delta = staged_last_delta;
         h->ctx->frame_size = staged_frame_size;
@@ -715,22 +724,26 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     if( out->size < 0 )
     {
         x264_cli_log( "lavc", X264_LOG_ERROR, "error encoding audio! (%s)\n", strerror( -out->size ) );
-        goto error;
+        goto fail;
     }
 
     int64_t staged_last_dts = h->last_dts == INVALID_DTS ? h->last_sample : h->last_dts;
     out->dts     = staged_last_dts;
     out->info    = h->info;
     if( add_info_delta_dts( &staged_last_dts, &h->info ) )
-        goto error;
+        goto fail;
     h->last_dts = staged_last_dts;
     return out;
 
-error:
+eof:
     if( smp )
         x264_af_free_packet( smp );
     x264_af_free_packet( out );
     return NULL;
+
+fail:
+    h->failed = 1;
+    goto eof;
 }
 
 static void skip_samples( hnd_t handle, uint64_t samplecount )
@@ -744,40 +757,52 @@ static void skip_samples( hnd_t handle, uint64_t samplecount )
 static audio_packet_t *finish( hnd_t handle )
 {
     enc_lavc_t *h = handle;
-    if( !h || !h->ctx || h->buf_size <= 0 )
+    if( !h || !h->ctx || h->buf_size <= 0 || h->failed )
         return NULL;
-
-    h->finishing = 1;
 
     int64_t finish_packet_alloc_size = sizeof( audio_packet_t );
     audio_packet_t *out = calloc( 1, finish_packet_alloc_size );
     if( !out )
+    {
+        h->failed = 1;
         return NULL;
+    }
     out->info     = h->info;
     out->channels = h->info.channels;
     int64_t finish_data_alloc_size = h->buf_size;
     out->data     = malloc( finish_data_alloc_size );
     if( !out->data )
-        goto error;
+        goto fail;
 
     if( encode_audio( h->ctx, out, h->buf_size, NULL ) < 0 )
-        goto error;
+        goto fail;
 
     if( out->size <= 0 )
-        goto error;
+        goto eof;
 
     int64_t staged_last_dts = h->last_dts == INVALID_DTS ? h->last_sample : h->last_dts;
     out->dts = staged_last_dts;
     out->samplecount = h->info.last_delta ? h->info.last_delta : h->info.framelen;
     out->info = h->info;
     if( add_info_delta_dts( &staged_last_dts, &h->info ) )
-        goto error;
+        goto fail;
+    h->finishing = 1;
     h->last_dts = staged_last_dts;
     return out;
 
-error:
+eof:
     x264_af_free_packet( out );
     return NULL;
+
+fail:
+    h->failed = 1;
+    goto eof;
+}
+
+static int lavc_is_failed( hnd_t handle )
+{
+    enc_lavc_t *h = handle;
+    return h && h->failed;
 }
 
 static void free_packet( hnd_t handle, audio_packet_t *packet )
@@ -874,5 +899,6 @@ const audio_encoder_t audio_encoder_lavc =
     .free_packet     = free_packet,
     .close           = lavc_close,
     .show_help       = lavc_help,
-    .is_valid_encoder = is_encoder_available
+    .is_valid_encoder = is_encoder_available,
+    .is_failed       = lavc_is_failed
 };

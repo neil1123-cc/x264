@@ -308,15 +308,15 @@ static x264_frame_t *frame_new( x264_t *h, int b_fdec )
         {
             int64_t lowres_lines;
             int64_t luma_plane_size;
-            int64_t lowres_buffer_size;
+            int64_t lowres_buffer_alloc_size;
             if( frame_size_add( frame->i_lines[0]/2, 2*PADV, &lowres_lines ) ||
                 frame_size_mul( frame->i_stride_lowres, lowres_lines, &luma_plane_size ) )
                 goto fail;
             luma_plane_size = align_plane_size( luma_plane_size, disalign );
-            if( frame_size_mul( luma_plane_size, 4 * SIZEOF_PIXEL, &lowres_buffer_size ) )
+            if( frame_size_mul( luma_plane_size, 4 * SIZEOF_PIXEL, &lowres_buffer_alloc_size ) )
                 goto fail;
 
-            PREALLOC( frame->buffer_lowres, lowres_buffer_size );
+            PREALLOC( frame->buffer_lowres, lowres_buffer_alloc_size );
 
             int64_t lowres_mvs_alloc_size = 2 * (int64_t)i_mb_count * sizeof(int16_t);
             int64_t lowres_mv_costs_alloc_size = (int64_t)i_mb_count * sizeof(int);
