@@ -112,6 +112,11 @@ static int parse_float_option( const char *opt, double def, float *dst )
     return 0;
 }
 
+static int set_avdict_option( AVDictionary **dict, const char *key, const char *value )
+{
+    return av_dict_set( dict, key, value, 0 ) < 0;
+}
+
 #define MODE_VBR     0x01
 #define MODE_BITRATE 0x02
 #define MODE_IGNORED MODE_VBR|MODE_BITRATE
@@ -152,20 +157,15 @@ static const struct {
     { AV_CODEC_ID_NONE,      NULL, },
 };
 
-static int get_linesize( int nb_channels, int nb_samples, enum AVSampleFormat sample_fmt )
-{
-    int linesize;
-    av_samples_get_buffer_size( &linesize, nb_channels, nb_samples, sample_fmt, 0 );
-    return linesize;
-}
-
 static int resample_audio( SwrContext *avr, AVFrame *frame, audio_packet_t *pkt )
 {
     // FFmpeg 8.x: Get channels from ch_layout
     int channels = frame->ch_layout.nb_channels;
     if( channels == 0 )
         channels = 2;
-    int out_linesize = get_linesize( channels, frame->nb_samples, frame->format );
+    int out_linesize;
+    if( av_samples_get_buffer_size( &out_linesize, channels, frame->nb_samples, frame->format, 0 ) < 0 )
+        return -1;
     if( swr_convert( avr, frame->data, frame->nb_samples,
                      (const uint8_t **)pkt->samples, pkt->samplecount ) < 0 )
         return -1;
@@ -322,26 +322,43 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
 
     // FFmpeg 8.x: Use ch_layout instead of channels/channel_layout
     if( h->info.chanlayout != 0 )
-        av_channel_layout_from_mask( &h->ctx->ch_layout, h->info.chanlayout );
+    {
+        if( av_channel_layout_from_mask( &h->ctx->ch_layout, h->info.chanlayout ) < 0 )
+        {
+            x264_cli_log( "lavc", X264_LOG_ERROR, "invalid audio channel layout\n" );
+            goto error;
+        }
+    }
     else
         av_channel_layout_default( &h->ctx->ch_layout, h->info.channels );
 
     h->ctx->time_base       = (AVRational){ 1, h->ctx->sample_rate };
 
-    av_dict_set( &avopts, "flags", "global_header", 0 ); // aac
-    av_dict_set( &avopts, "strict", "-2", 0 );           // aac
-    av_dict_set( &avopts, "reservoir", "1", 0 );         // mp3
+    if( set_avdict_option( &avopts, "flags", "global_header" ) || // aac
+        set_avdict_option( &avopts, "strict", "-2" ) ||           // aac
+        set_avdict_option( &avopts, "reservoir", "1" ) )          // mp3
+    {
+        x264_cli_log( "lavc", X264_LOG_ERROR, "failed to set encoder options\n" );
+        goto error;
+    }
 
     char *acutoff = x264_otos( x264_get_option( "cutoff", opts ), NULL );
-    if( acutoff )
-        av_dict_set( &avopts, "cutoff", acutoff, 0 );
+    if( acutoff && set_avdict_option( &avopts, "cutoff", acutoff ) )
+    {
+        x264_cli_log( "lavc", X264_LOG_ERROR, "failed to set encoder options\n" );
+        goto error;
+    }
 
     char *aprofile = x264_otos( x264_get_option( "profile", opts ), NULL );
     if( !strcmp(codecname, "libaacplus") )
         aprofile = "aac_he";
     if( aprofile )
     {
-        av_dict_set( &avopts, "profile", aprofile, 0 );
+        if( set_avdict_option( &avopts, "profile", aprofile ) )
+        {
+            x264_cli_log( "lavc", X264_LOG_ERROR, "failed to set encoder options\n" );
+            goto error;
+        }
         if( ISCODEC( aac ) && strstr( aprofile, "he" ) )
         {
             audio_aac_info_t *aacinfo = malloc( sizeof( audio_aac_info_t ) );
@@ -352,7 +369,13 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
         }
     }
     else if( ISCODEC( aac ) )
-        av_dict_set( &avopts, "profile", "aac_low", 0 ); // TODO: decide by bitrate / quality
+    {
+        if( set_avdict_option( &avopts, "profile", "aac_low" ) ) // TODO: decide by bitrate / quality
+        {
+            x264_cli_log( "lavc", X264_LOG_ERROR, "failed to set encoder options\n" );
+            goto error;
+        }
+    }
 
     int is_vbr;
     if( parse_bool_option( x264_get_option( "is_vbr", opts ), ffcodecs[i].mode & MODE_VBR ? 1 : 0, &is_vbr ) )
@@ -388,7 +411,11 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
 
     if( is_vbr )
     {
-        av_dict_set( &avopts, "flags", "qscale", 0 );
+        if( set_avdict_option( &avopts, "flags", "qscale" ) )
+        {
+            x264_cli_log( "lavc", X264_LOG_ERROR, "failed to set encoder options\n" );
+            goto error;
+        }
         h->ctx->global_quality = FF_QP2LAMBDA * brval;
     }
     else
@@ -415,8 +442,13 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
 
     h->frame->format         = h->ctx->sample_fmt;
     // FFmpeg 8.x: Use ch_layout instead of channel_layout
-    av_channel_layout_copy( &h->frame->ch_layout, &h->ctx->ch_layout );
+    if( av_channel_layout_copy( &h->frame->ch_layout, &h->ctx->ch_layout ) < 0 )
+    {
+        x264_cli_log( "lavc", X264_LOG_ERROR, "failed to copy audio channel layout\n" );
+        goto error;
+    }
     h->frame->nb_samples     = h->ctx->frame_size;
+    h->frame->sample_rate    = h->ctx->sample_rate;
 
     if( avcodec_default_get_buffer2( h->ctx, h->frame, 0 ) < 0 )
     {
@@ -432,17 +464,16 @@ static hnd_t init( hnd_t filter_chain, const char *opt_str )
         goto error;
     }
 
-    // FFmpeg 8.x: Use AVChannelLayout for resampler
-    AVChannelLayout in_ch_layout, out_ch_layout;
-    av_channel_layout_from_mask( &in_ch_layout, h->info.chanlayout );
-    av_channel_layout_copy( &out_ch_layout, &h->frame->ch_layout );
-
-    av_opt_set_int( h->avr, "in_channel_layout",  h->info.chanlayout,       0 );
-    av_opt_set_sample_fmt( h->avr, "in_sample_fmt",   AV_SAMPLE_FMT_FLTP,   0 );
-    av_opt_set_int( h->avr, "in_sample_rate",     h->info.samplerate,       0 );
-    av_opt_set_int( h->avr, "out_channel_layout", h->info.chanlayout,       0 );
-    av_opt_set_sample_fmt( h->avr, "out_sample_fmt",  h->frame->format,     0 );
-    av_opt_set_int( h->avr, "out_sample_rate",    h->frame->sample_rate,    0 );
+    if( av_opt_set_int( h->avr, "in_channel_layout",  h->info.chanlayout,       0 ) < 0 ||
+        av_opt_set_sample_fmt( h->avr, "in_sample_fmt",   AV_SAMPLE_FMT_FLTP,   0 ) < 0 ||
+        av_opt_set_int( h->avr, "in_sample_rate",     h->info.samplerate,       0 ) < 0 ||
+        av_opt_set_int( h->avr, "out_channel_layout", h->info.chanlayout,       0 ) < 0 ||
+        av_opt_set_sample_fmt( h->avr, "out_sample_fmt",  h->frame->format,     0 ) < 0 ||
+        av_opt_set_int( h->avr, "out_sample_rate",    h->frame->sample_rate,    0 ) < 0 )
+    {
+        x264_cli_log( "lavc", X264_LOG_ERROR, "could not configure resampler\n" );
+        goto error;
+    }
 
     if( swr_init( h->avr ) < 0 )
     {

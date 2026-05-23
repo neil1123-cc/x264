@@ -103,11 +103,13 @@ static int yadif_init( hnd_t *handle, cli_vid_filter_t *filter,
 {
     yadif_handle_t *h;
     const x264_cli_csp_t *csp = info ? x264_cli_get_csp( info->csp ) : NULL;
+    video_info_t updated_info;
 
     FAIL_IF_ERROR( invalid_plane_height( info ? info->width : 0, info ? info->height : 0, csp ),
                    "invalid input resolution %dx%d\n", info ? info->width : 0, info ? info->height : 0 );
     FAIL_IF_ERROR( unsupported_colorspace( info->csp ),
                    "Only planar YCbCr images supported\n" );
+    updated_info = *info;
 
     h = calloc( 1, sizeof(yadif_handle_t) );
     if(!h)
@@ -126,6 +128,8 @@ static int yadif_init( hnd_t *handle, cli_vid_filter_t *filter,
     {
         char *opt;
         int opt_error = 0;
+        int parsed_mode = h->mode;
+        int parsed_tff = h->tff;
         static const char * const optlist[] = { "mode", "order", NULL };
         char **opts = x264_split_options( opt_string, optlist );
         if( !opts )
@@ -134,7 +138,7 @@ static int yadif_init( hnd_t *handle, cli_vid_filter_t *filter,
         opt = x264_get_option( "mode", opts );
         if( opt )
         {
-            if( x264_otoi_checked( opt, &h->mode ) || h->mode < 0 || h->mode > 3 )
+            if( x264_otoi_checked( opt, &parsed_mode ) || parsed_mode < 0 || parsed_mode > 3 )
             {
                 x264_cli_log( NAME, X264_LOG_ERROR,
                               "invalid mode (%s)\n", opt );
@@ -146,9 +150,9 @@ static int yadif_init( hnd_t *handle, cli_vid_filter_t *filter,
         if( opt )
         {
             if( !strcmp( opt, "top" ) || !strcmp( opt, "tff" ) )
-                h->tff = 1;
+                parsed_tff = 1;
             else if( !strcmp( opt, "bottom" ) || !strcmp( opt, "bff" ) )
-                h->tff = 0;
+                parsed_tff = 0;
             else
             {
                 x264_cli_log( NAME, X264_LOG_ERROR,
@@ -159,31 +163,39 @@ static int yadif_init( hnd_t *handle, cli_vid_filter_t *filter,
         free( opts );
         if( opt_error )
             goto fail;
+        h->mode = parsed_mode;
+        h->tff = parsed_tff;
     }
 
     if( h->mode&1 )
     {
-        if( info->num_frames > INT_MAX / 2 ||
-            info->fps_num > UINT32_MAX / 2 ||
-            info->timebase_den > UINT32_MAX / 2 )
+        if( updated_info.num_frames > INT_MAX / 2 ||
+            updated_info.fps_num > UINT32_MAX / 2 ||
+            updated_info.timebase_den > UINT32_MAX / 2 )
             goto fail;
-        info->num_frames *= 2;
-        info->fps_num *= 2;
-        info->timebase_den *= 2;
+        updated_info.num_frames *= 2;
+        updated_info.fps_num *= 2;
+        updated_info.timebase_den *= 2;
     }
 
-    info->interlaced = 0;
+    updated_info.interlaced = 0;
     h->csp = csp;
 
-    if( x264_init_vid_filter( "cache", handle, filter, info, param, (void*)3 ) )
+    char name[20];
+    int name_len = snprintf( name, sizeof(name), "cache_%d", param->i_bitdepth );
+    if( name_len < 0 || (size_t)name_len >= sizeof(name) )
+        goto fail;
+
+    if( x264_init_vid_filter( name, handle, filter, &updated_info, param, (void*)3 ) )
         goto fail;
 
     h->prev_filter = *filter;
     h->prev_handle = *handle;
+    *info = updated_info;
     *handle = h;
     *filter = yadif_filter;
 
-    filter_line = get_filter_func( param->cpu, info->csp&X264_CSP_HIGH_DEPTH );
+    filter_line = get_filter_func( param->cpu, updated_info.csp&X264_CSP_HIGH_DEPTH );
 
     x264_cli_log( NAME, X264_LOG_INFO, "%s-rate deinterlacing "
                   "%s spatial interlacing check, %s-field first\n",

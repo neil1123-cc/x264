@@ -110,26 +110,36 @@ static int timecode_match_word( const char **arg, const char *word )
 static int timecode_parse_header_version( const char *arg, int *version )
 {
     char *end;
-    const char *p = timecode_skip_space( arg );
+    int parsed_version;
+    const char *p;
 
+    if( !arg || !version )
+        return -1;
+
+    p = timecode_skip_space( arg );
     if( *p++ != '#' )
         return -1;
     p = timecode_skip_space( p );
     if( timecode_match_word( &p, "timecode" ) && timecode_match_word( &p, "timestamp" ) )
         return -1;
     if( timecode_match_word( &p, "format" ) || *p++ != 'v' ||
-        timecode_parse_int_end( p, &end, version ) || !timecode_at_line_end( end ) )
+        timecode_parse_int_end( p, &end, &parsed_version ) || !timecode_at_line_end( end ) )
         return -1;
 
+    *version = parsed_version;
     return 0;
 }
 
 static int timecode_parse_tdecimate_last_frame( const char *arg, int *last_frame )
 {
     char *end;
-    int mode;
-    const char *p = timecode_skip_space( arg );
+    int mode, parsed_last_frame;
+    const char *p;
 
+    if( !arg || !last_frame )
+        return -1;
+
+    p = timecode_skip_space( arg );
     if( *p++ != '#' )
         return 1;
     p = timecode_skip_space( p );
@@ -150,9 +160,10 @@ static int timecode_parse_tdecimate_last_frame( const char *arg, int *last_frame
     if( timecode_match_word( &p, "Frame" ) || *p++ != '=' )
         return -1;
     p = timecode_skip_space( p );
-    if( timecode_parse_int_end( p, &end, last_frame ) || !timecode_at_line_end( end ) )
+    if( timecode_parse_int_end( p, &end, &parsed_last_frame ) || !timecode_at_line_end( end ) )
         return -1;
 
+    *last_frame = parsed_last_frame;
     return 0;
 }
 
@@ -201,10 +212,15 @@ static int timecode_parse_double_end( const char *arg, char **end, double *dst )
 static int timecode_parse_double_line( const char *arg, double *dst )
 {
     char *end;
+    double value;
 
-    if( timecode_parse_double_end( arg, &end, dst ) || !timecode_at_line_end( end ) )
+    if( !dst )
         return -1;
 
+    if( timecode_parse_double_end( arg, &end, &value ) || !timecode_at_line_end( end ) )
+        return -1;
+
+    *dst = value;
     return 0;
 }
 
@@ -212,46 +228,66 @@ static int timecode_parse_v1_range( const char *arg, int *start, int *end_frame,
 {
     char *end;
     const char *p = arg;
+    int parsed_start, parsed_end_frame;
+    double parsed_fps;
 
-    if( timecode_parse_int_end( p, &end, start ) )
+    if( !start || !end_frame || !fps )
+        return -1;
+
+    if( timecode_parse_int_end( p, &end, &parsed_start ) )
         return -1;
     p = timecode_skip_space( end );
     if( *p++ != ',' )
         return -1;
     p = timecode_skip_space( p );
-    if( timecode_parse_int_end( p, &end, end_frame ) )
+    if( timecode_parse_int_end( p, &end, &parsed_end_frame ) )
         return -1;
     p = timecode_skip_space( end );
     if( *p++ != ',' )
         return -1;
     p = timecode_skip_space( p );
-    return timecode_parse_double_end( p, &end, fps ) || !timecode_at_line_end( end ) ? -1 : 0;
+    if( timecode_parse_double_end( p, &end, &parsed_fps ) || !timecode_at_line_end( end ) )
+        return -1;
+
+    *start = parsed_start;
+    *end_frame = parsed_end_frame;
+    *fps = parsed_fps;
+    return 0;
 }
 
 static int timecode_parse_timebase( const char *arg, uint64_t *num, uint64_t *den, int *has_den )
 {
     char *end;
-    uint64_t value;
+    uint64_t parsed_num, parsed_den = 0;
+    int parsed_has_den;
 
-    if( timecode_parse_u64_end( arg, &end, &value ) )
+    if( !num || !den || !has_den )
         return -1;
 
-    *num = value;
+    if( timecode_parse_u64_end( arg, &end, &parsed_num ) )
+        return -1;
+
     if( *end == '/' )
     {
-        *has_den = 1;
-        if( timecode_parse_u64_end( end + 1, &end, den ) || !timecode_at_line_end( end ) )
+        parsed_has_den = 1;
+        if( timecode_parse_u64_end( end + 1, &end, &parsed_den ) || !timecode_at_line_end( end ) )
             return -1;
     }
     else if( timecode_at_line_end( end ) )
     {
-        *has_den = 0;
-        *den = 0;
+        parsed_has_den = 0;
     }
     else
         return -1;
 
-    return !*num || (*has_den && !*den) || *num > UINT32_MAX || *den > UINT32_MAX ? -1 : 0;
+    if( !parsed_num || (parsed_has_den && !parsed_den) ||
+        parsed_num > UINT32_MAX || parsed_den > UINT32_MAX )
+        return -1;
+
+    *num = parsed_num;
+    *den = parsed_den;
+    *has_den = parsed_has_den;
+    return 0;
 }
 
 static int timecode_to_u64( uint64_t *dst, double value )

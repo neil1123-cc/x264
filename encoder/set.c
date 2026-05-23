@@ -639,21 +639,15 @@ int x264_sei_version_write( x264_t *h, bs_t *s )
     int offset = X264_UUID_SIZE;
     int length = X264_UUID_SIZE + 1;
 
-#define X264_FREE_OPTS                          \
+#define X264_CLEAR_OPTS                         \
 {                                               \
     for( int i = 0; i < X264_OPTS_MAX; i++ )    \
-    {                                           \
-        if( h->param.psz_opts[i] )              \
-        {                                       \
-            free( h->param.psz_opts[i] );       \
-            h->param.psz_opts[i] = NULL;        \
-        }                                       \
-    }                                           \
+        h->param.psz_opts[i] = NULL;            \
 }
 
     if( !opts )
     {
-        X264_FREE_OPTS
+        X264_CLEAR_OPTS
         return -1;
     }
     if( h->param.i_opts_write )
@@ -718,18 +712,18 @@ int x264_sei_version_write( x264_t *h, bs_t *s )
 
     x264_sei_write( s, (uint8_t *)payload, length, SEI_USER_DATA_UNREGISTERED );
 
-	X264_FREE_OPTS
+    X264_CLEAR_OPTS
     x264_free( opts );
     x264_free( payload );
     return 0;
 fail_payload:
     x264_free( payload );
 fail:
-	X264_FREE_OPTS
+    X264_CLEAR_OPTS
     x264_free( opts );
     return -1;
 
-#undef X264_FREE_OPTS
+#undef X264_CLEAR_OPTS
 }
 
 void x264_sei_buffering_period_write( x264_t *h, bs_t *s )

@@ -55,11 +55,13 @@ static int handle_opts( crop_hnd_t *h, video_info_t *info, char **opts, const ch
     {
         char *opt = x264_get_option( optlist[i], opts );
         FAIL_IF_ERROR( !opt, "%s crop value not specified\n", optlist[i] );
-        FAIL_IF_ERROR( x264_otoi_checked( opt, &h->dims[i] ),
+        int parsed_dim;
+        FAIL_IF_ERROR( x264_otoi_checked( opt, &parsed_dim ),
                        "%s crop value `%s' is invalid\n", optlist[i], opt );
-        FAIL_IF_ERROR( h->dims[i] < 0, "%s crop value `%s' is less than 0\n", optlist[i], opt );
+        FAIL_IF_ERROR( parsed_dim < 0, "%s crop value `%s' is less than 0\n", optlist[i], opt );
         int dim_mod = i&1 ? (h->csp->mod_height << info->interlaced) : h->csp->mod_width;
-        FAIL_IF_ERROR( h->dims[i] % dim_mod, "%s crop value `%s' is not a multiple of %d\n", optlist[i], opt, dim_mod );
+        FAIL_IF_ERROR( parsed_dim % dim_mod, "%s crop value `%s' is not a multiple of %d\n", optlist[i], opt, dim_mod );
+        h->dims[i] = parsed_dim;
     }
     return 0;
 }

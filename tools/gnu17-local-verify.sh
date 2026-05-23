@@ -1133,6 +1133,34 @@ static int expect_apply_profile_failure_keeps_values( void )
     return 0;
 }
 
+static int expect_failed_default_preset_tune_keeps_values( void )
+{
+    x264_param_t baseline;
+    x264_param_t param;
+
+    if( x264_param_default_preset( &baseline, "fast", NULL ) )
+    {
+        fprintf( stderr, "baseline default preset failed\n" );
+        return -1;
+    }
+
+    int ret = x264_param_default_preset( &param, "fast", "film,bad" );
+    if( ret >= 0 ||
+        param.i_deblocking_filter_alphac0 != baseline.i_deblocking_filter_alphac0 ||
+        param.i_deblocking_filter_beta != baseline.i_deblocking_filter_beta ||
+        param.analyse.f_psy_trellis != baseline.analyse.f_psy_trellis )
+    {
+        fprintf( stderr, "failed tune parse changed preset values: ret %d deblock %d/%d -> %d/%d psy-trellis %.9g -> %.9g\n",
+                 ret,
+                 baseline.i_deblocking_filter_alphac0, baseline.i_deblocking_filter_beta,
+                 param.i_deblocking_filter_alphac0, param.i_deblocking_filter_beta,
+                 baseline.analyse.f_psy_trellis, param.analyse.f_psy_trellis );
+        return -1;
+    }
+
+    return 0;
+}
+
 static int expect_failed_mastering_display_parse_keeps_values( void )
 {
     x264_param_t param;
@@ -1189,6 +1217,146 @@ static int expect_failed_mastering_display_parse_keeps_values( void )
                  (long long)display_max_before, (long long)display_min_before,
                  (long long)param.mastering_display.i_display_max,
                  (long long)param.mastering_display.i_display_min );
+        return -1;
+    }
+
+    return 0;
+}
+
+static int expect_string_param_is_cleanup_tracked( const char *name, const char *text, size_t field_offset )
+{
+    x264_param_t param;
+    struct guard_allocation allocation = { 0 };
+    char *value = make_guarded_string( text, &allocation );
+    if( !value )
+        return -1;
+
+    x264_param_default( &param );
+    int ret = x264_param_parse( &param, name, value );
+    char **field = (char **)((char *)&param + field_offset);
+    char *parsed = *field;
+    void *opaque_before_cleanup = param.opaque;
+    int failed = ret || !parsed || opaque_before_cleanup == NULL || parsed == value || strcmp( parsed, text );
+    x264_param_cleanup( &param );
+    int cleanup_failed = param.opaque != NULL;
+    free_guarded_string( &allocation );
+    if( failed || cleanup_failed )
+    {
+        fprintf( stderr, "string param cleanup tracking failed for %s: ret %d value %p input %p opaque %p cleanup_opaque %p\n",
+                 name, ret, (void *)parsed, (void *)value, opaque_before_cleanup, param.opaque );
+        return -1;
+    }
+
+    return 0;
+}
+
+static int expect_opts_param_is_cleanup_tracked( const char *text, const char *expected,
+                                                 int index, int flag )
+{
+    x264_param_t param;
+    struct guard_allocation allocation = { 0 };
+    char *value = make_guarded_string( text, &allocation );
+    if( !value )
+        return -1;
+
+    x264_param_default( &param );
+    int ret = x264_param_parse( &param, "opts", value );
+    char *parsed = param.psz_opts[index];
+    void *opaque_before_cleanup = param.opaque;
+    int failed = ret || !parsed || opaque_before_cleanup == NULL ||
+                 parsed == value || strcmp( parsed, expected ) ||
+                 !(param.i_opts_write & flag);
+    x264_param_cleanup( &param );
+    int cleanup_failed = param.opaque != NULL;
+    free_guarded_string( &allocation );
+    if( failed || cleanup_failed )
+    {
+        fprintf( stderr, "opts cleanup tracking failed for %s: ret %d index %d flag 0x%x i_opts_write 0x%x value %p input %p opaque %p cleanup_opaque %p\n",
+                 text, ret, index, flag, param.i_opts_write,
+                 (void *)parsed, (void *)value, opaque_before_cleanup, param.opaque );
+        return -1;
+    }
+
+    return 0;
+}
+
+static int expect_stats_param_is_cleanup_tracked( const char *text )
+{
+    x264_param_t param;
+    struct guard_allocation allocation = { 0 };
+    char *value = make_guarded_string( text, &allocation );
+    if( !value )
+        return -1;
+
+    x264_param_default( &param );
+    int ret = x264_param_parse( &param, "stats", value );
+    char *parsed_in = param.rc.psz_stat_in;
+    char *parsed_out = param.rc.psz_stat_out;
+    void *opaque_before_cleanup = param.opaque;
+    int failed = ret || !parsed_in || !parsed_out || opaque_before_cleanup == NULL ||
+                 parsed_in == value || parsed_out == value ||
+                 parsed_in == parsed_out || strcmp( parsed_in, text ) || strcmp( parsed_out, text );
+    x264_param_cleanup( &param );
+    int cleanup_failed = param.opaque != NULL;
+    free_guarded_string( &allocation );
+    if( failed || cleanup_failed )
+    {
+        fprintf( stderr, "stats cleanup tracking failed: ret %d in %p out %p input %p opaque %p cleanup_opaque %p\n",
+                 ret, (void *)parsed_in, (void *)parsed_out,
+                 (void *)value, opaque_before_cleanup, param.opaque );
+        return -1;
+    }
+
+    return 0;
+}
+
+static int expect_null_value_string_param_keeps_value( const char *name, size_t field_offset )
+{
+    x264_param_t param;
+
+    x264_param_default( &param );
+    char **field = (char **)((char *)&param + field_offset);
+    char *before = *field;
+    void *opaque_before = param.opaque;
+    int ret = x264_param_parse( &param, name, NULL );
+    char *after = *field;
+    void *opaque_after = param.opaque;
+    int failed = ret != X264_PARAM_BAD_VALUE || after != before || opaque_after != opaque_before;
+    x264_param_cleanup( &param );
+    if( failed || param.opaque != NULL )
+    {
+        fprintf( stderr, "null value parse changed %s: ret %d value %p -> %p opaque %p -> %p cleanup_opaque %p\n",
+                 name, ret, (void *)before, (void *)after,
+                 opaque_before, opaque_after, param.opaque );
+        return -1;
+    }
+
+    return 0;
+}
+
+static int expect_null_value_stats_param_keeps_values( void )
+{
+    x264_param_t param;
+
+    x264_param_default( &param );
+    char *stat_in_before = param.rc.psz_stat_in;
+    char *stat_out_before = param.rc.psz_stat_out;
+    void *opaque_before = param.opaque;
+    int ret = x264_param_parse( &param, "stats", NULL );
+    char *stat_in_after = param.rc.psz_stat_in;
+    char *stat_out_after = param.rc.psz_stat_out;
+    void *opaque_after = param.opaque;
+    int failed = ret != X264_PARAM_BAD_VALUE ||
+                 stat_in_after != stat_in_before ||
+                 stat_out_after != stat_out_before ||
+                 opaque_after != opaque_before;
+    x264_param_cleanup( &param );
+    if( failed || param.opaque != NULL )
+    {
+        fprintf( stderr, "null stats parse changed values: ret %d in %p -> %p out %p -> %p opaque %p -> %p cleanup_opaque %p\n",
+                 ret, (void *)stat_in_before, (void *)stat_in_after,
+                 (void *)stat_out_before, (void *)stat_out_after,
+                 opaque_before, opaque_after, param.opaque );
         return -1;
     }
 
@@ -1375,45 +1543,61 @@ static int expect_failed_parse_keeps_four_int_values( const char *name, const ch
     return 0;
 }
 
-static int expect_failed_cqm4_parse_keeps_values( void )
+static void make_cqm_parse_text( char *text, int length, int bad )
 {
-    static const char good_text[] = "2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2";
-    static const char bad_text[] = "1,1,1x,1,1,1,1,1,1,1,1,1,1,1,1,1";
+    char *p = text;
+    for( int i = 0; i < length; i++ )
+    {
+        if( i )
+            *p++ = ',';
+        *p++ = bad ? '1' : '2';
+        if( bad && i == 2 )
+            *p++ = 'x';
+    }
+    *p = '\0';
+}
+
+static int expect_failed_cqm_parse_keeps_values( const char *name, int length, int count,
+                                                 const size_t offsets[4] )
+{
+    char good_text[3 * 64];
+    char bad_text[3 * 64];
     x264_param_t param;
     struct guard_allocation allocation = { 0 };
+    if( length > 64 || count < 1 || count > 4 )
+        return -1;
+
+    make_cqm_parse_text( good_text, length, 0 );
+    make_cqm_parse_text( bad_text, length, 1 );
     char *value = make_guarded_string( bad_text, &allocation );
     if( !value )
         return -1;
 
     x264_param_default( &param );
-    if( x264_param_parse( &param, "cqm4", good_text ) )
+    if( x264_param_parse( &param, name, good_text ) )
     {
-        fprintf( stderr, "baseline parse failed for cqm4=%s\n", good_text );
+        fprintf( stderr, "baseline parse failed for %s=%s\n", name, good_text );
         free_guarded_string( &allocation );
         return -1;
     }
 
     int preset_before = param.i_cqm_preset;
-    uint8_t cqm_4iy_before[16];
-    uint8_t cqm_4py_before[16];
-    uint8_t cqm_4ic_before[16];
-    uint8_t cqm_4pc_before[16];
-    memcpy( cqm_4iy_before, param.cqm_4iy, sizeof(cqm_4iy_before) );
-    memcpy( cqm_4py_before, param.cqm_4py, sizeof(cqm_4py_before) );
-    memcpy( cqm_4ic_before, param.cqm_4ic, sizeof(cqm_4ic_before) );
-    memcpy( cqm_4pc_before, param.cqm_4pc, sizeof(cqm_4pc_before) );
+    uint8_t *cqm[4];
+    for( int i = 0; i < count; i++ )
+        cqm[i] = (uint8_t *)((char *)&param + offsets[i]);
+    uint8_t cqm_before[4][64];
+    for( int i = 0; i < count; i++ )
+        memcpy( cqm_before[i], cqm[i], length );
 
-    int ret = x264_param_parse( &param, "cqm4", value );
+    int ret = x264_param_parse( &param, name, value );
     free_guarded_string( &allocation );
-    if( ret != X264_PARAM_BAD_VALUE ||
-        param.i_cqm_preset != preset_before ||
-        memcmp( param.cqm_4iy, cqm_4iy_before, sizeof(cqm_4iy_before) ) ||
-        memcmp( param.cqm_4py, cqm_4py_before, sizeof(cqm_4py_before) ) ||
-        memcmp( param.cqm_4ic, cqm_4ic_before, sizeof(cqm_4ic_before) ) ||
-        memcmp( param.cqm_4pc, cqm_4pc_before, sizeof(cqm_4pc_before) ) )
+    int changed = param.i_cqm_preset != preset_before;
+    for( int i = 0; i < count; i++ )
+        changed |= memcmp( cqm[i], cqm_before[i], length );
+    if( ret != X264_PARAM_BAD_VALUE || changed )
     {
-        fprintf( stderr, "guarded failed parse changed cqm4: ret %d preset %d -> %d\n",
-                 ret, preset_before, param.i_cqm_preset );
+        fprintf( stderr, "guarded failed parse changed %s: ret %d preset %d -> %d\n",
+                 name, ret, preset_before, param.i_cqm_preset );
         return -1;
     }
 
@@ -1530,6 +1714,56 @@ static int expect_failed_parse_keeps_int_float_values( const char *name, const c
 
 int main( void )
 {
+    static const size_t cqm4_offsets[4] =
+    {
+        offsetof( x264_param_t, cqm_4iy ),
+        offsetof( x264_param_t, cqm_4py ),
+        offsetof( x264_param_t, cqm_4ic ),
+        offsetof( x264_param_t, cqm_4pc ),
+    };
+    static const size_t cqm4i_offsets[4] =
+    {
+        offsetof( x264_param_t, cqm_4iy ),
+        offsetof( x264_param_t, cqm_4ic ),
+    };
+    static const size_t cqm4p_offsets[4] =
+    {
+        offsetof( x264_param_t, cqm_4py ),
+        offsetof( x264_param_t, cqm_4pc ),
+    };
+    static const size_t cqm4iy_offsets[4] =
+    {
+        offsetof( x264_param_t, cqm_4iy ),
+    };
+    static const size_t cqm4ic_offsets[4] =
+    {
+        offsetof( x264_param_t, cqm_4ic ),
+    };
+    static const size_t cqm4py_offsets[4] =
+    {
+        offsetof( x264_param_t, cqm_4py ),
+    };
+    static const size_t cqm4pc_offsets[4] =
+    {
+        offsetof( x264_param_t, cqm_4pc ),
+    };
+    static const size_t cqm8_offsets[4] =
+    {
+        offsetof( x264_param_t, cqm_8iy ),
+        offsetof( x264_param_t, cqm_8py ),
+        offsetof( x264_param_t, cqm_8ic ),
+        offsetof( x264_param_t, cqm_8pc ),
+    };
+    static const size_t cqm8i_offsets[4] =
+    {
+        offsetof( x264_param_t, cqm_8iy ),
+        offsetof( x264_param_t, cqm_8ic ),
+    };
+    static const size_t cqm8p_offsets[4] =
+    {
+        offsetof( x264_param_t, cqm_8py ),
+        offsetof( x264_param_t, cqm_8pc ),
+    };
     static const struct
     {
         const char *name;
@@ -1740,6 +1974,7 @@ int main( void )
         { "qpstep", "4x" },
         { "pass", "2x" },
         { "opts", "4" },
+        { "asm", "1x" },
 #if defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
         { "asm", "sse2,,ssse3" },
         { "asm", "sse2," },
@@ -1754,15 +1989,130 @@ int main( void )
         if( expect_guarded_value( bad_cases[i].name, bad_cases[i].value, X264_PARAM_BAD_VALUE ) )
             return 1;
 
+    if( expect_unchanged_uint32_value( "asm", "1x", "1", offsetof( x264_param_t, cpu ) ) )
+        return 1;
 #if defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
     if( expect_unchanged_uint32_value( "asm", "sse2,,ssse3", "sse2", offsetof( x264_param_t, cpu ) ) )
         return 1;
 #endif
     if( expect_apply_profile_failure_keeps_values() )
         return 1;
+    if( expect_failed_default_preset_tune_keeps_values() )
+        return 1;
     if( expect_failed_mastering_display_parse_keeps_values() )
         return 1;
-    if( expect_failed_cqm4_parse_keeps_values() )
+    if( expect_string_param_is_cleanup_tracked( "log-file", "gnu17-param.log",
+                                                offsetof( x264_param_t, psz_log_file ) ) )
+        return 1;
+    if( expect_string_param_is_cleanup_tracked( "dump-yuv", "gnu17-dump.yuv",
+                                                offsetof( x264_param_t, psz_dump_yuv ) ) )
+        return 1;
+    if( expect_string_param_is_cleanup_tracked( "cqmfile", "gnu17-cqm.cfg",
+                                                offsetof( x264_param_t, psz_cqm_file ) ) )
+        return 1;
+    if( expect_string_param_is_cleanup_tracked( "cqm", "gnu17-cqm-alias.cfg",
+                                                offsetof( x264_param_t, psz_cqm_file ) ) )
+        return 1;
+    if( expect_string_param_is_cleanup_tracked( "zones", "0,0,b=1.0",
+                                                offsetof( x264_param_t, rc.psz_zones ) ) )
+        return 1;
+    if( expect_string_param_is_cleanup_tracked( "opencl-clbin", "gnu17-opencl.clbin",
+                                                offsetof( x264_param_t, psz_clbin_file ) ) )
+        return 1;
+    if( expect_stats_param_is_cleanup_tracked( "gnu17-stats.log" ) )
+        return 1;
+    if( expect_opts_param_is_cleanup_tracked( "preinfo:gnu17-pre", "gnu17-pre",
+                                              0, X264_OPTS_PREINFO ) )
+        return 1;
+    if( expect_opts_param_is_cleanup_tracked( "postinfo:gnu17-post", "gnu17-post",
+                                              1, X264_OPTS_POSTINFO ) )
+        return 1;
+    if( expect_opts_param_is_cleanup_tracked( "preopt:gnu17-preopt", "gnu17-preopt",
+                                              2, X264_OPTS_PREOPT ) )
+        return 1;
+    if( expect_opts_param_is_cleanup_tracked( "postopt:gnu17-postopt", "gnu17-postopt",
+                                              3, X264_OPTS_POSTOPT ) )
+        return 1;
+    if( expect_null_value_string_param_keeps_value( "log-file", offsetof( x264_param_t, psz_log_file ) ) ||
+        expect_null_value_string_param_keeps_value( "no-log-file", offsetof( x264_param_t, psz_log_file ) ) ||
+        expect_null_value_string_param_keeps_value( "dump-yuv", offsetof( x264_param_t, psz_dump_yuv ) ) ||
+        expect_null_value_string_param_keeps_value( "cqmfile", offsetof( x264_param_t, psz_cqm_file ) ) ||
+        expect_null_value_string_param_keeps_value( "cqm", offsetof( x264_param_t, psz_cqm_file ) ) ||
+        expect_null_value_string_param_keeps_value( "zones", offsetof( x264_param_t, rc.psz_zones ) ) ||
+        expect_null_value_string_param_keeps_value( "opencl-clbin", offsetof( x264_param_t, psz_clbin_file ) ) ||
+        expect_null_value_stats_param_keeps_values() )
+        return 1;
+    if( expect_failed_cqm_parse_keeps_values( "cqm4", 16, 4, cqm4_offsets ) )
+        return 1;
+    if( expect_failed_cqm_parse_keeps_values( "cqm4i", 16, 2, cqm4i_offsets ) )
+        return 1;
+    if( expect_failed_cqm_parse_keeps_values( "cqm4p", 16, 2, cqm4p_offsets ) )
+        return 1;
+    if( expect_failed_cqm_parse_keeps_values( "cqm4iy", 16, 1, cqm4iy_offsets ) )
+        return 1;
+    if( expect_failed_cqm_parse_keeps_values( "cqm4ic", 16, 1, cqm4ic_offsets ) )
+        return 1;
+    if( expect_failed_cqm_parse_keeps_values( "cqm4py", 16, 1, cqm4py_offsets ) )
+        return 1;
+    if( expect_failed_cqm_parse_keeps_values( "cqm4pc", 16, 1, cqm4pc_offsets ) )
+        return 1;
+    if( expect_failed_cqm_parse_keeps_values( "cqm8", 64, 4, cqm8_offsets ) )
+        return 1;
+    if( expect_failed_cqm_parse_keeps_values( "cqm8i", 64, 2, cqm8i_offsets ) )
+        return 1;
+    if( expect_failed_cqm_parse_keeps_values( "cqm8p", 64, 2, cqm8p_offsets ) )
+        return 1;
+
+    static const struct
+    {
+        const char *name;
+        const char *good_text;
+        size_t field_offset;
+    } bool_cases[] =
+    {
+        { "sliced-threads", "true", offsetof( x264_param_t, b_sliced_threads ) },
+        { "deterministic", "true", offsetof( x264_param_t, b_deterministic ) },
+        { "cpu-independent", "true", offsetof( x264_param_t, b_cpu_independent ) },
+        { "level-force", "true", offsetof( x264_param_t, b_level_force ) },
+        { "profile-force", "true", offsetof( x264_param_t, b_profile_force ) },
+        { "bluray-compat", "true", offsetof( x264_param_t, b_bluray_compat ) },
+        { "intra-refresh", "true", offsetof( x264_param_t, b_intra_refresh ) },
+        { "open-gop", "true", offsetof( x264_param_t, b_open_gop ) },
+        { "nf", "true", offsetof( x264_param_t, b_deblocking_filter ) },
+        { "cabac", "true", offsetof( x264_param_t, b_cabac ) },
+        { "interlaced", "true", offsetof( x264_param_t, b_interlaced ) },
+        { "constrained-intra", "true", offsetof( x264_param_t, b_constrained_intra ) },
+        { "8x8dct", "true", offsetof( x264_param_t, analyse.b_transform_8x8 ) },
+        { "weightb", "true", offsetof( x264_param_t, analyse.b_weighted_bipred ) },
+        { "psy", "true", offsetof( x264_param_t, analyse.b_psy ) },
+        { "chroma-me", "true", offsetof( x264_param_t, analyse.b_chroma_me ) },
+        { "mixed-refs", "true", offsetof( x264_param_t, analyse.b_mixed_references ) },
+        { "fast-pskip", "true", offsetof( x264_param_t, analyse.b_fast_pskip ) },
+        { "dct-decimate", "true", offsetof( x264_param_t, analyse.b_dct_decimate ) },
+        { "mbtree", "true", offsetof( x264_param_t, rc.b_mb_tree ) },
+        { "psnr", "true", offsetof( x264_param_t, analyse.b_psnr ) },
+        { "ssim", "true", offsetof( x264_param_t, analyse.b_ssim ) },
+        { "aud", "true", offsetof( x264_param_t, b_aud ) },
+        { "global-header", "true", offsetof( x264_param_t, b_repeat_headers ) },
+        { "repeat-headers", "true", offsetof( x264_param_t, b_repeat_headers ) },
+        { "annexb", "true", offsetof( x264_param_t, b_annexb ) },
+        { "force-cfr", "true", offsetof( x264_param_t, b_vfr_input ) },
+        { "filler", "true", offsetof( x264_param_t, rc.b_filler ) },
+        { "pic-struct", "true", offsetof( x264_param_t, b_pic_struct ) },
+        { "fake-interlaced", "true", offsetof( x264_param_t, b_fake_interlaced ) },
+        { "stitchable", "true", offsetof( x264_param_t, b_stitchable ) },
+        { "opencl", "true", offsetof( x264_param_t, b_opencl ) },
+        { "no-cabac", "true", offsetof( x264_param_t, b_cabac ) },
+    };
+    for( int i = 0; i < (int)(sizeof(bool_cases) / sizeof(bool_cases[0])); i++ )
+        if( expect_unchanged_int_value( bool_cases[i].name, "maybe", bool_cases[i].good_text, bool_cases[i].field_offset ) )
+            return 1;
+    if( expect_failed_parse_keeps_two_int_values( "tff", "maybe", "true",
+                                                  offsetof( x264_param_t, b_interlaced ),
+                                                  offsetof( x264_param_t, b_tff ) ) ||
+        expect_failed_parse_keeps_two_int_values( "bff", "maybe", "true",
+                                                  offsetof( x264_param_t, b_interlaced ),
+                                                  offsetof( x264_param_t, b_tff ) ) )
         return 1;
 
     if( expect_unchanged_int_value( "threads", "1x", "2", offsetof( x264_param_t, i_threads ) ) ||
@@ -1782,6 +2132,10 @@ int main( void )
         expect_failed_parse_keeps_two_uint32_values( "fps", "25/0", "30000/1001",
                                                      offsetof( x264_param_t, i_fps_num ),
                                                      offsetof( x264_param_t, i_fps_den ) ) ||
+        expect_failed_parse_keeps_three_int_values( "cll", "100,200x", "100,200",
+                                                    offsetof( x264_param_t, content_light_level.b_cll ),
+                                                    offsetof( x264_param_t, content_light_level.i_max_cll ),
+                                                    offsetof( x264_param_t, content_light_level.i_max_fall ) ) ||
         expect_unchanged_int_value( "avcintra-class", "50x", "50", offsetof( x264_param_t, i_avcintra_class ) ) ||
         expect_unchanged_int_value( "chromaloc", "2x", "2", offsetof( x264_param_t, vui.i_chroma_loc ) ) ||
         expect_unchanged_int_value( "chromaloc", "6", "2", offsetof( x264_param_t, vui.i_chroma_loc ) ) ||
@@ -1892,6 +2246,352 @@ GUARD_C
     fi
 }
 
+run_cqmfile_atomic_smoke()
+{
+    cqm_atomic_source=$smoke_dir/cqmfile-atomic.c
+    cqm_atomic_binary=$smoke_dir/cqmfile-atomic$exe
+    cqm_atomic_log=$smoke_dir/cqmfile-atomic.log
+    cqm_atomic_file=$smoke_dir/cqmfile-atomic-bad.cfg
+    cqm_atomic_ldflags=$(awk -F= '/^LDFLAGS=/ { print $2 }' "$smoke_dir/config.mak")
+
+    cat > "$cqm_atomic_source" <<'CQM_ATOMIC_C'
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+#define BIT_DEPTH 8
+#define HIGH_BIT_DEPTH 0
+#include "common/common.h"
+
+static int cqm_changed( x264_param_t *param, const x264_param_t *before )
+{
+    return param->i_cqm_preset != before->i_cqm_preset ||
+           memcmp( param->cqm_4iy, before->cqm_4iy, sizeof(param->cqm_4iy) ) ||
+           memcmp( param->cqm_4py, before->cqm_4py, sizeof(param->cqm_4py) ) ||
+           memcmp( param->cqm_4ic, before->cqm_4ic, sizeof(param->cqm_4ic) ) ||
+           memcmp( param->cqm_4pc, before->cqm_4pc, sizeof(param->cqm_4pc) ) ||
+           memcmp( param->cqm_8iy, before->cqm_8iy, sizeof(param->cqm_8iy) ) ||
+           memcmp( param->cqm_8py, before->cqm_8py, sizeof(param->cqm_8py) ) ||
+           memcmp( param->cqm_8ic, before->cqm_8ic, sizeof(param->cqm_8ic) ) ||
+           memcmp( param->cqm_8pc, before->cqm_8pc, sizeof(param->cqm_8pc) );
+}
+
+int main( int argc, char **argv )
+{
+    if( argc != 2 )
+        return 2;
+
+    x264_t h;
+    x264_param_t before;
+
+    memset( &h, 0, sizeof(h) );
+    x264_param_default( &h.param );
+    h.param.i_log_level = X264_LOG_NONE;
+    h.param.i_log_file_level = X264_LOG_NONE;
+    memcpy( &before, &h.param, sizeof(before) );
+
+    int ret = x264_cqm_parse_file( &h, argv[1] );
+    int changed = cqm_changed( &h.param, &before );
+    x264_param_cleanup( &h.param );
+
+    if( ret >= 0 || changed )
+    {
+        fprintf( stderr, "failed CQM file parse changed param: ret=%d changed=%d\n", ret, changed );
+        return 1;
+    }
+
+    return 0;
+}
+CQM_ATOMIC_C
+
+    printf '%s\n' "INTRA4X4_LUMA = 1,2x,1,1,1,1,1,1,1,1,1,1,1,1,1,1" > "$cqm_atomic_file"
+    if ! ${CC:-cc} -std=gnu17 -D_GNU_SOURCE -Wall -Werror -I"$smoke_dir" -I"$root" \
+        "$cqm_atomic_source" "$smoke_dir/libx264.a" $cqm_atomic_ldflags -o "$cqm_atomic_binary" >"$cqm_atomic_log" 2>&1; then
+        printf '%s\n' "failed to build CQM file atomic smoke: $cqm_atomic_log" >&2
+        exit 1
+    fi
+    if ! "$cqm_atomic_binary" "$cqm_atomic_file" >>"$cqm_atomic_log" 2>&1; then
+        printf '%s\n' "CQM file atomic smoke failed: $cqm_atomic_log" >&2
+        exit 1
+    fi
+}
+
+run_raw_input_atomic_smoke()
+{
+    raw_atomic_source=$smoke_dir/raw-input-atomic.c
+    raw_atomic_binary=$smoke_dir/raw-input-atomic$exe
+    raw_atomic_log=$smoke_dir/raw-input-atomic.log
+    raw_atomic_ldflags=$(awk -F= '/^LDFLAGS=/ { print $2 }' "$smoke_dir/config.mak")
+    raw_atomic_ldflagscli=$(awk -F= '/^LDFLAGSCLI=/ { print $2 }' "$smoke_dir/config.mak")
+
+    cat > "$raw_atomic_source" <<'RAW_ATOMIC_C'
+#include "input/input.h"
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
+
+void x264_cli_log( const char *name, int i_level, const char *fmt, ... )
+{
+    (void)name;
+    (void)i_level;
+    va_list args;
+    va_start( args, fmt );
+    vfprintf( stderr, fmt, args );
+    va_end( args );
+}
+
+int main( void )
+{
+    video_info_t info;
+    video_info_t before;
+    cli_input_opt_t opt;
+    hnd_t handle = NULL;
+
+    memset( &info, 0, sizeof(info) );
+    info.csp = X264_CSP_I444;
+    info.fps_num = 30000;
+    info.fps_den = 1001;
+    info.fullrange = 1;
+    info.width = 123;
+    info.height = 45;
+    info.interlaced = 1;
+    info.num_frames = 77;
+    info.sar_width = 11;
+    info.sar_height = 12;
+    info.tff = 1;
+    info.thread_safe = 1;
+    info.timebase_num = 1001;
+    info.timebase_den = 30000;
+    info.vfr = 1;
+    info.timebase_convert_multiplier = 1.25;
+    memcpy( &before, &info, sizeof(before) );
+
+    memset( &opt, 0, sizeof(opt) );
+    opt.resolution = "16x16";
+    opt.colorspace = "not-a-csp";
+    opt.bit_depth = 8;
+    opt.x264_bit_depth = 8;
+
+    if( !raw_input.open_file( "raw-atomic-unused.raw", &handle, &info, &opt ) )
+    {
+        raw_input.close_file( handle );
+        fprintf( stderr, "raw input accepted invalid colorspace\n" );
+        return 1;
+    }
+
+    if( handle || memcmp( &info, &before, sizeof(info) ) )
+    {
+        fprintf( stderr, "failed raw input open changed caller state\n" );
+        return 1;
+    }
+
+    return 0;
+}
+RAW_ATOMIC_C
+
+    if ! ${CC:-cc} -std=gnu17 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200112L \
+        -Wall -Wextra -Werror -Wno-unused-parameter \
+        -I"$smoke_dir" -I"$root" \
+        -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8 \
+        "$raw_atomic_source" "$smoke_dir/input/raw.o" "$smoke_dir/input/input.o" \
+        "$smoke_dir/libx264.a" $raw_atomic_ldflagscli $raw_atomic_ldflags \
+        -o "$raw_atomic_binary" >"$raw_atomic_log" 2>&1; then
+        printf '%s\n' "failed to build raw input atomic smoke: $raw_atomic_log" >&2
+        exit 1
+    fi
+    if ! "$raw_atomic_binary" >>"$raw_atomic_log" 2>&1; then
+        printf '%s\n' "raw input atomic smoke failed: $raw_atomic_log" >&2
+        exit 1
+    fi
+}
+
+run_y4m_input_atomic_smoke()
+{
+    y4m_atomic_source=$smoke_dir/y4m-input-atomic.c
+    y4m_atomic_binary=$smoke_dir/y4m-input-atomic$exe
+    y4m_atomic_log=$smoke_dir/y4m-input-atomic.log
+    y4m_atomic_file=$smoke_dir/y4m-input-atomic-bad.y4m
+    y4m_atomic_ldflags=$(awk -F= '/^LDFLAGS=/ { print $2 }' "$smoke_dir/config.mak")
+    y4m_atomic_ldflagscli=$(awk -F= '/^LDFLAGSCLI=/ { print $2 }' "$smoke_dir/config.mak")
+
+    cat > "$y4m_atomic_source" <<'Y4M_ATOMIC_C'
+#include "input/input.h"
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
+
+void x264_cli_log( const char *name, int i_level, const char *fmt, ... )
+{
+    (void)name;
+    (void)i_level;
+    va_list args;
+    va_start( args, fmt );
+    vfprintf( stderr, fmt, args );
+    va_end( args );
+}
+
+int main( int argc, char **argv )
+{
+    video_info_t info;
+    video_info_t before;
+    cli_input_opt_t opt;
+    hnd_t handle = NULL;
+
+    if( argc != 2 )
+        return 2;
+
+    memset( &info, 0, sizeof(info) );
+    info.csp = X264_CSP_I444;
+    info.fps_num = 30000;
+    info.fps_den = 1001;
+    info.fullrange = 1;
+    info.width = 123;
+    info.height = 45;
+    info.interlaced = 1;
+    info.num_frames = 77;
+    info.sar_width = 11;
+    info.sar_height = 12;
+    info.tff = 1;
+    info.thread_safe = 1;
+    info.timebase_num = 1001;
+    info.timebase_den = 30000;
+    info.vfr = 1;
+    info.timebase_convert_multiplier = 1.25;
+    memcpy( &before, &info, sizeof(before) );
+
+    memset( &opt, 0, sizeof(opt) );
+    opt.x264_bit_depth = 8;
+
+    if( !y4m_input.open_file( argv[1], &handle, &info, &opt ) )
+    {
+        y4m_input.close_file( handle );
+        fprintf( stderr, "y4m input accepted invalid frame rate\n" );
+        return 1;
+    }
+
+    if( handle || memcmp( &info, &before, sizeof(info) ) )
+    {
+        fprintf( stderr, "failed y4m input open changed caller state\n" );
+        return 1;
+    }
+
+    return 0;
+}
+Y4M_ATOMIC_C
+
+    printf '%s\n' 'YUV4MPEG2 W16 H16 F25:x Ip C420' > "$y4m_atomic_file"
+    if ! ${CC:-cc} -std=gnu17 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200112L \
+        -Wall -Wextra -Werror -Wno-unused-parameter \
+        -I"$smoke_dir" -I"$root" \
+        -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8 \
+        "$y4m_atomic_source" "$smoke_dir/input/y4m.o" "$smoke_dir/input/input.o" \
+        "$smoke_dir/libx264.a" $y4m_atomic_ldflagscli $y4m_atomic_ldflags \
+        -o "$y4m_atomic_binary" >"$y4m_atomic_log" 2>&1; then
+        printf '%s\n' "failed to build y4m input atomic smoke: $y4m_atomic_log" >&2
+        exit 1
+    fi
+    if ! "$y4m_atomic_binary" "$y4m_atomic_file" >>"$y4m_atomic_log" 2>&1; then
+        printf '%s\n' "y4m input atomic smoke failed: $y4m_atomic_log" >&2
+        exit 1
+    fi
+}
+
+run_pic_alloc_failure_smoke()
+{
+    pic_alloc_source=$smoke_dir/pic-alloc-failure.c
+    pic_alloc_binary=$smoke_dir/pic-alloc-failure$exe
+    pic_alloc_log=$smoke_dir/pic-alloc-failure.log
+
+    cat > "$pic_alloc_source" <<'PIC_ALLOC_C'
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
+static int alloc_calls;
+static int free_calls;
+
+void *test_x264_malloc( int64_t size )
+{
+    alloc_calls++;
+    if( alloc_calls == 2 )
+        return NULL;
+    return malloc( (size_t)size );
+}
+
+void test_x264_free( void *p )
+{
+    if( p )
+        free_calls++;
+    free( p );
+}
+
+#define x264_malloc test_x264_malloc
+#define x264_free test_x264_free
+#include "input/input.c"
+#undef x264_malloc
+#undef x264_free
+
+int main( void )
+{
+    cli_pic_t pic;
+    cli_pic_t zero;
+
+    memset( &pic, 0x5a, sizeof(pic) );
+    memset( &zero, 0, sizeof(zero) );
+
+    if( !x264_cli_pic_alloc( &pic, X264_CSP_I420, 16, 16 ) )
+    {
+        x264_cli_pic_clean( &pic );
+        return 1;
+    }
+
+    if( alloc_calls != 2 || free_calls != 1 || memcmp( &pic, &zero, sizeof(pic) ) )
+        return 1;
+
+    return 0;
+}
+PIC_ALLOC_C
+
+    if ! ${CC:-cc} -std=gnu17 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200112L \
+        -Wall -Wextra -Werror -Wno-unused-parameter \
+        -I"$smoke_dir" -I"$root" \
+        -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8 \
+        "$pic_alloc_source" -o "$pic_alloc_binary" >"$pic_alloc_log" 2>&1; then
+        printf '%s\n' "failed to build picture allocation failure smoke: $pic_alloc_log" >&2
+        exit 1
+    fi
+    if ! "$pic_alloc_binary" >>"$pic_alloc_log" 2>&1; then
+        printf '%s\n' "picture allocation failure smoke failed: $pic_alloc_log" >&2
+        exit 1
+    fi
+}
+
+run_lavf_input_object_smoke()
+{
+    lavf_input_log=$smoke_dir/input-lavf-object.log
+    lavf_input_object=$smoke_dir/input/lavf-object.o
+
+    if ! PKG_CONFIG_PATH=${PKG_CONFIG_PATH:-$msys2_pkg_config_path} \
+        pkg-config --exists libavformat libavcodec libavutil; then
+        printf '%s\n' "input LAVF object smoke skipped: missing libavformat/libavcodec/libavutil" >"$lavf_input_log"
+        printf '%s\n' "input LAVF object smoke skipped: missing libavformat/libavcodec/libavutil"
+        return 0
+    fi
+
+    mkdir -p "$smoke_dir/input"
+    if ! ${CC:-cc} -std=gnu17 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200112L \
+        -Wall -Wextra -Werror -Wno-unused-parameter \
+        -Wno-missing-field-initializers -Wno-sign-compare \
+        -I"$smoke_dir" -I"$root" \
+        -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8 \
+        $(PKG_CONFIG_PATH=${PKG_CONFIG_PATH:-$msys2_pkg_config_path} pkg-config --cflags libavformat libavcodec libavutil) \
+        -c "$root/input/lavf.c" -o "$lavf_input_object" >"$lavf_input_log" 2>&1; then
+        printf '%s\n' "failed to build input/lavf.c object smoke: $lavf_input_log" >&2
+        exit 1
+    fi
+    printf '%s\n' "input LAVF object smoke built: $lavf_input_object" >"$lavf_input_log"
+}
+
 run_audio_avs_object_smoke()
 {
     avs_object_log=$smoke_dir/audio-avs-object.log
@@ -1899,6 +2599,32 @@ run_audio_avs_object_smoke()
         printf '%s\n' "failed to build input/audio/avs.c object smoke: $avs_object_log" >&2
         exit 1
     fi
+}
+
+run_audio_lavf_object_smoke()
+{
+    lavf_source_object_log=$smoke_dir/audio-lavf-object.log
+    lavf_source_object=$smoke_dir/input/audio/lavf.o
+
+    if ! PKG_CONFIG_PATH=${PKG_CONFIG_PATH:-$msys2_pkg_config_path} \
+        pkg-config --exists libavformat libavcodec libavutil; then
+        printf '%s\n' "audio LAVF object smoke skipped: missing libavformat/libavcodec/libavutil" >"$lavf_source_object_log"
+        printf '%s\n' "audio LAVF object smoke skipped: missing libavformat/libavcodec/libavutil"
+        return 0
+    fi
+
+    mkdir -p "$smoke_dir/input/audio"
+    if ! ${CC:-cc} -std=gnu17 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200112L \
+        -Wall -Wextra -Werror -Wno-unused-parameter \
+        -Wno-missing-field-initializers -Wno-sign-compare \
+        -I"$smoke_dir" -I"$root" \
+        -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8 \
+        $(PKG_CONFIG_PATH=${PKG_CONFIG_PATH:-$msys2_pkg_config_path} pkg-config --cflags libavformat libavcodec libavutil) \
+        -c "$root/input/audio/lavf.c" -o "$lavf_source_object" >"$lavf_source_object_log" 2>&1; then
+        printf '%s\n' "failed to build input/audio/lavf.c object smoke: $lavf_source_object_log" >&2
+        exit 1
+    fi
+    printf '%s\n' "audio LAVF object smoke built: $lavf_source_object" >"$lavf_source_object_log"
 }
 
 run_audio_faac_stub_object_smoke()
@@ -2107,9 +2833,18 @@ run_smoke_cli()
     y4m_color_range_tail_out=$smoke_dir/smoke-color-range-tail.264
     y4m_420jpeg=$smoke_dir/smoke-420jpeg.y4m
     y4m_420jpeg_out=$smoke_dir/smoke-420jpeg.264
+    y4m_bad_interlace=$smoke_dir/smoke-bad-interlace.y4m
+    y4m_bad_interlace_out=$smoke_dir/smoke-bad-interlace.264
+    y4m_bad_interlace_log=$smoke_dir/smoke-bad-interlace.log
     y4m_bad_fps=$smoke_dir/smoke-bad-fps.y4m
     y4m_bad_fps_out=$smoke_dir/smoke-bad-fps.264
     y4m_bad_fps_log=$smoke_dir/smoke-bad-fps.log
+    y4m_bad_fps_den=$smoke_dir/smoke-bad-fps-den.y4m
+    y4m_bad_fps_den_out=$smoke_dir/smoke-bad-fps-den.264
+    y4m_bad_fps_den_log=$smoke_dir/smoke-bad-fps-den.log
+    y4m_bad_aspect_den=$smoke_dir/smoke-bad-aspect-den.y4m
+    y4m_bad_aspect_den_out=$smoke_dir/smoke-bad-aspect-den.264
+    y4m_bad_aspect_den_log=$smoke_dir/smoke-bad-aspect-den.log
     y4m_bad_csp_suffix=$smoke_dir/smoke-bad-csp-suffix.y4m
     y4m_bad_csp_suffix_out=$smoke_dir/smoke-bad-csp-suffix.264
     y4m_bad_csp_suffix_log=$smoke_dir/smoke-bad-csp-suffix.log
@@ -2135,6 +2870,8 @@ run_smoke_cli()
     example_out=$smoke_dir/example.264
     example_bad_res_out=$smoke_dir/example-bad-res.264
     example_bad_res_log=$smoke_dir/example-bad-res.log
+    example_bad_height_out=$smoke_dir/example-bad-height.264
+    example_bad_height_log=$smoke_dir/example-bad-height.log
     example_bad_overflow_out=$smoke_dir/example-bad-overflow.264
     example_bad_overflow_log=$smoke_dir/example-bad-overflow.log
     example_bad_prefix_out=$smoke_dir/example-bad-prefix.264
@@ -2287,6 +3024,8 @@ run_smoke_cli()
     zone_prefixed_log=$smoke_dir/zone-prefixed.log
     zone_empty_opt_out=$smoke_dir/zone-empty-opt.264
     zone_empty_opt_log=$smoke_dir/zone-empty-opt.log
+    zone_second_bad_out=$smoke_dir/zone-second-bad.264
+    zone_second_bad_log=$smoke_dir/zone-second-bad.log
     device_empty_out=$smoke_dir/device-empty.264
     device_empty_log=$smoke_dir/device-empty.log
     write_smoke_y4m "$y4m"
@@ -2318,7 +3057,13 @@ run_smoke_cli()
         }
     done
     run_param_list_guard_smoke
+    run_cqmfile_atomic_smoke
+    run_raw_input_atomic_smoke
+    run_y4m_input_atomic_smoke
+    run_pic_alloc_failure_smoke
+    run_lavf_input_object_smoke
     run_audio_avs_object_smoke
+    run_audio_lavf_object_smoke
     run_audio_faac_stub_object_smoke
     run_audio_lavc_object_smoke
     run_filter_option_helper_smoke
@@ -2340,6 +3085,16 @@ run_smoke_cli()
     grep -q "resolution not specified or incorrect" "$example_bad_res_log" ||
     {
         printf '%s\n' "missing example trailing-junk resolution parse error in $example_bad_res_log" >&2
+        exit 1
+    }
+    rm -f "$example_bad_height_log" "$example_bad_height_out"
+    if "$example_bin" 16xjunk < "$raw" >"$example_bad_height_out" 2>"$example_bad_height_log"; then
+        printf '%s\n' "accepted example height parse junk: $example_bad_height_out" >&2
+        exit 1
+    fi
+    grep -q "resolution not specified or incorrect" "$example_bad_height_log" ||
+    {
+        printf '%s\n' "missing example height-junk resolution parse error in $example_bad_height_log" >&2
         exit 1
     }
     rm -f "$example_bad_overflow_log" "$example_bad_overflow_out"
@@ -2402,6 +3157,16 @@ run_smoke_cli()
         printf '%s\n' "missing raw leading-space resolution parse error in $raw_bad_prefix_log" >&2
         exit 1
     }
+    rm -f "$raw_bad_res_log" "$raw_bad_res_out"
+    if "$smoke_bin" --demuxer raw --input-res 16xjunk --fps 25 --frames 1 --crf 30 -o "$raw_bad_res_out" "$raw" >"$raw_bad_res_log" 2>&1; then
+        printf '%s\n' "accepted raw input resolution height trailing junk: $raw_bad_res_out" >&2
+        exit 1
+    fi
+    grep -q "invalid resolution" "$raw_bad_res_log" ||
+    {
+        printf '%s\n' "missing raw height trailing-junk resolution parse error in $raw_bad_res_log" >&2
+        exit 1
+    }
     rm -f "$param_bad_fps_log" "$param_bad_fps_out"
     if "$smoke_bin" --demuxer raw --input-res 16x16 --fps 25/1x --frames 1 --crf 30 -o "$param_bad_fps_out" "$raw" >"$param_bad_fps_log" 2>&1; then
         printf '%s\n' "accepted parameter fps trailing junk: $param_bad_fps_out" >&2
@@ -2451,6 +3216,16 @@ run_smoke_cli()
         printf '%s\n' "missing CLI leading-space integer parse error in $cli_bad_int_prefix_log" >&2
         exit 1
     }
+    rm -f "$cli_bad_int_prefix_log" "$cli_bad_int_prefix_out"
+    if "$smoke_bin" --demuxer y4m --frames 1x --crf 30 -o "$cli_bad_int_prefix_out" "$y4m" >"$cli_bad_int_prefix_log" 2>&1; then
+        printf '%s\n' "accepted CLI integer trailing junk: $cli_bad_int_prefix_out" >&2
+        exit 1
+    fi
+    grep -q "invalid argument: frames" "$cli_bad_int_prefix_log" ||
+    {
+        printf '%s\n' "missing CLI trailing-junk integer parse error in $cli_bad_int_prefix_log" >&2
+        exit 1
+    }
     rm -f "$cli_bad_uint_prefix_log" "$cli_bad_uint_prefix_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --priming +1 --crf 30 -o "$cli_bad_uint_prefix_out" "$y4m" >"$cli_bad_uint_prefix_log" 2>&1; then
         printf '%s\n' "accepted CLI unsigned integer signed prefix: $cli_bad_uint_prefix_out" >&2
@@ -2469,6 +3244,16 @@ run_smoke_cli()
     grep -q "invalid argument: priming" "$cli_bad_uint_prefix_log" ||
     {
         printf '%s\n' "missing CLI leading-space unsigned integer parse error in $cli_bad_uint_prefix_log" >&2
+        exit 1
+    }
+    rm -f "$cli_bad_uint_prefix_log" "$cli_bad_uint_prefix_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --priming 1x --crf 30 -o "$cli_bad_uint_prefix_out" "$y4m" >"$cli_bad_uint_prefix_log" 2>&1; then
+        printf '%s\n' "accepted CLI unsigned integer trailing junk: $cli_bad_uint_prefix_out" >&2
+        exit 1
+    fi
+    grep -q "invalid argument: priming" "$cli_bad_uint_prefix_log" ||
+    {
+        printf '%s\n' "missing CLI trailing-junk unsigned integer parse error in $cli_bad_uint_prefix_log" >&2
         exit 1
     }
     rm -f "$cli_bad_display_prefix_log" "$cli_bad_display_prefix_out"
@@ -2511,8 +3296,18 @@ run_smoke_cli()
         printf '%s\n' "missing CLI leading-space display height parse error in $cli_bad_display_prefix_log" >&2
         exit 1
     }
+    rm -f "$cli_bad_display_prefix_log" "$cli_bad_display_prefix_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --force-display-size 16x16junk --crf 30 -o "$cli_bad_display_prefix_out" "$y4m" >"$cli_bad_display_prefix_log" 2>&1; then
+        printf '%s\n' "accepted CLI display height trailing junk: $cli_bad_display_prefix_out" >&2
+        exit 1
+    fi
+    grep -q "invalid syntax for specifying display size" "$cli_bad_display_prefix_log" ||
+    {
+        printf '%s\n' "missing CLI trailing-junk display height parse error in $cli_bad_display_prefix_log" >&2
+        exit 1
+    }
     for bad_float_opt in abitrate aquality acodec-quality; do
-        for bad_float_value in '+1.0' ' 1.0'; do
+        for bad_float_value in '+1.0' ' 1.0' '1.0x'; do
             rm -f "$cli_bad_float_prefix_log" "$cli_bad_float_prefix_out"
             if "$smoke_bin" --demuxer y4m --frames 1 "--$bad_float_opt" "$bad_float_value" --crf 30 -o "$cli_bad_float_prefix_out" "$y4m" >"$cli_bad_float_prefix_log" 2>&1; then
                 printf '%s\n' "accepted CLI float prefix for --$bad_float_opt '$bad_float_value': $cli_bad_float_prefix_out" >&2
@@ -2520,7 +3315,7 @@ run_smoke_cli()
             fi
             grep -q "invalid argument: $bad_float_opt" "$cli_bad_float_prefix_log" ||
             {
-                printf '%s\n' "missing CLI float prefix parse error for --$bad_float_opt '$bad_float_value' in $cli_bad_float_prefix_log" >&2
+                printf '%s\n' "missing CLI float malformed-token parse error for --$bad_float_opt '$bad_float_value' in $cli_bad_float_prefix_log" >&2
                 exit 1
             }
         done
@@ -2747,6 +3542,16 @@ run_smoke_cli()
         printf '%s\n' "missing pad filter parse error in $filter_bad_pad_log" >&2
         exit 1
     }
+    rm -f "$filter_bad_pad_log" "$filter_bad_pad_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --vf pad:0,0x,0,0,0,0,0,0,0 --crf 30 -o "$filter_bad_pad_out" "$y4m" >"$filter_bad_pad_log" 2>&1; then
+        printf '%s\n' "accepted later malformed pad filter value: $filter_bad_pad_out" >&2
+        exit 1
+    fi
+    grep -q "top pad value '0x' is invalid" "$filter_bad_pad_log" ||
+    {
+        printf '%s\n' "missing later pad filter parse error in $filter_bad_pad_log" >&2
+        exit 1
+    }
     for bad_pad in '+0,0,0,0,0,0,0,0,0' ' 0,0,0,0,0,0,0,0,0' '0,0,0,0,0,0,+0,0,0' '0,0,0,0,0,0, 0,0,0'; do
         rm -f "$filter_bad_pad_log" "$filter_bad_pad_out"
         if "$smoke_bin" --demuxer y4m --frames 1 --vf "pad:$bad_pad" --crf 30 -o "$filter_bad_pad_out" "$y4m" >"$filter_bad_pad_log" 2>&1; then
@@ -2767,6 +3572,16 @@ run_smoke_cli()
     grep -q "left crop value.*is invalid" "$filter_bad_crop_log" ||
     {
         printf '%s\n' "missing crop filter parse error in $filter_bad_crop_log" >&2
+        exit 1
+    }
+    rm -f "$filter_bad_crop_log" "$filter_bad_crop_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --vf crop:0,0x,0,0 --crf 30 -o "$filter_bad_crop_out" "$y4m" >"$filter_bad_crop_log" 2>&1; then
+        printf '%s\n' "accepted later malformed crop filter value: $filter_bad_crop_out" >&2
+        exit 1
+    fi
+    grep -q "top crop value.*is invalid" "$filter_bad_crop_log" ||
+    {
+        printf '%s\n' "missing later crop filter parse error in $filter_bad_crop_log" >&2
         exit 1
     }
     for bad_crop in '+0,0,0,0' ' 0,0,0,0'; do
@@ -2805,7 +3620,7 @@ run_smoke_cli()
     done
     "$smoke_bin" --demuxer y4m --frames 1 --vf hqdn3d:.5,3.0,6,0 --crf 30 -o "$filter_hqdn3d_out" "$y4m" >/dev/null
     [ -s "$filter_hqdn3d_out" ] || { printf '%s\n' "missing hqdn3d filter smoke output: $filter_hqdn3d_out (input: $y4m)" >&2; exit 1; }
-    for bad_hqdn3d in '+4' ' 4' '4,+3' '4, 3' '4,3,+6' '4,3, 6' '4,3,6,+0' '4,3,6, 0' '-1'; do
+    for bad_hqdn3d in '+4' ' 4' '4,+3' '4, 3' '4,3,+6' '4,3, 6' '4,3,6,+0' '4,3,6, 0' '-1' '0,1' '0,0,1'; do
         rm -f "$filter_bad_hqdn3d_log" "$filter_bad_hqdn3d_out"
         if "$smoke_bin" --demuxer y4m --frames 1 --vf "hqdn3d:$bad_hqdn3d" --crf 30 -o "$filter_bad_hqdn3d_out" "$y4m" >"$filter_bad_hqdn3d_log" 2>&1; then
             printf '%s\n' "accepted malformed hqdn3d filter strength '$bad_hqdn3d': $filter_bad_hqdn3d_out" >&2
@@ -2825,6 +3640,16 @@ run_smoke_cli()
     grep -q "invalid step" "$filter_bad_select_every_log" ||
     {
         printf '%s\n' "missing select_every filter parse error in $filter_bad_select_every_log" >&2
+        exit 1
+    }
+    rm -f "$filter_bad_select_every_log" "$filter_bad_select_every_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --vf select_every:2,0,2x --crf 30 -o "$filter_bad_select_every_out" "$y4m" >"$filter_bad_select_every_log" 2>&1; then
+        printf '%s\n' "accepted later malformed select_every filter offset: $filter_bad_select_every_out" >&2
+        exit 1
+    fi
+    grep -q "invalid offset" "$filter_bad_select_every_log" ||
+    {
+        printf '%s\n' "missing later select_every filter parse error in $filter_bad_select_every_log" >&2
         exit 1
     }
     for bad_select_every in '+2,0' ' 2,0' '2,+0' '2, 0'; do
@@ -2857,6 +3682,16 @@ run_smoke_cli()
     grep -q "invalid mode" "$filter_bad_yadif_log" ||
     {
         printf '%s\n' "missing yadif filter parse error in $filter_bad_yadif_log" >&2
+        exit 1
+    }
+    rm -f "$filter_bad_yadif_log" "$filter_bad_yadif_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --vf yadif:1,badorder --crf 30 -o "$filter_bad_yadif_out" "$y4m" >"$filter_bad_yadif_log" 2>&1; then
+        printf '%s\n' "accepted malformed yadif filter order: $filter_bad_yadif_out" >&2
+        exit 1
+    fi
+    grep -q "unknown order" "$filter_bad_yadif_log" ||
+    {
+        printf '%s\n' "missing yadif filter order parse error in $filter_bad_yadif_log" >&2
         exit 1
     }
     for bad_yadif_mode in '+2' ' 2'; do
@@ -2904,7 +3739,17 @@ run_smoke_cli()
             printf '%s\n' "missing resize bit-depth parse error in $filter_bad_resize_depth_log" >&2
             exit 1
         }
-        for bad_resize_sar in 'sar=+1:1' 'sar=1:+1' 'sar=1: 1' 'sar=1/+1'; do
+        rm -f "$filter_bad_resize_sar_log" "$filter_bad_resize_sar_out"
+        if "$smoke_bin" --demuxer y4m --frames 1 --vf resize:csp=i420,sar=1:1junk --crf 30 -o "$filter_bad_resize_sar_out" "$y4m" >"$filter_bad_resize_sar_log" 2>&1; then
+            printf '%s\n' "accepted resize csp followed by malformed SAR: $filter_bad_resize_sar_out" >&2
+            exit 1
+        fi
+        grep -q "invalid sar" "$filter_bad_resize_sar_log" ||
+        {
+            printf '%s\n' "missing resize csp/SAR parse error in $filter_bad_resize_sar_log" >&2
+            exit 1
+        }
+        for bad_resize_sar in 'sar=+1:1' 'sar=1:+1' 'sar=1: 1' 'sar=1/+1' 'sar=1:1junk'; do
             rm -f "$filter_bad_resize_sar_log" "$filter_bad_resize_sar_out"
             if "$smoke_bin" --demuxer y4m --frames 1 --vf "resize:$bad_resize_sar" --crf 30 -o "$filter_bad_resize_sar_out" "$y4m" >"$filter_bad_resize_sar_log" 2>&1; then
                 printf '%s\n' "accepted malformed resize SAR '$bad_resize_sar': $filter_bad_resize_sar_out" >&2
@@ -3007,7 +3852,7 @@ run_smoke_cli()
             exit 1
         }
     done
-    for bad_tc_tdecimate_frame in '-1' '+1'; do
+    for bad_tc_tdecimate_frame in '-1' '+1' '0junk'; do
         {
             printf '%s\n' '# timecode format v1'
             printf '%s\n' 'assume 25'
@@ -3044,6 +3889,9 @@ run_smoke_cli()
         'v1-assume-plus|# timecode format v1
 assume +25
 0,1,30|tcfile parsing error: assumed fps not found' \
+        'v1-assume-tail|# timecode format v1
+assume 25junk
+0,1,30|tcfile parsing error: assumed fps not found' \
         'v1-range-start-plus|# timecode format v1
 assume 25
 +0,1,30|invalid input tcfile' \
@@ -3056,8 +3904,14 @@ assume 25
         'v1-range-plus|# timecode format v1
 assume 25
 0,1,+30|invalid input tcfile' \
+        'v1-range-tail|# timecode format v1
+assume 25
+0,1,30junk|invalid input tcfile' \
         'v2-first-plus|# timecode format v2
 +0
+40|invalid input tcfile for frame 0' \
+        'v2-first-tail|# timecode format v2
+0junk
 40|invalid input tcfile for frame 0' \
         'v2-first-space|# timecode format v2
  0
@@ -3065,6 +3919,9 @@ assume 25
         'v2-next-plus|# timecode format v2
 0
 +40|invalid input tcfile for frame 1' \
+        'v2-next-tail|# timecode format v2
+0
+40junk|invalid input tcfile for frame 1' \
         'v2-next-space|# timecode format v2
 0
  40|invalid input tcfile for frame 1'
@@ -3089,10 +3946,10 @@ assume 25
         printf '%s\n' '# timecode format v2'
         printf '%s\n' '0'
     } > "$tc_timebase"
-    for bad_timebase in '+1/1000' ' 1/1000' '1/+1000' '1/ 1000'; do
+    for bad_timebase in '+1/1000' ' 1/1000' '1/+1000' '1/ 1000' '1/1000junk' '1x'; do
         rm -f "$tc_bad_timebase_log" "$tc_bad_timebase_out"
         if "$smoke_bin" --demuxer y4m --tcfile-in "$tc_timebase" --timebase "$bad_timebase" --frames 1 --crf 30 -o "$tc_bad_timebase_out" "$y4m" >"$tc_bad_timebase_log" 2>&1; then
-            printf '%s\n' "accepted prefixed tcfile timebase '$bad_timebase': $tc_bad_timebase_out" >&2
+            printf '%s\n' "accepted malformed tcfile timebase '$bad_timebase': $tc_bad_timebase_out" >&2
             exit 1
         fi
         grep -q "invalid argument: timebase" "$tc_bad_timebase_log" ||
@@ -3293,6 +4150,17 @@ assume 25
     write_smoke_y4m_with_header "$y4m_420jpeg" 1 "YUV4MPEG2 W16 H16 F25:1 Ip A1:1 C420jpeg"
     "$smoke_bin" --demuxer y4m --frames 1 --crf 30 -o "$y4m_420jpeg_out" "$y4m_420jpeg" >/dev/null
     [ -s "$y4m_420jpeg_out" ] || { printf '%s\n' "missing Y4M 420jpeg smoke output: $y4m_420jpeg_out (input: $y4m_420jpeg)" >&2; exit 1; }
+    write_smoke_y4m_with_header "$y4m_bad_interlace" 1 "YUV4MPEG2 W16 H16 F25:1 Ipjunk A1:1 C420"
+    rm -f "$y4m_bad_interlace_log" "$y4m_bad_interlace_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --crf 30 -o "$y4m_bad_interlace_out" "$y4m_bad_interlace" >"$y4m_bad_interlace_log" 2>&1; then
+        printf '%s\n' "accepted Y4M interlace trailing junk: $y4m_bad_interlace (output: $y4m_bad_interlace_out)" >&2
+        exit 1
+    fi
+    grep -q "invalid interlace type" "$y4m_bad_interlace_log" ||
+    {
+        printf '%s\n' "missing Y4M interlace parse error in $y4m_bad_interlace_log" >&2
+        exit 1
+    }
     write_smoke_y4m_with_header "$y4m_bad_fps" 1 "YUV4MPEG2 W16 H16 F25:1x Ip A1:1 C420"
     rm -f "$y4m_bad_fps_log" "$y4m_bad_fps_out"
     if "$smoke_bin" --demuxer y4m --frames 1 --crf 30 -o "$y4m_bad_fps_out" "$y4m_bad_fps" >"$y4m_bad_fps_log" 2>&1; then
@@ -3302,6 +4170,28 @@ assume 25
     grep -q "invalid frame rate" "$y4m_bad_fps_log" ||
     {
         printf '%s\n' "missing Y4M frame-rate parse error in $y4m_bad_fps_log" >&2
+        exit 1
+    }
+    write_smoke_y4m_with_header "$y4m_bad_fps_den" 1 "YUV4MPEG2 W16 H16 F25:x Ip A1:1 C420"
+    rm -f "$y4m_bad_fps_den_log" "$y4m_bad_fps_den_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --crf 30 -o "$y4m_bad_fps_den_out" "$y4m_bad_fps_den" >"$y4m_bad_fps_den_log" 2>&1; then
+        printf '%s\n' "accepted Y4M frame-rate bad denominator: $y4m_bad_fps_den (output: $y4m_bad_fps_den_out)" >&2
+        exit 1
+    fi
+    grep -q "invalid frame rate" "$y4m_bad_fps_den_log" ||
+    {
+        printf '%s\n' "missing Y4M frame-rate denominator parse error in $y4m_bad_fps_den_log" >&2
+        exit 1
+    }
+    write_smoke_y4m_with_header "$y4m_bad_aspect_den" 1 "YUV4MPEG2 W16 H16 F25:1 Ip A1:x C420"
+    rm -f "$y4m_bad_aspect_den_log" "$y4m_bad_aspect_den_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --crf 30 -o "$y4m_bad_aspect_den_out" "$y4m_bad_aspect_den" >"$y4m_bad_aspect_den_log" 2>&1; then
+        printf '%s\n' "accepted Y4M pixel-aspect bad denominator: $y4m_bad_aspect_den (output: $y4m_bad_aspect_den_out)" >&2
+        exit 1
+    fi
+    grep -q "invalid pixel aspect" "$y4m_bad_aspect_den_log" ||
+    {
+        printf '%s\n' "missing Y4M pixel-aspect denominator parse error in $y4m_bad_aspect_den_log" >&2
         exit 1
     }
     write_smoke_y4m_with_header "$y4m_bad_csp_suffix" 1 "YUV4MPEG2 W16 H16 F25:1 Ip A1:1 C420junk"
@@ -3389,6 +4279,16 @@ assume 25
     grep -q "empty zone param" "$zone_empty_opt_log" ||
     {
         printf '%s\n' "missing empty zone param parse error in $zone_empty_opt_log" >&2
+        exit 1
+    }
+    rm -f "$zone_second_bad_log" "$zone_second_bad_out"
+    if "$smoke_bin" --demuxer y4m --frames 1 --zones "0,0,b=1,subme=1/1,1,subme=1x" --crf 30 -o "$zone_second_bad_out" "$y4m" >"$zone_second_bad_log" 2>&1; then
+        printf '%s\n' "accepted second invalid zone after private zone param: $zone_second_bad_out" >&2
+        exit 1
+    fi
+    grep -q "invalid zone param" "$zone_second_bad_log" ||
+    {
+        printf '%s\n' "missing second invalid zone param parse error in $zone_second_bad_log" >&2
         exit 1
     }
     rm -f "$device_empty_log" "$device_empty_out"

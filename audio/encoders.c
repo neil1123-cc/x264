@@ -106,13 +106,17 @@ hnd_t x264_audio_encoder_open( const audio_encoder_t *encoder, hnd_t filter_chai
         return NULL;
     struct aenc_t *enc = calloc( 1, sizeof( struct aenc_t ) );
     if( !enc )
+    {
+        x264_af_close( filter_chain );
         return NULL;
+    }
     enc->enc           = encoder;
     enc->handle        = encoder->init( filter_chain, opts );
     enc->filters       = filter_chain;
 
     if( !enc->handle )
     {
+        x264_af_close( filter_chain );
         free( enc );
         return NULL;
     }

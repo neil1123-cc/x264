@@ -287,15 +287,18 @@ if( cond ) \
 
 static int avs_parse_audio_track( const char *trackstr, int *track )
 {
+    int parsed_track;
+
     if( !trackstr || !strcmp( trackstr, "any" ) )
     {
         *track = TRACK_ANY;
         return 0;
     }
 
-    if( x264_otoi_checked( trackstr, track ) || *track < 0 )
+    if( x264_otoi_checked( trackstr, &parsed_track ) || parsed_track < 0 )
         return -1;
 
+    *track = parsed_track;
     return 0;
 }
 

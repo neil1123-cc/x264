@@ -250,9 +250,10 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
     if( !hnd || !hnd->filename_prefix || !hnd->gop_file || !p_param )
         return -1;
 
-    /* Force Annex-B off and no repeat headers for GOP output */
-    p_param->b_annexb = 0;
-    p_param->b_repeat_headers = 0;
+    /* Force Annex-B off and no repeat headers for GOP output. */
+    x264_param_t adjusted_param = *p_param;
+    adjusted_param.b_annexb = 0;
+    adjusted_param.b_repeat_headers = 0;
 
     /* Build options filename */
     char *opt_filename = gop_alloc_prefixed_filename( hnd, ".options" );
@@ -270,27 +271,28 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
         return -1;
     }
 
-    fprintf( opt_file, "b-frames %d\n", p_param->i_bframe );
-    fprintf( opt_file, "b-pyramid %d\n", p_param->i_bframe_pyramid );
-    fprintf( opt_file, "input-timebase-num %d\n", p_param->i_timebase_num );
-    fprintf( opt_file, "input-timebase-den %d\n", p_param->i_timebase_den );
-    fprintf( opt_file, "output-fps-num %d\n", p_param->i_fps_num );
-    fprintf( opt_file, "output-fps-den %d\n", p_param->i_fps_den );
-    fprintf( opt_file, "source-width %d\n", p_param->i_width );
-    fprintf( opt_file, "source-height %d\n", p_param->i_height );
-    fprintf( opt_file, "sar-width %d\n", p_param->vui.i_sar_width );
-    fprintf( opt_file, "sar-height %d\n", p_param->vui.i_sar_height );
-    fprintf( opt_file, "primaries-index %d\n", p_param->vui.i_colorprim );
-    fprintf( opt_file, "transfer-index %d\n", p_param->vui.i_transfer );
+    fprintf( opt_file, "b-frames %d\n", adjusted_param.i_bframe );
+    fprintf( opt_file, "b-pyramid %d\n", adjusted_param.i_bframe_pyramid );
+    fprintf( opt_file, "input-timebase-num %d\n", adjusted_param.i_timebase_num );
+    fprintf( opt_file, "input-timebase-den %d\n", adjusted_param.i_timebase_den );
+    fprintf( opt_file, "output-fps-num %d\n", adjusted_param.i_fps_num );
+    fprintf( opt_file, "output-fps-den %d\n", adjusted_param.i_fps_den );
+    fprintf( opt_file, "source-width %d\n", adjusted_param.i_width );
+    fprintf( opt_file, "source-height %d\n", adjusted_param.i_height );
+    fprintf( opt_file, "sar-width %d\n", adjusted_param.vui.i_sar_width );
+    fprintf( opt_file, "sar-height %d\n", adjusted_param.vui.i_sar_height );
+    fprintf( opt_file, "primaries-index %d\n", adjusted_param.vui.i_colorprim );
+    fprintf( opt_file, "transfer-index %d\n", adjusted_param.vui.i_transfer );
     fprintf( opt_file, "matrix-index %d\n",
-             p_param->vui.i_colmatrix >= 0 ? p_param->vui.i_colmatrix : GOP_ISOM_MATRIX_INDEX_UNSPECIFIED );
+             adjusted_param.vui.i_colmatrix >= 0 ? adjusted_param.vui.i_colmatrix : GOP_ISOM_MATRIX_INDEX_UNSPECIFIED );
     fprintf( opt_file, "full-range %d\n",
-             p_param->vui.b_fullrange >= 0 ? p_param->vui.b_fullrange : 0 );
+             adjusted_param.vui.b_fullrange >= 0 ? adjusted_param.vui.b_fullrange : 0 );
 
     int opt_error = ferror( opt_file );
     opt_error |= fclose( opt_file );
     if( opt_error )
         return -1;
+    *p_param = adjusted_param;
     return 0;
 }
 

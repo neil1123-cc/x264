@@ -115,7 +115,7 @@ static int flv_write_timestamp( flv_buffer *c, int64_t timestamp )
 }
 
 #if HAVE_AUDIO
-static int flv_set_raw_audio_framelen( audio_info_t *info, x264_param_t *p_param )
+static int flv_get_raw_audio_framelen( int *dst, audio_info_t *info, x264_param_t *p_param )
 {
     double framelen;
     if( info->samplerate <= 0 )
@@ -134,7 +134,7 @@ static int flv_set_raw_audio_framelen( audio_info_t *info, x264_param_t *p_param
     }
     if( framelen != framelen || framelen <= 0.0 || framelen > INT_MAX )
         return -1;
-    info->framelen = (int)framelen;
+    *dst = (int)framelen;
     return 0;
 }
 
@@ -162,12 +162,12 @@ static int audio_init( hnd_t handle, hnd_t filters, char *audio_enc, char *audio
     }
     FAIL_IF_ERR( !henc, "flv", "error opening audio encoder\n" );
     flv_hnd_t *p_flv = handle;
-    flv_audio_hnd_t *a_flv = p_flv->a_flv = calloc( 1, sizeof( flv_audio_hnd_t ) );
+    flv_audio_hnd_t *a_flv = calloc( 1, sizeof( flv_audio_hnd_t ) );
     if( !a_flv )
         goto error;
     a_flv->lastdts = INVALID_DTS;
-    audio_info_t *info = a_flv->info = x264_audio_encoder_info( henc );
-    if( info->samplerate <= 0 || info->channels <= 0 || info->chansize < 0 ||
+    audio_info_t *info = x264_audio_encoder_info( henc );
+    if( !info || info->samplerate <= 0 || info->channels <= 0 || info->chansize < 0 ||
         info->framelen < 0 || info->samplesize < 0 || info->extradata_size < 0 ||
         info->timebase.num <= 0 || info->timebase.den <= 0 )
         goto error;
@@ -243,16 +243,25 @@ static int audio_init( hnd_t handle, hnd_t filters, char *audio_enc, char *audio
 
     a_flv->header   = header;
     a_flv->encoder  = henc;
+    a_flv->info     = info;
+    p_flv->a_flv    = a_flv;
 
     return 1;
 
-    error:
+error:
     x264_audio_encoder_close( henc );
-    if( p_flv->a_flv )
-        free( p_flv->a_flv );
-    p_flv->a_flv = NULL;
+    free( a_flv );
 
     return -1;
+}
+
+static void flv_close_audio( flv_hnd_t *p_flv )
+{
+    if( !p_flv || !p_flv->a_flv )
+        return;
+    x264_audio_encoder_close( p_flv->a_flv->encoder );
+    free( p_flv->a_flv );
+    p_flv->a_flv = NULL;
 }
 #endif
 
@@ -280,8 +289,9 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
             ret=0;
 #if HAVE_AUDIO
             ret = audio_init( p_flv, audio_filters, audio_enc, audio_params );
-            FAIL_IF_ERR( ret < 0, "flv", "unable to init audio output\n" );
-            if((ret>=0) && !write_header( c,ret ))
+            if( ret < 0 )
+                x264_cli_log( "flv", X264_LOG_ERROR, "unable to init audio output\n" );
+            else if( !write_header( c,ret ) )
 #else
             if((ret==0) && !write_header( c,ret ))
 #endif								
@@ -300,6 +310,9 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
 #else
             if (ret==0) ret=-1;		
 #endif
+#if HAVE_AUDIO
+            flv_close_audio( p_flv );
+#endif
             fclose( c->fp );
             free( c->data );
             free( c );
@@ -315,6 +328,10 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
 {
     flv_hnd_t *p_flv = handle;
     flv_buffer *c = p_flv->c;
+#if HAVE_AUDIO
+    flv_audio_hnd_t *raw_audio = NULL;
+    int raw_audio_framelen = 0;
+#endif
 
     if( p_param->i_timebase_num <= 0 || p_param->i_timebase_den <= 0 ||
         ( !p_param->b_vfr_input && ( !p_param->i_fps_num || !p_param->i_fps_den ) ) )
@@ -379,8 +396,9 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
         if( a_flv->codecid == FLV_CODECID_RAW )
         {
             // this is slightly inaccurate for some fps and samplerate conbinations
-            if( flv_set_raw_audio_framelen( a_flv->info, p_param ) )
+            if( flv_get_raw_audio_framelen( &raw_audio_framelen, a_flv->info, p_param ) )
                 return -1;
+            raw_audio = a_flv;
         }
     }
 #endif
@@ -400,6 +418,10 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
     p_flv->d_timebase = (double)p_param->i_timebase_num / p_param->i_timebase_den;
     p_flv->b_vfr_input = p_param->b_vfr_input;
     p_flv->i_delay_frames = p_param->i_bframe ? (p_param->i_bframe_pyramid ? 2 : 1) : 0;
+#if HAVE_AUDIO
+    if( raw_audio )
+        raw_audio->info->framelen = raw_audio_framelen;
+#endif
 
     return 0;
 }
@@ -760,8 +782,12 @@ static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest
 #if HAVE_AUDIO
     if( p_flv->a_flv )
     {
-        FAIL_IF_ERR( p_flv->a_flv && write_audio( p_flv, -1, 1 ) < 0, "flv", "error flushing audio\n" );
-        x264_audio_encoder_close( p_flv->a_flv->encoder );
+        if( write_audio( p_flv, -1, 1 ) < 0 )
+        {
+            x264_cli_log( "flv", X264_LOG_ERROR, "error flushing audio\n" );
+            goto error;
+        }
+        flv_close_audio( p_flv );
     }
 #endif
 
@@ -803,8 +829,7 @@ error:
     free( c );
 
 #if HAVE_AUDIO
-    if( p_flv->a_flv )
-        free( p_flv->a_flv );
+    flv_close_audio( p_flv );
 #endif
     free( p_flv );
 

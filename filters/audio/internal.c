@@ -44,34 +44,46 @@ float **x264_af_get_buffer( unsigned channels, unsigned samplecount )
     return samples;
 }
 
-int x264_af_resize_buffer( float **buffer, unsigned channels, unsigned samplecount )
+int x264_af_resize_buffer( float **buffer, unsigned channels, unsigned old_samplecount, unsigned new_samplecount )
 {
-    size_t sample_size;
-    if( samplecount && !channels )
+    size_t old_sample_size;
+    size_t new_sample_size;
+    if( (old_samplecount || new_samplecount) && !channels )
         return -1;
     if( channels && !buffer )
         return -1;
-    if( x264_af_mul_size( samplecount, sizeof(float), &sample_size ) )
+    if( !channels )
+        return 0;
+    if( x264_af_mul_size( old_samplecount, sizeof(float), &old_sample_size ) ||
+        x264_af_mul_size( new_samplecount, sizeof(float), &new_sample_size ) )
+        return -1;
+    float **resized = x264_af_get_buffer( channels, new_samplecount );
+    if( !resized )
         return -1;
     for( unsigned c = 0; c < channels; c++ )
     {
-        if( !sample_size )
+        if( old_sample_size && !buffer[c] )
         {
-            free( buffer[c] );
-            buffer[c] = NULL;
-            continue;
-        }
-        void *p = realloc( buffer[c], sample_size );
-        if( !p )
+            x264_af_free_buffer( resized, channels );
             return -1;
-        buffer[c] = p;
+        }
+        if( old_sample_size && new_sample_size )
+            memcpy( resized[c], buffer[c], X264_MIN( old_sample_size, new_sample_size ) );
     }
+    for( unsigned c = 0; c < channels; c++ )
+    {
+        free( buffer[c] );
+        buffer[c] = resized[c];
+    }
+    free( resized );
     return 0;
 }
 
 int x264_af_resize_fill_buffer( float **buffer, unsigned out_samplecount, unsigned channels, unsigned in_samplecount, float value )
 {
-    if( x264_af_resize_buffer( buffer, channels, out_samplecount ) )
+    if( in_samplecount > out_samplecount )
+        return -1;
+    if( x264_af_resize_buffer( buffer, channels, in_samplecount, out_samplecount ) )
         return -1;
     for( unsigned c = 0; c < channels; c++ )
         for( unsigned s = in_samplecount; s < out_samplecount; s++ )
@@ -129,7 +141,7 @@ int x264_af_cat_buffer( float **buf, unsigned bufsamples, float **in, unsigned i
             if( !in[c] )
                 return -1;
     }
-    if( x264_af_resize_buffer( buf, channels, bufsamples + insamples ) < 0 )
+    if( x264_af_resize_buffer( buf, channels, bufsamples, bufsamples + insamples ) < 0 )
         return -1;
     for( unsigned c = 0; c < channels; c++ )
     {

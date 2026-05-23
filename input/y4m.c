@@ -28,6 +28,15 @@
 #include <errno.h>
 
 #define FAIL_IF_ERROR( cond, ... ) FAIL_IF_ERR( cond, "y4m", __VA_ARGS__ )
+#define FAIL_IF_ERROR_CLEANUP( cond, ... )\
+do\
+{\
+    if( cond )\
+    {\
+        x264_cli_log( "y4m", X264_LOG_ERROR, __VA_ARGS__ );\
+        goto fail;\
+    }\
+} while( 0 )
 
 typedef struct
 {
@@ -71,14 +80,25 @@ static int y4m_is_token_end( int c )
 static int parse_ratio_token( const char *tokstart, uint32_t *num, uint32_t *den )
 {
     char *tokend;
+    uint32_t parsed_num;
+    uint32_t parsed_den;
 
-    if( parse_uint32_token( tokstart, &tokend, num ) || *tokend++ != ':' ||
-        parse_uint32_token( tokend, &tokend, den ) || !y4m_is_token_end( *tokend ) )
+    if( parse_uint32_token( tokstart, &tokend, &parsed_num ) || *tokend++ != ':' ||
+        parse_uint32_token( tokend, &tokend, &parsed_den ) || !y4m_is_token_end( *tokend ) )
         return -1;
 
-    if( !*num && !*den )
+    if( !parsed_num && !parsed_den )
+    {
+        *num = parsed_num;
+        *den = parsed_den;
         return 1;
-    return !*num || !*den ? -1 : 0;
+    }
+    if( !parsed_num || !parsed_den )
+        return -1;
+
+    *num = parsed_num;
+    *den = parsed_den;
+    return 0;
 }
 
 static int parse_depth_suffix( const char *tokstart, int *bit_depth )
@@ -156,15 +176,16 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     if( !h )
         return -1;
 
-    info->vfr = 0;
-    info->num_frames = 0;  /* may be overwritten by XLENGTH extension */
+    video_info_t updated_info = *info;
+    updated_info.vfr = 0;
+    updated_info.num_frames = 0;  /* may be overwritten by XLENGTH extension */
 
     if( !strcmp( psz_filename, "-" ) )
         h->fh = stdin;
     else
         h->fh = x264_fopen(psz_filename, "rb");
     if( h->fh == NULL )
-        return -1;
+        goto fail;
 
     /* Read header */
     for( i = 0; i < Y4M_MAX_HEADER; i++ )
@@ -179,8 +200,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
             break;
         }
     }
-    FAIL_IF_ERROR( strncmp( header, Y4M_MAGIC, sizeof(Y4M_MAGIC)-1 ), "bad sequence header magic\n" );
-    FAIL_IF_ERROR( i == Y4M_MAX_HEADER, "bad sequence header length\n" );
+    FAIL_IF_ERROR_CLEANUP( strncmp( header, Y4M_MAGIC, sizeof(Y4M_MAGIC)-1 ), "bad sequence header magic\n" );
+    FAIL_IF_ERROR_CLEANUP( i == Y4M_MAX_HEADER, "bad sequence header length\n" );
 
     /* Scan properties */
     header_end = &header[i+1]; /* Include space */
@@ -195,18 +216,18 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
             case 'W': /* Width. Required. */
             {
                 uint32_t width;
-                FAIL_IF_ERROR( parse_uint32_token( tokstart, &tokend, &width ) || !y4m_is_token_end( *tokend ) ||
-                               !width || width > MAX_RESOLUTION, "invalid width `%s'\n", tokstart );
-                info->width = (int)width;
+                FAIL_IF_ERROR_CLEANUP( parse_uint32_token( tokstart, &tokend, &width ) || !y4m_is_token_end( *tokend ) ||
+                                       !width || width > MAX_RESOLUTION, "invalid width `%s'\n", tokstart );
+                updated_info.width = (int)width;
                 tokstart=tokend;
                 break;
             }
             case 'H': /* Height. Required. */
             {
                 uint32_t height;
-                FAIL_IF_ERROR( parse_uint32_token( tokstart, &tokend, &height ) || !y4m_is_token_end( *tokend ) ||
-                               !height || height > MAX_RESOLUTION, "invalid height `%s'\n", tokstart );
-                info->height = (int)height;
+                FAIL_IF_ERROR_CLEANUP( parse_uint32_token( tokstart, &tokend, &height ) || !y4m_is_token_end( *tokend ) ||
+                                       !height || height > MAX_RESOLUTION, "invalid height `%s'\n", tokstart );
+                updated_info.height = (int)height;
                 tokstart=tokend;
                 break;
             }
@@ -215,36 +236,42 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
                 tokstart = strchr( tokstart, 0x20 );
                 break;
             case 'I': /* Interlace type */
-                switch( *tokstart++ )
+            {
+                int interlace_type = *tokstart++;
+                FAIL_IF_ERROR_CLEANUP( y4m_is_token_end( interlace_type ) || !y4m_is_token_end( *tokstart ),
+                                       "invalid interlace type `%s'\n", tokstart - 1 );
+                switch( interlace_type )
                 {
                     case 't':
-                        info->interlaced = 1;
-                        info->tff = 1;
+                        updated_info.interlaced = 1;
+                        updated_info.tff = 1;
                         break;
                     case 'b':
-                        info->interlaced = 1;
-                        info->tff = 0;
+                        updated_info.interlaced = 1;
+                        updated_info.tff = 0;
                         break;
                     case 'm':
-                        info->interlaced = 1;
+                        updated_info.interlaced = 1;
                         break;
                     //case '?':
                     //case 'p':
                     default:
                         break;
                 }
+                tokstart = strchr( tokstart, 0x20 );
                 break;
+            }
             case 'F': /* Frame rate - 0:0 if unknown */
             {
                 int ratio = parse_ratio_token( tokstart, &n, &d );
-                FAIL_IF_ERROR( ratio < 0, "invalid frame rate `%s'\n", tokstart );
+                FAIL_IF_ERROR_CLEANUP( ratio < 0, "invalid frame rate `%s'\n", tokstart );
                 if( !ratio )
                 {
                     if( !opt->b_accurate_fps )
                         x264_ntsc_fps( &n, &d );
                     x264_reduce_fraction( &n, &d );
-                    info->fps_num = n;
-                    info->fps_den = d;
+                    updated_info.fps_num = n;
+                    updated_info.fps_den = d;
                 }
                 tokstart = strchr( tokstart, 0x20 );
                 break;
@@ -253,12 +280,12 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
             {
                 /* Don't override the aspect ratio if sar has been explicitly set on the commandline. */
                 int ratio = parse_ratio_token( tokstart, &n, &d );
-                FAIL_IF_ERROR( ratio < 0, "invalid pixel aspect `%s'\n", tokstart );
+                FAIL_IF_ERROR_CLEANUP( ratio < 0, "invalid pixel aspect `%s'\n", tokstart );
                 if( !ratio )
                 {
                     x264_reduce_fraction( &n, &d );
-                    info->sar_width  = n;
-                    info->sar_height = d;
+                    updated_info.sar_width  = n;
+                    updated_info.sar_height = d;
                 }
                 tokstart = strchr( tokstart, 0x20 );
                 break;
@@ -275,20 +302,20 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
                     /* ffmpeg's color range extension */
                     tokstart += 11;
                     if( !strncmp( "FULL", tokstart, 4 ) && y4m_is_token_end( tokstart[4] ) )
-                        info->fullrange = 1;
+                        updated_info.fullrange = 1;
                     else if( !strncmp( "LIMITED", tokstart, 7 ) && y4m_is_token_end( tokstart[7] ) )
-                        info->fullrange = 0;
+                        updated_info.fullrange = 0;
                     else
-                        FAIL_IF_ERROR( 1, "invalid color range `%s'\n", tokstart );
+                        FAIL_IF_ERROR_CLEANUP( 1, "invalid color range `%s'\n", tokstart );
                 }
                 else if( !strncmp( "LENGTH=", tokstart, 7 ) )
                 {
                     /* x265 extension: total frame count for ETA */
                     uint32_t num_frames;
                     tokstart += 7;
-                    FAIL_IF_ERROR( parse_uint32_token( tokstart, &tokend, &num_frames ) || !y4m_is_token_end( *tokend ) ||
-                                   num_frames > INT_MAX, "invalid frame count `%s'\n", tokstart );
-                    info->num_frames = (int)num_frames;
+                    FAIL_IF_ERROR_CLEANUP( parse_uint32_token( tokstart, &tokend, &num_frames ) || !y4m_is_token_end( *tokend ) ||
+                                           num_frames > INT_MAX, "invalid frame count `%s'\n", tokstart );
+                    updated_info.num_frames = (int)num_frames;
                     tokstart = tokend;
                 }
                 tokstart = strchr( tokstart, 0x20 );
@@ -309,30 +336,30 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         h->bit_depth  = 8;
     }
 
-    FAIL_IF_ERROR( colorspace <= X264_CSP_NONE || colorspace >= X264_CSP_MAX, "colorspace unhandled\n" );
-    FAIL_IF_ERROR( h->bit_depth < 8 || h->bit_depth > 16, "unsupported bit depth `%d'\n", h->bit_depth );
+    FAIL_IF_ERROR_CLEANUP( colorspace <= X264_CSP_NONE || colorspace >= X264_CSP_MAX, "colorspace unhandled\n" );
+    FAIL_IF_ERROR_CLEANUP( h->bit_depth < 8 || h->bit_depth > 16, "unsupported bit depth `%d'\n", h->bit_depth );
 
-    info->thread_safe = 1;
-    info->csp         = colorspace;
+    updated_info.thread_safe = 1;
+    updated_info.csp         = colorspace;
 
     if( h->bit_depth > 8 )
 	{
-        info->csp |= X264_CSP_HIGH_DEPTH;
+        updated_info.csp |= X264_CSP_HIGH_DEPTH;
         if( h->bit_depth == opt->x264_bit_depth )
         {
             /* HACK: totally skips depth filter to prevent dither error */
-            info->csp |= X264_CSP_SKIP_DEPTH_FILTER;
+            updated_info.csp |= X264_CSP_SKIP_DEPTH_FILTER;
         }
 	}
 
-    const x264_cli_csp_t *csp = x264_cli_get_csp( info->csp );
+    const x264_cli_csp_t *csp = x264_cli_get_csp( updated_info.csp );
 
     for( i = 0; i < csp->planes; i++ )
     {
-        h->plane_size[i] = x264_cli_pic_plane_size( info->csp, info->width, info->height, i );
+        h->plane_size[i] = x264_cli_pic_plane_size( updated_info.csp, updated_info.width, updated_info.height, i );
         h->frame_size += h->plane_size[i];
         /* x264_cli_pic_plane_size returns the size in bytes, we need the value in pixels from here on */
-        h->plane_size[i] /= x264_cli_csp_depth_factor( info->csp );
+        h->plane_size[i] /= x264_cli_csp_depth_factor( updated_info.csp );
     }
 
     if( x264_is_regular_file( h->fh ) )
@@ -343,7 +370,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         size_t len = 1;
         while( len <= Y4M_MAX_HEADER && fgetc( h->fh ) != '\n' )
             len++;
-        FAIL_IF_ERROR( len > Y4M_MAX_HEADER || len < sizeof(Y4M_FRAME_MAGIC), "bad frame header length\n" );
+        FAIL_IF_ERROR_CLEANUP( len > Y4M_MAX_HEADER || len < sizeof(Y4M_FRAME_MAGIC), "bad frame header length\n" );
         h->frame_header_len = (int)len;
         h->frame_size += (int64_t)len;
 
@@ -351,17 +378,26 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         int64_t i_size = ftell( h->fh );
         fseek( h->fh, init_pos, SEEK_SET );
         int64_t num_frames = (i_size - h->seq_header_len) / h->frame_size;
-        FAIL_IF_ERROR( num_frames > INT_MAX, "too many frames\n" );
-        info->num_frames = (int)num_frames;
-        FAIL_IF_ERROR( !info->num_frames, "empty input file\n" );
+        FAIL_IF_ERROR_CLEANUP( num_frames > INT_MAX, "too many frames\n" );
+        updated_info.num_frames = (int)num_frames;
+        FAIL_IF_ERROR_CLEANUP( !updated_info.num_frames, "empty input file\n" );
 
         /* Attempt to use memory-mapped input frames if possible */
         if( !(h->bit_depth & 7) )
             h->use_mmap = !x264_cli_mmap_init( &h->mmap, h->fh );
     }
 
+    *info = updated_info;
     *p_handle = h;
     return 0;
+
+fail:
+    if( h->use_mmap )
+        x264_cli_mmap_close( &h->mmap );
+    if( h->fh && h->fh != stdin )
+        fclose( h->fh );
+    free( h );
+    return -1;
 }
 
 static int read_frame_internal( cli_pic_t *pic, y4m_hnd_t *h, int bit_depth_uc )

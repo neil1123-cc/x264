@@ -795,8 +795,13 @@ REALIGN_STACK int x264_param_default_preset( x264_param_t *param, const char *pr
 
     if( preset && param_apply_preset( param, preset ) < 0 )
         return -1;
-    if( tune && param_apply_tune( param, tune ) < 0 )
-        return -1;
+    if( tune )
+    {
+        x264_param_t adjusted = *param;
+        if( param_apply_tune( &adjusted, tune ) < 0 )
+            return -1;
+        *param = adjusted;
+    }
     return 0;
 }
 
@@ -1272,6 +1277,10 @@ static int parse_param_int_list( const char *str, int *dst, int count, const cha
     char *end;
     char separator = 0;
 
+    if( count <= 0 )
+        return 0;
+    int parsed[count];
+
     for( int i = 0; i < count; i++ )
     {
         if( i )
@@ -1279,13 +1288,16 @@ static int parse_param_int_list( const char *str, int *dst, int count, const cha
                 str++;
         if( !int_token_starts_valid( str ) )
             return -1;
-        if( parse_int_end_base( str, &end, 10, &dst[i] ) )
+        if( parse_int_end_base( str, &end, 10, &parsed[i] ) )
             return -1;
         if( i == count - 1 )
         {
             while( isspace( (unsigned char)*end ) )
                 end++;
-            return *end ? -1 : 0;
+            if( *end )
+                return -1;
+            memcpy( dst, parsed, count * sizeof(*dst) );
+            return 0;
         }
         if( !separator )
         {
@@ -1374,6 +1386,10 @@ static int parse_param_float_list( const char *str, float *dst, int count, const
     char *end;
     char separator = 0;
 
+    if( count <= 0 )
+        return 0;
+    float parsed[count];
+
     for( int i = 0; i < count; i++ )
     {
         if( i )
@@ -1381,13 +1397,16 @@ static int parse_param_float_list( const char *str, float *dst, int count, const
                 str++;
         if( !float_token_starts_valid( str ) )
             return -1;
-        if( parse_float_end( str, &end, &dst[i] ) )
+        if( parse_float_end( str, &end, &parsed[i] ) )
             return -1;
         if( i == count - 1 )
         {
             while( isspace( (unsigned char)*end ) )
                 end++;
-            return *end ? -1 : 0;
+            if( *end )
+                return -1;
+            memcpy( dst, parsed, count * sizeof(*dst) );
+            return 0;
         }
         if( !separator )
         {
@@ -1419,15 +1438,19 @@ static int parse_uint32_end_base( const char *str, char **end, int base, uint32_
 static int parse_uint32_token( const char *str, int base, uint32_t *dst )
 {
     char *end;
+    uint32_t value;
 
     if( !X264_ISDIGIT( *str ) )
         return -1;
 
-    if( parse_uint32_end_base( str, &end, base, dst ) )
+    if( parse_uint32_end_base( str, &end, base, &value ) )
         return -1;
     while( isspace( (unsigned char)*end ) )
         end++;
-    return *end ? -1 : 0;
+    if( *end )
+        return -1;
+    *dst = value;
+    return 0;
 }
 
 static int parse_int64_end_base( const char *str, char **end, int base, int64_t *dst )
@@ -1446,16 +1469,22 @@ static int parse_int64_end_base( const char *str, char **end, int base, int64_t 
 static int parse_uint32_pair_token( const char *str, char separator, uint32_t *num, uint32_t *den )
 {
     char *end;
+    uint32_t parsed_num;
+    uint32_t parsed_den;
 
     if( !X264_ISDIGIT( *str ) )
         return -1;
-    if( parse_uint32_end_base( str, &end, 10, num ) || *end++ != separator ||
+    if( parse_uint32_end_base( str, &end, 10, &parsed_num ) || *end++ != separator ||
         !X264_ISDIGIT( *end ) ||
-        parse_uint32_end_base( end, &end, 10, den ) )
+        parse_uint32_end_base( end, &end, 10, &parsed_den ) )
         return -1;
     while( isspace( (unsigned char)*end ) )
         end++;
-    return *end ? -1 : 0;
+    if( *end )
+        return -1;
+    *num = parsed_num;
+    *den = parsed_den;
+    return 0;
 }
 
 static int parse_mastering_display( const char *value, x264_param_t *p )
@@ -1576,13 +1605,30 @@ static int atobool_internal( const char *str, int *b_error )
 }
 
 #define atobool(str) ( name_was_bool = 1, atobool_internal( str, &b_error ) )
+#define OPT_BOOL(var) do {\
+    int bool_value = atobool(value);\
+    if( !b_error )\
+        var = bool_value;\
+} while( 0 )
+#define OPT_BOOL_INV(var) do {\
+    int bool_value = atobool(value);\
+    if( !b_error )\
+        var = !bool_value;\
+} while( 0 )
 #define CHECKED_ERROR_PARAM_STRDUP( var, param, src )\
 do {\
-    var = x264_param_strdup( param, src );\
-    if( !var )\
-    {\
+    if( value_was_null )\
         b_error = 1;\
-        errortype = X264_PARAM_ALLOC_FAILED;\
+    else\
+    {\
+        char *param_strdup_value = x264_param_strdup( param, src );\
+        if( !param_strdup_value )\
+        {\
+            b_error = 1;\
+            errortype = X264_PARAM_ALLOC_FAILED;\
+        }\
+        else\
+            var = param_strdup_value;\
     }\
 } while( 0 )
 
@@ -1658,7 +1704,7 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
             b_error |= parse_int_token( value, 0, &p->i_lookahead_threads );
     }
     OPT("sliced-threads")
-        p->b_sliced_threads = atobool(value);
+        OPT_BOOL( p->b_sliced_threads );
     OPT("sync-lookahead")
     {
         if( !strcasecmp(value, "auto") )
@@ -1667,9 +1713,9 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
             b_error |= parse_int_token( value, 0, &p->i_sync_lookahead );
     }
     OPT2("deterministic", "n-deterministic")
-        p->b_deterministic = atobool(value);
+        OPT_BOOL( p->b_deterministic );
     OPT("cpu-independent")
-        p->b_cpu_independent = atobool(value);
+        OPT_BOOL( p->b_cpu_independent );
     OPT2("level", "level-idc")
     {
         if( !strcmp(value, "1b") )
@@ -1689,11 +1735,11 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
         }
     }
     OPT("level-force")
-        p->b_level_force = atobool(value);
+        OPT_BOOL( p->b_level_force );
     OPT("profile-force")
-        p->b_profile_force = atobool(value);
+        OPT_BOOL( p->b_profile_force );
     OPT("bluray-compat")
-        p->b_bluray_compat = atobool(value);
+        OPT_BOOL( p->b_bluray_compat );
     OPT("avcintra-class")
         b_error |= parse_int_token( value, 0, &p->i_avcintra_class );
     OPT("avcintra-flavor")
@@ -1748,8 +1794,8 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
             {
                 p->content_light_level.i_max_cll = cll[0];
                 p->content_light_level.i_max_fall = cll[1];
+                p->content_light_level.b_cll = 1;
             }
-            p->content_light_level.b_cll = !b_error;
         }
         else
             p->content_light_level.b_cll = 0;
@@ -1827,7 +1873,7 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
             p->i_scenecut_threshold = scenecut_threshold;
     }
     OPT("intra-refresh")
-        p->b_intra_refresh = atobool(value);
+        OPT_BOOL( p->b_intra_refresh );
     OPT("bframes")
         b_error |= parse_int_token( value, 0, &p->i_bframe );
     OPT("b-adapt")
@@ -1854,9 +1900,9 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
             p->i_bframe_pyramid = bframe_pyramid;
     }
     OPT("open-gop")
-        p->b_open_gop = atobool(value);
+        OPT_BOOL( p->b_open_gop );
     OPT("nf")
-        p->b_deblocking_filter = !atobool(value);
+        OPT_BOOL_INV( p->b_deblocking_filter );
     OPT2("filter", "deblock")
     {
         int deblock[2];
@@ -1890,20 +1936,28 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
     OPT("slices-max")
         b_error |= parse_int_token( value, 0, &p->i_slice_count_max );
     OPT("cabac")
-        p->b_cabac = atobool(value);
+        OPT_BOOL( p->b_cabac );
     OPT("cabac-idc")
         b_error |= parse_int_token( value, 0, &p->i_cabac_init_idc );
     OPT("interlaced")
-        p->b_interlaced = atobool(value);
+        OPT_BOOL( p->b_interlaced );
     OPT("tff")
-        p->b_interlaced = p->b_tff = atobool(value);
+    {
+        int interlaced = atobool(value);
+        if( !b_error )
+            p->b_interlaced = p->b_tff = interlaced;
+    }
     OPT("bff")
     {
-        p->b_interlaced = atobool(value);
-        p->b_tff = !p->b_interlaced;
+        int interlaced = atobool(value);
+        if( !b_error )
+        {
+            p->b_interlaced = interlaced;
+            p->b_tff = !interlaced;
+        }
     }
     OPT("constrained-intra")
-        p->b_constrained_intra = atobool(value);
+        OPT_BOOL( p->b_constrained_intra );
     OPT("cqm")
     {
         if( !strcmp( value, "flat" ) )
@@ -1933,60 +1987,112 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
     }
     OPT("cqm8")
     {
-        p->i_cqm_preset = X264_CQM_CUSTOM;
-        b_error |= parse_cqm( value, p->cqm_8iy, 64 );
-        b_error |= parse_cqm( value, p->cqm_8py, 64 );
-        b_error |= parse_cqm( value, p->cqm_8ic, 64 );
-        b_error |= parse_cqm( value, p->cqm_8pc, 64 );
+        uint8_t cqm[4][64];
+        b_error |= parse_cqm( value, cqm[0], 64 );
+        b_error |= parse_cqm( value, cqm[1], 64 );
+        b_error |= parse_cqm( value, cqm[2], 64 );
+        b_error |= parse_cqm( value, cqm[3], 64 );
+        if( !b_error )
+        {
+            p->i_cqm_preset = X264_CQM_CUSTOM;
+            memcpy( p->cqm_8iy, cqm[0], sizeof(p->cqm_8iy) );
+            memcpy( p->cqm_8py, cqm[1], sizeof(p->cqm_8py) );
+            memcpy( p->cqm_8ic, cqm[2], sizeof(p->cqm_8ic) );
+            memcpy( p->cqm_8pc, cqm[3], sizeof(p->cqm_8pc) );
+        }
     }
     OPT("cqm4i")
     {
-        p->i_cqm_preset = X264_CQM_CUSTOM;
-        b_error |= parse_cqm( value, p->cqm_4iy, 16 );
-        b_error |= parse_cqm( value, p->cqm_4ic, 16 );
+        uint8_t cqm[2][16];
+        b_error |= parse_cqm( value, cqm[0], 16 );
+        b_error |= parse_cqm( value, cqm[1], 16 );
+        if( !b_error )
+        {
+            p->i_cqm_preset = X264_CQM_CUSTOM;
+            memcpy( p->cqm_4iy, cqm[0], sizeof(p->cqm_4iy) );
+            memcpy( p->cqm_4ic, cqm[1], sizeof(p->cqm_4ic) );
+        }
     }
     OPT("cqm4p")
     {
-        p->i_cqm_preset = X264_CQM_CUSTOM;
-        b_error |= parse_cqm( value, p->cqm_4py, 16 );
-        b_error |= parse_cqm( value, p->cqm_4pc, 16 );
+        uint8_t cqm[2][16];
+        b_error |= parse_cqm( value, cqm[0], 16 );
+        b_error |= parse_cqm( value, cqm[1], 16 );
+        if( !b_error )
+        {
+            p->i_cqm_preset = X264_CQM_CUSTOM;
+            memcpy( p->cqm_4py, cqm[0], sizeof(p->cqm_4py) );
+            memcpy( p->cqm_4pc, cqm[1], sizeof(p->cqm_4pc) );
+        }
     }
     OPT("cqm4iy")
     {
-        p->i_cqm_preset = X264_CQM_CUSTOM;
-        b_error |= parse_cqm( value, p->cqm_4iy, 16 );
+        uint8_t cqm[16];
+        b_error |= parse_cqm( value, cqm, 16 );
+        if( !b_error )
+        {
+            p->i_cqm_preset = X264_CQM_CUSTOM;
+            memcpy( p->cqm_4iy, cqm, sizeof(p->cqm_4iy) );
+        }
     }
     OPT("cqm4ic")
     {
-        p->i_cqm_preset = X264_CQM_CUSTOM;
-        b_error |= parse_cqm( value, p->cqm_4ic, 16 );
+        uint8_t cqm[16];
+        b_error |= parse_cqm( value, cqm, 16 );
+        if( !b_error )
+        {
+            p->i_cqm_preset = X264_CQM_CUSTOM;
+            memcpy( p->cqm_4ic, cqm, sizeof(p->cqm_4ic) );
+        }
     }
     OPT("cqm4py")
     {
-        p->i_cqm_preset = X264_CQM_CUSTOM;
-        b_error |= parse_cqm( value, p->cqm_4py, 16 );
+        uint8_t cqm[16];
+        b_error |= parse_cqm( value, cqm, 16 );
+        if( !b_error )
+        {
+            p->i_cqm_preset = X264_CQM_CUSTOM;
+            memcpy( p->cqm_4py, cqm, sizeof(p->cqm_4py) );
+        }
     }
     OPT("cqm4pc")
     {
-        p->i_cqm_preset = X264_CQM_CUSTOM;
-        b_error |= parse_cqm( value, p->cqm_4pc, 16 );
+        uint8_t cqm[16];
+        b_error |= parse_cqm( value, cqm, 16 );
+        if( !b_error )
+        {
+            p->i_cqm_preset = X264_CQM_CUSTOM;
+            memcpy( p->cqm_4pc, cqm, sizeof(p->cqm_4pc) );
+        }
     }
     OPT("cqm8i")
     {
-        p->i_cqm_preset = X264_CQM_CUSTOM;
-        b_error |= parse_cqm( value, p->cqm_8iy, 64 );
-        b_error |= parse_cqm( value, p->cqm_8ic, 64 );
+        uint8_t cqm[2][64];
+        b_error |= parse_cqm( value, cqm[0], 64 );
+        b_error |= parse_cqm( value, cqm[1], 64 );
+        if( !b_error )
+        {
+            p->i_cqm_preset = X264_CQM_CUSTOM;
+            memcpy( p->cqm_8iy, cqm[0], sizeof(p->cqm_8iy) );
+            memcpy( p->cqm_8ic, cqm[1], sizeof(p->cqm_8ic) );
+        }
     }
     OPT("cqm8p")
     {
-        p->i_cqm_preset = X264_CQM_CUSTOM;
-        b_error |= parse_cqm( value, p->cqm_8py, 64 );
-        b_error |= parse_cqm( value, p->cqm_8pc, 64 );
+        uint8_t cqm[2][64];
+        b_error |= parse_cqm( value, cqm[0], 64 );
+        b_error |= parse_cqm( value, cqm[1], 64 );
+        if( !b_error )
+        {
+            p->i_cqm_preset = X264_CQM_CUSTOM;
+            memcpy( p->cqm_8py, cqm[0], sizeof(p->cqm_8py) );
+            memcpy( p->cqm_8pc, cqm[1], sizeof(p->cqm_8pc) );
+        }
     }
     OPT("log")
         b_error |= parse_int_token( value, 0, &p->i_log_level );
     OPT("log-file")
-        p->psz_log_file = strdup(value);
+        CHECKED_ERROR_PARAM_STRDUP( p->psz_log_file, p, value );
     OPT("log-file-level")
         if( !parse_enum( value, x264_log_level_names, &p->i_log_file_level ) )
             p->i_log_file_level += X264_LOG_NONE;
@@ -1999,9 +2105,9 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
         b_error |= parse_partitions( value, &p->analyse.inter );
     }
     OPT("8x8dct")
-        p->analyse.b_transform_8x8 = atobool(value);
+        OPT_BOOL( p->analyse.b_transform_8x8 );
     OPT2("weightb", "weight-b")
-        p->analyse.b_weighted_bipred = atobool(value);
+        OPT_BOOL( p->analyse.b_weighted_bipred );
     OPT("weightp")
         b_error |= parse_int_token( value, 0, &p->analyse.i_weighted_pred );
     OPT2("direct", "direct-pred")
@@ -2035,17 +2141,17 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
             b_error = 1;
     }
     OPT("psy")
-        p->analyse.b_psy = atobool(value);
+        OPT_BOOL( p->analyse.b_psy );
     OPT("chroma-me")
-        p->analyse.b_chroma_me = atobool(value);
+        OPT_BOOL( p->analyse.b_chroma_me );
     OPT("mixed-refs")
-        p->analyse.b_mixed_references = atobool(value);
+        OPT_BOOL( p->analyse.b_mixed_references );
     OPT("trellis")
         b_error |= parse_int_token( value, 0, &p->analyse.i_trellis );
     OPT("fast-pskip")
-        p->analyse.b_fast_pskip = atobool(value);
+        OPT_BOOL( p->analyse.b_fast_pskip );
     OPT("dct-decimate")
-        p->analyse.b_dct_decimate = atobool(value);
+        OPT_BOOL( p->analyse.b_dct_decimate );
     OPT("deadzone-inter")
         b_error |= parse_int_token( value, 0, &p->analyse.i_luma_deadzone[0] );
     OPT("deadzone-intra")
@@ -2297,13 +2403,28 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
     }
     OPT("stats")
     {
-        CHECKED_ERROR_PARAM_STRDUP( p->rc.psz_stat_in, p, value );
-        CHECKED_ERROR_PARAM_STRDUP( p->rc.psz_stat_out, p, value );
+        if( value_was_null )
+            b_error = 1;
+        else
+        {
+            char *stat_in = x264_param_strdup( p, value );
+            char *stat_out = stat_in ? x264_param_strdup( p, value ) : NULL;
+            if( stat_in && stat_out )
+            {
+                p->rc.psz_stat_in = stat_in;
+                p->rc.psz_stat_out = stat_out;
+            }
+            else
+            {
+                b_error = 1;
+                errortype = X264_PARAM_ALLOC_FAILED;
+            }
+        }
     }
     OPT("qcomp")
         b_error |= parse_float_token( value, &p->rc.f_qcompress );
     OPT("mbtree")
-        p->rc.b_mb_tree = atobool(value);
+        OPT_BOOL( p->rc.b_mb_tree );
     OPT("qblur")
         b_error |= parse_float_token( value, &p->rc.f_qblur );
     OPT2("cplxblur", "cplx-blur")
@@ -2323,11 +2444,11 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
         }
     }
     OPT("psnr")
-        p->analyse.b_psnr = atobool(value);
+        OPT_BOOL( p->analyse.b_psnr );
     OPT("ssim")
-        p->analyse.b_ssim = atobool(value);
+        OPT_BOOL( p->analyse.b_ssim );
     OPT("aud")
-        p->b_aud = atobool(value);
+        OPT_BOOL( p->b_aud );
     OPT("sps-id")
         b_error |= parse_int_token( value, 0, &p->i_sps_id );
     OPT("opts")
@@ -2335,13 +2456,17 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
 #define OPTS_SET( psz_x, prefix, flag )                     \
         if( !strncasecmp( value, prefix, strlen(prefix) ) ) \
         {                                                   \
-            if( p->i_opts_write & flag )                    \
+            char *opts_value = x264_param_strdup( p, value + strlen(prefix) );\
+            if( opts_value )                                \
             {                                               \
-                free(psz_x);                                \
-                psz_x = NULL;                               \
+                psz_x = opts_value;                         \
+                p->i_opts_write |= flag;                    \
             }                                               \
-            psz_x = strdup( value + strlen(prefix) );       \
-            p->i_opts_write |= flag;                        \
+            else                                            \
+            {                                               \
+                b_error = 1;                                \
+                errortype = X264_PARAM_ALLOC_FAILED;        \
+            }                                               \
         }
         OPTS_SET(      p->psz_opts[0], "preinfo:" , X264_OPTS_PREINFO  )
         else OPTS_SET( p->psz_opts[0], "0:"       , X264_OPTS_PREINFO  )
@@ -2365,27 +2490,27 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
 #undef OPTS_SET
     }
     OPT("global-header")
-        p->b_repeat_headers = !atobool(value);
+        OPT_BOOL_INV( p->b_repeat_headers );
     OPT("repeat-headers")
-        p->b_repeat_headers = atobool(value);
+        OPT_BOOL( p->b_repeat_headers );
     OPT("annexb")
-        p->b_annexb = atobool(value);
+        OPT_BOOL( p->b_annexb );
     OPT("force-cfr")
-        p->b_vfr_input = !atobool(value);
+        OPT_BOOL_INV( p->b_vfr_input );
     OPT("nal-hrd")
         b_error |= parse_enum( value, x264_nal_hrd_names, &p->i_nal_hrd );
     OPT("filler")
-        p->rc.b_filler = atobool(value);
+        OPT_BOOL( p->rc.b_filler );
     OPT("pic-struct")
-        p->b_pic_struct = atobool(value);
+        OPT_BOOL( p->b_pic_struct );
     OPT("fake-interlaced")
-        p->b_fake_interlaced = atobool(value);
+        OPT_BOOL( p->b_fake_interlaced );
     OPT("frame-packing")
         b_error |= parse_int_token( value, 0, &p->i_frame_packing );
     OPT("stitchable")
-        p->b_stitchable = atobool(value);
+        OPT_BOOL( p->b_stitchable );
     OPT("opencl")
-        p->b_opencl = atobool( value );
+        OPT_BOOL( p->b_opencl );
     OPT("opencl-clbin")
         CHECKED_ERROR_PARAM_STRDUP( p->psz_clbin_file, p, value );
     OPT("opencl-device")
@@ -2397,6 +2522,8 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
     }
 #undef OPT
 #undef OPT2
+#undef OPT_BOOL
+#undef OPT_BOOL_INV
 #undef atobool
 
     if( name_buf )

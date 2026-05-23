@@ -131,17 +131,19 @@ static int parse_cli_int( const char *arg, int *dst )
 {
     char *end;
     const char *p;
+    int value;
 
-    if( !arg )
+    if( !arg || !dst )
         return -1;
     p = arg;
     if( *p == '-' )
         p++;
     if( *p < '0' || *p > '9' )
         return -1;
-    if( parse_cli_int_end( arg, &end, dst ) || !cli_at_end( end ) )
+    if( parse_cli_int_end( arg, &end, &value ) || !cli_at_end( end ) )
         return -1;
 
+    *dst = value;
     return 0;
 }
 
@@ -180,16 +182,24 @@ static int parse_cli_uint64_end( const char *arg, char **end, uint64_t *dst )
 static int parse_cli_uint64( const char *arg, uint64_t *dst )
 {
     char *end;
+    uint64_t value;
 
-    if( parse_cli_uint64_end( arg, &end, dst ) || !cli_at_end( end ) )
+    if( !dst )
         return -1;
 
+    if( parse_cli_uint64_end( arg, &end, &value ) || !cli_at_end( end ) )
+        return -1;
+
+    *dst = value;
     return 0;
 }
 
 static int parse_cli_uint32( const char *arg, uint32_t *dst )
 {
     uint64_t value;
+
+    if( !dst )
+        return -1;
 
     if( parse_cli_uint64( arg, &value ) || value > UINT32_MAX )
         return -1;
@@ -224,16 +234,24 @@ static int parse_cli_double_end( const char *arg, char **end, double *dst )
 static int parse_cli_double( const char *arg, double *dst )
 {
     char *end;
+    double value;
 
-    if( parse_cli_double_end( arg, &end, dst ) || !cli_at_end( end ) )
+    if( !dst )
         return -1;
 
+    if( parse_cli_double_end( arg, &end, &value ) || !cli_at_end( end ) )
+        return -1;
+
+    *dst = value;
     return 0;
 }
 
 static int parse_cli_float( const char *arg, float *dst )
 {
     double value;
+
+    if( !dst )
+        return -1;
 
     if( parse_cli_double( arg, &value ) || value < -FLT_MAX || value > FLT_MAX )
         return -1;
@@ -250,40 +268,51 @@ static int cli_double_starts_unsigned( const char *arg )
 static int parse_cli_display_size( const char *arg, double *width, double *height )
 {
     char *end;
+    double parsed_width, parsed_height;
 
-    if( !cli_double_starts_unsigned( arg ) )
+    if( !width || !height || !cli_double_starts_unsigned( arg ) )
         return -1;
-    if( parse_cli_double_end( arg, &end, width ) || *end != 'x' ||
+    if( parse_cli_double_end( arg, &end, &parsed_width ) || *end != 'x' ||
         !cli_double_starts_unsigned( end + 1 ) ||
-        parse_cli_double( end + 1, height ) )
+        parse_cli_double( end + 1, &parsed_height ) )
         return -1;
 
+    *width = parsed_width;
+    *height = parsed_height;
     return 0;
 }
 
 static int parse_cli_timebase( const char *arg, uint32_t fallback_num, uint64_t *num, uint64_t *den )
 {
     char *end;
-    uint64_t value;
+    uint64_t value, parsed_num, parsed_den;
+
+    if( !num || !den )
+        return -1;
 
     if( parse_cli_uint64_end( arg, &end, &value ) )
         return -1;
 
     if( *end == '/' )
     {
-        *num = value;
-        if( parse_cli_uint64( end + 1, den ) )
+        parsed_num = value;
+        if( parse_cli_uint64( end + 1, &parsed_den ) )
             return -1;
     }
     else if( cli_at_end( end ) )
     {
-        *num = fallback_num;
-        *den = value;
+        parsed_num = fallback_num;
+        parsed_den = value;
     }
     else
         return -1;
 
-    return *num && *den ? 0 : -1;
+    if( !parsed_num || !parsed_den )
+        return -1;
+
+    *num = parsed_num;
+    *den = parsed_den;
+    return 0;
 }
 
 #if HAVE_FFMS

@@ -110,7 +110,10 @@ static int cli_pic_init_internal( cli_pic_t *pic, int csp, int width, int height
             int64_t size = (int64_t)(height * x264_cli_csps[csp_mask].height[i]) * stride;
             pic->img.plane[i] = x264_malloc( size );
             if( !pic->img.plane[i] )
+            {
+                x264_cli_pic_clean( pic );
                 return -1;
+            }
         }
     }
 

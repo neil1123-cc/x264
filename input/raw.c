@@ -28,6 +28,15 @@
 #include "input.h"
 
 #define FAIL_IF_ERROR( cond, ... ) FAIL_IF_ERR( cond, "raw", __VA_ARGS__ )
+#define FAIL_IF_ERROR_CLEANUP( cond, ... )\
+do\
+{\
+    if( cond )\
+    {\
+        x264_cli_log( "raw", X264_LOG_ERROR, __VA_ARGS__ );\
+        goto fail;\
+    }\
+} while( 0 )
 
 typedef struct
 {
@@ -59,10 +68,15 @@ static int raw_parse_dimension( const char *p, char **end, int *dst )
 
 static int raw_parse_resolution( const char *p, char **end, int *width, int *height )
 {
-    if( raw_parse_dimension( p, end, width ) || **end != 'x' ||
-        raw_parse_dimension( *end + 1, end, height ) )
+    int parsed_width, parsed_height;
+
+    if( !end || !width || !height ||
+        raw_parse_dimension( p, end, &parsed_width ) || **end != 'x' ||
+        raw_parse_dimension( *end + 1, end, &parsed_height ) )
         return -1;
 
+    *width = parsed_width;
+    *height = parsed_height;
     return 0;
 }
 
@@ -71,6 +85,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     raw_hnd_t *h = calloc( 1, sizeof(raw_hnd_t) );
     if( !h )
         return -1;
+
+    video_info_t updated_info = *info;
 
     if( !opt->resolution )
     {
@@ -82,8 +98,8 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
                 int width, height;
                 if( !raw_parse_resolution( p, &end, &width, &height ) )
                 {
-                    info->width = width;
-                    info->height = height;
+                    updated_info.width = width;
+                    updated_info.height = height;
                     break;
                 }
             }
@@ -92,34 +108,36 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     {
         char *end;
         int width, height;
-        FAIL_IF_ERROR( raw_parse_resolution( opt->resolution, &end, &width, &height ) || *end,
-                       "invalid resolution `%s'\n", opt->resolution );
-        info->width = width;
-        info->height = height;
+        FAIL_IF_ERROR_CLEANUP( raw_parse_resolution( opt->resolution, &end, &width, &height ) || *end,
+                               "invalid resolution `%s'\n", opt->resolution );
+        updated_info.width = width;
+        updated_info.height = height;
     }
-    FAIL_IF_ERROR( !info->width || !info->height, "raw input requires a resolution.\n" );
+    FAIL_IF_ERROR_CLEANUP( !updated_info.width || !updated_info.height, "raw input requires a resolution.\n" );
     if( opt->colorspace )
     {
-        for( info->csp = X264_CSP_CLI_MAX-1; info->csp > X264_CSP_NONE; info->csp-- )
+        int csp;
+        for( csp = X264_CSP_CLI_MAX-1; csp > X264_CSP_NONE; csp-- )
         {
-            if( x264_cli_csps[info->csp].name && !strcasecmp( x264_cli_csps[info->csp].name, opt->colorspace ) )
+            if( x264_cli_csps[csp].name && !strcasecmp( x264_cli_csps[csp].name, opt->colorspace ) )
                 break;
         }
-        FAIL_IF_ERROR( info->csp == X264_CSP_NONE, "unsupported colorspace `%s'\n", opt->colorspace );
+        FAIL_IF_ERROR_CLEANUP( csp == X264_CSP_NONE, "unsupported colorspace `%s'\n", opt->colorspace );
+        updated_info.csp = csp;
     }
     else /* default */
-        info->csp = X264_CSP_I420;
+        updated_info.csp = X264_CSP_I420;
 
     h->bit_depth = opt->bit_depth;
 	h->x264_bit_depth = opt->x264_bit_depth;
-    FAIL_IF_ERROR( h->bit_depth < 8 || h->bit_depth > 16, "unsupported bit depth `%d'\n", h->bit_depth );
+    FAIL_IF_ERROR_CLEANUP( h->bit_depth < 8 || h->bit_depth > 16, "unsupported bit depth `%d'\n", h->bit_depth );
     if( h->bit_depth > 8 )
 	{
-        info->csp |= X264_CSP_HIGH_DEPTH;
+        updated_info.csp |= X264_CSP_HIGH_DEPTH;
         if( h->bit_depth == opt->x264_bit_depth )
         {
             /* HACK: totally skips depth filter to prevent dither error */
-            info->csp |= X264_CSP_SKIP_DEPTH_FILTER;
+            updated_info.csp |= X264_CSP_SKIP_DEPTH_FILTER;
         }
 	}
 
@@ -128,19 +146,19 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     else
         h->fh = x264_fopen( psz_filename, "rb" );
     if( h->fh == NULL )
-        return -1;
+        goto fail;
 
-    info->thread_safe = 1;
-    info->num_frames  = 0;
-    info->vfr         = 0;
+    updated_info.thread_safe = 1;
+    updated_info.num_frames  = 0;
+    updated_info.vfr         = 0;
 
-    const x264_cli_csp_t *csp = x264_cli_get_csp( info->csp );
+    const x264_cli_csp_t *csp = x264_cli_get_csp( updated_info.csp );
     for( int i = 0; i < csp->planes; i++ )
     {
-        h->plane_size[i] = x264_cli_pic_plane_size( info->csp, info->width, info->height, i );
+        h->plane_size[i] = x264_cli_pic_plane_size( updated_info.csp, updated_info.width, updated_info.height, i );
         h->frame_size += h->plane_size[i];
         /* x264_cli_pic_plane_size returns the size in bytes, we need the value in pixels from here on */
-        h->plane_size[i] /= x264_cli_csp_depth_factor( info->csp );
+        h->plane_size[i] /= x264_cli_csp_depth_factor( updated_info.csp );
     }
 
     if( x264_is_regular_file( h->fh ) )
@@ -149,17 +167,26 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         int64_t size = ftell( h->fh );
         fseek( h->fh, 0, SEEK_SET );
         int64_t num_frames = size / h->frame_size;
-        FAIL_IF_ERROR( num_frames > INT_MAX, "too many frames\n" );
-        info->num_frames = (int)num_frames;
-        FAIL_IF_ERROR( !info->num_frames, "empty input file\n" );
+        FAIL_IF_ERROR_CLEANUP( num_frames > INT_MAX, "too many frames\n" );
+        updated_info.num_frames = (int)num_frames;
+        FAIL_IF_ERROR_CLEANUP( !updated_info.num_frames, "empty input file\n" );
 
         /* Attempt to use memory-mapped input frames if possible */
         if( !(h->bit_depth & 7) )
             h->use_mmap = !x264_cli_mmap_init( &h->mmap, h->fh );
     }
 
+    *info = updated_info;
     *p_handle = h;
     return 0;
+
+fail:
+    if( h->use_mmap )
+        x264_cli_mmap_close( &h->mmap );
+    if( h->fh && h->fh != stdin )
+        fclose( h->fh );
+    free( h );
+    return -1;
 }
 
 static int read_frame_internal( cli_pic_t *pic, raw_hnd_t *h, int bit_depth_uc )

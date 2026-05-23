@@ -421,11 +421,16 @@ static int cqm_parse_jmlist( x264_t *h, const char *buf, const char *name,
                              uint8_t *cqm, const uint8_t *jvt, int length )
 {
     int i;
+    uint8_t parsed[X264_CQM_8_SIZE];
+
+    if( length <= 0 || length > (int)sizeof(parsed) )
+        return -1;
 
     const char *p = cqm_find_jmlist( buf, name );
     if( !p )
     {
-        memset( cqm, 16, length );
+        memset( parsed, 16, length );
+        memcpy( cqm, parsed, length );
         return 0;
     }
 
@@ -449,7 +454,8 @@ static int cqm_parse_jmlist( x264_t *h, const char *buf, const char *name,
         }
         if( i == 0 && coef == 0 )
         {
-            memcpy( cqm, jvt, length );
+            memcpy( parsed, jvt, length );
+            memcpy( cqm, parsed, length );
             return 0;
         }
         if( coef < 1 || coef > 255 )
@@ -457,7 +463,7 @@ static int cqm_parse_jmlist( x264_t *h, const char *buf, const char *name,
             x264_log( h, X264_LOG_ERROR, "bad coefficient in list '%s'\n", name );
             return -1;
         }
-        cqm[i] = coef;
+        parsed[i] = coef;
         p = end;
     }
 
@@ -467,6 +473,7 @@ static int cqm_parse_jmlist( x264_t *h, const char *buf, const char *name,
         return -1;
     }
 
+    memcpy( cqm, parsed, length );
     return 0;
 }
 
@@ -474,8 +481,14 @@ int x264_cqm_parse_file( x264_t *h, const char *filename )
 {
     char *p;
     int b_error = 0;
-
-    h->param.i_cqm_preset = X264_CQM_CUSTOM;
+    uint8_t cqm_4iy[X264_CQM_4_SIZE];
+    uint8_t cqm_4py[X264_CQM_4_SIZE];
+    uint8_t cqm_4ic[X264_CQM_4_SIZE];
+    uint8_t cqm_4pc[X264_CQM_4_SIZE];
+    uint8_t cqm_8iy[X264_CQM_8_SIZE];
+    uint8_t cqm_8py[X264_CQM_8_SIZE];
+    uint8_t cqm_8ic[X264_CQM_8_SIZE];
+    uint8_t cqm_8pc[X264_CQM_8_SIZE];
 
     char *buf = x264_slurp_file( filename );
     if( !buf )
@@ -487,19 +500,33 @@ int x264_cqm_parse_file( x264_t *h, const char *filename )
     while( (p = strchr( buf, '#' )) != NULL )
         memset( p, ' ', strcspn( p, "\n" ) );
 
-    b_error |= cqm_parse_jmlist( h, buf, "INTRA4X4_LUMA",   h->param.cqm_4iy, x264_cqm_jvt4i, 16 );
-    b_error |= cqm_parse_jmlist( h, buf, "INTER4X4_LUMA",   h->param.cqm_4py, x264_cqm_jvt4p, 16 );
-    b_error |= cqm_parse_jmlist( h, buf, "INTRA4X4_CHROMA", h->param.cqm_4ic, x264_cqm_jvt4i, 16 );
-    b_error |= cqm_parse_jmlist( h, buf, "INTER4X4_CHROMA", h->param.cqm_4pc, x264_cqm_jvt4p, 16 );
-    b_error |= cqm_parse_jmlist( h, buf, "INTRA8X8_LUMA",   h->param.cqm_8iy, x264_cqm_jvt8i, 64 );
-    b_error |= cqm_parse_jmlist( h, buf, "INTER8X8_LUMA",   h->param.cqm_8py, x264_cqm_jvt8p, 64 );
+    b_error |= cqm_parse_jmlist( h, buf, "INTRA4X4_LUMA",   cqm_4iy, x264_cqm_jvt4i, X264_CQM_4_SIZE );
+    b_error |= cqm_parse_jmlist( h, buf, "INTER4X4_LUMA",   cqm_4py, x264_cqm_jvt4p, X264_CQM_4_SIZE );
+    b_error |= cqm_parse_jmlist( h, buf, "INTRA4X4_CHROMA", cqm_4ic, x264_cqm_jvt4i, X264_CQM_4_SIZE );
+    b_error |= cqm_parse_jmlist( h, buf, "INTER4X4_CHROMA", cqm_4pc, x264_cqm_jvt4p, X264_CQM_4_SIZE );
+    b_error |= cqm_parse_jmlist( h, buf, "INTRA8X8_LUMA",   cqm_8iy, x264_cqm_jvt8i, X264_CQM_8_SIZE );
+    b_error |= cqm_parse_jmlist( h, buf, "INTER8X8_LUMA",   cqm_8py, x264_cqm_jvt8p, X264_CQM_8_SIZE );
     if( CHROMA444 )
     {
-        b_error |= cqm_parse_jmlist( h, buf, "INTRA8X8_CHROMA", h->param.cqm_8ic, x264_cqm_jvt8i, 64 );
-        b_error |= cqm_parse_jmlist( h, buf, "INTER8X8_CHROMA", h->param.cqm_8pc, x264_cqm_jvt8p, 64 );
+        b_error |= cqm_parse_jmlist( h, buf, "INTRA8X8_CHROMA", cqm_8ic, x264_cqm_jvt8i, X264_CQM_8_SIZE );
+        b_error |= cqm_parse_jmlist( h, buf, "INTER8X8_CHROMA", cqm_8pc, x264_cqm_jvt8p, X264_CQM_8_SIZE );
     }
 
     x264_free( buf );
-    return b_error;
-}
+    if( b_error )
+        return b_error;
 
+    h->param.i_cqm_preset = X264_CQM_CUSTOM;
+    memcpy( h->param.cqm_4iy, cqm_4iy, sizeof(h->param.cqm_4iy) );
+    memcpy( h->param.cqm_4py, cqm_4py, sizeof(h->param.cqm_4py) );
+    memcpy( h->param.cqm_4ic, cqm_4ic, sizeof(h->param.cqm_4ic) );
+    memcpy( h->param.cqm_4pc, cqm_4pc, sizeof(h->param.cqm_4pc) );
+    memcpy( h->param.cqm_8iy, cqm_8iy, sizeof(h->param.cqm_8iy) );
+    memcpy( h->param.cqm_8py, cqm_8py, sizeof(h->param.cqm_8py) );
+    if( CHROMA444 )
+    {
+        memcpy( h->param.cqm_8ic, cqm_8ic, sizeof(h->param.cqm_8ic) );
+        memcpy( h->param.cqm_8pc, cqm_8pc, sizeof(h->param.cqm_8pc) );
+    }
+    return 0;
+}

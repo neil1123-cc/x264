@@ -76,6 +76,8 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
     if( !h )
         return -1;
     int offsets[MAX_PATTERN_SIZE];
+    int parsed_step_size = 0;
+    int parsed_pattern_len = 0;
     char *tok = opt_string;
     for( int i = 0; ; i++ )
     {
@@ -96,41 +98,43 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
                 x264_cli_log( NAME, X264_LOG_ERROR, "invalid step `%s'\n", tok );
                 goto fail;
             }
-            h->step_size = val;
+            parsed_step_size = val;
         }
         else
         {
-            if( invalid || val < 0 || val >= h->step_size )
+            if( invalid || val < 0 || val >= parsed_step_size )
             {
                 x264_cli_log( NAME, X264_LOG_ERROR, "invalid offset `%s'\n", tok );
                 goto fail;
             }
-            if( h->pattern_len >= MAX_PATTERN_SIZE )
+            if( parsed_pattern_len >= MAX_PATTERN_SIZE )
             {
                 x264_cli_log( NAME, X264_LOG_ERROR, "max pattern size %d reached\n", MAX_PATTERN_SIZE );
                 goto fail;
             }
-            offsets[h->pattern_len++] = val;
+            offsets[parsed_pattern_len++] = val;
         }
         if( !end )
             break;
         tok = end + 1;
     }
-    if( !h->step_size )
+    if( !parsed_step_size )
     {
         x264_cli_log( NAME, X264_LOG_ERROR, "no step size provided\n" );
         goto fail;
     }
-    if( !h->pattern_len )
+    if( !parsed_pattern_len )
     {
         x264_cli_log( NAME, X264_LOG_ERROR, "no offsets supplied\n" );
         goto fail;
     }
 
-    h->pattern = malloc( (size_t)h->pattern_len * sizeof(int) );
+    h->pattern = malloc( (size_t)parsed_pattern_len * sizeof(int) );
     if( !h->pattern )
         goto fail;
-    memcpy( h->pattern, offsets, (size_t)h->pattern_len * sizeof(int) );
+    memcpy( h->pattern, offsets, (size_t)parsed_pattern_len * sizeof(int) );
+    h->step_size = parsed_step_size;
+    h->pattern_len = parsed_pattern_len;
 
     /* determine required cache size to maintain pattern. */
     intptr_t max_rewind = 0;
@@ -188,12 +192,12 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
         }
     }
 
-    if( x264_init_vid_filter( name, handle, filter, info, param, (void*)max_rewind ) )
+    if( x264_init_vid_filter( name, handle, filter, &updated_info, param, (void*)max_rewind ) )
         goto fail;
     *info = updated_info;
 
     h->pts = 0;
-    h->vfr = info->vfr;
+    h->vfr = updated_info.vfr;
     h->prev_filter = *filter;
     h->prev_hnd = *handle;
     *filter = select_every_filter;

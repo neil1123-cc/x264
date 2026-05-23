@@ -92,6 +92,10 @@ static int parse_strengths( const char *opt_string, double *lum_spac, double *ch
                             double *lum_tmp, double *chrom_tmp )
 {
     double strength[4];
+    double parsed_lum_spac;
+    double parsed_chrom_spac;
+    double parsed_lum_tmp;
+    double parsed_chrom_tmp;
     int count = 0;
     const char *arg = opt_string;
     char *end;
@@ -116,59 +120,66 @@ static int parse_strengths( const char *opt_string, double *lum_spac, double *ch
     switch( count )
     {
         case 1:
-            *lum_spac = strength[0];
-            if( *lum_spac )
+            parsed_lum_spac = strength[0];
+            if( parsed_lum_spac )
             {
-                *lum_tmp = PARAM3_DEFAULT * *lum_spac / PARAM1_DEFAULT;
-                *chrom_spac = PARAM2_DEFAULT * *lum_spac / PARAM1_DEFAULT;
-                *chrom_tmp = *lum_tmp * *chrom_spac / *lum_spac;
+                parsed_lum_tmp = PARAM3_DEFAULT * parsed_lum_spac / PARAM1_DEFAULT;
+                parsed_chrom_spac = PARAM2_DEFAULT * parsed_lum_spac / PARAM1_DEFAULT;
+                parsed_chrom_tmp = parsed_lum_tmp * parsed_chrom_spac / parsed_lum_spac;
             }
             else
-                *lum_tmp = *chrom_spac = *chrom_tmp = 0;
+                parsed_lum_tmp = parsed_chrom_spac = parsed_chrom_tmp = 0;
             break;
         case 2:
-            *lum_spac = strength[0];
-            *chrom_spac = strength[1];
-            *lum_tmp = PARAM3_DEFAULT * *lum_spac / PARAM1_DEFAULT;
-            if( !*lum_spac )
+            parsed_lum_spac = strength[0];
+            parsed_chrom_spac = strength[1];
+            parsed_lum_tmp = PARAM3_DEFAULT * parsed_lum_spac / PARAM1_DEFAULT;
+            if( !parsed_lum_spac )
             {
-                if( *chrom_spac )
+                if( parsed_chrom_spac )
                     return -1;
-                *chrom_tmp = 0;
+                parsed_chrom_tmp = 0;
             }
             else
-                *chrom_tmp = *lum_tmp * *chrom_spac / *lum_spac;
+                parsed_chrom_tmp = parsed_lum_tmp * parsed_chrom_spac / parsed_lum_spac;
             break;
         case 3:
-            *lum_spac = strength[0];
-            *chrom_spac = strength[1];
-            *lum_tmp = strength[2];
-            if( !*lum_spac )
+            parsed_lum_spac = strength[0];
+            parsed_chrom_spac = strength[1];
+            parsed_lum_tmp = strength[2];
+            if( !parsed_lum_spac )
             {
-                if( *chrom_spac || *lum_tmp )
+                if( parsed_chrom_spac || parsed_lum_tmp )
                     return -1;
-                *chrom_tmp = 0;
+                parsed_chrom_tmp = 0;
             }
             else
-                *chrom_tmp = *lum_tmp * *chrom_spac / *lum_spac;
+                parsed_chrom_tmp = parsed_lum_tmp * parsed_chrom_spac / parsed_lum_spac;
             break;
         case 4:
-            *lum_spac = strength[0];
-            *chrom_spac = strength[1];
-            *lum_tmp = strength[2];
-            *chrom_tmp = strength[3];
+            parsed_lum_spac = strength[0];
+            parsed_chrom_spac = strength[1];
+            parsed_lum_tmp = strength[2];
+            parsed_chrom_tmp = strength[3];
             break;
         default:
 defaults:
-            *lum_spac = PARAM1_DEFAULT;
-            *lum_tmp = PARAM3_DEFAULT;
-            *chrom_spac = PARAM2_DEFAULT;
-            *chrom_tmp = *lum_tmp * *chrom_spac / *lum_spac;
+            parsed_lum_spac = PARAM1_DEFAULT;
+            parsed_lum_tmp = PARAM3_DEFAULT;
+            parsed_chrom_spac = PARAM2_DEFAULT;
+            parsed_chrom_tmp = parsed_lum_tmp * parsed_chrom_spac / parsed_lum_spac;
             break;
     }
 
-    return !isfinite( *lum_spac ) || !isfinite( *chrom_spac ) ||
-           !isfinite( *lum_tmp ) || !isfinite( *chrom_tmp );
+    if( !isfinite( parsed_lum_spac ) || !isfinite( parsed_chrom_spac ) ||
+        !isfinite( parsed_lum_tmp ) || !isfinite( parsed_chrom_tmp ) )
+        return -1;
+
+    *lum_spac = parsed_lum_spac;
+    *chrom_spac = parsed_chrom_spac;
+    *lum_tmp = parsed_lum_tmp;
+    *chrom_tmp = parsed_chrom_tmp;
+    return 0;
 }
 
 static int init(hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info,

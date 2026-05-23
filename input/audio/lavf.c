@@ -47,15 +47,18 @@ const audio_filter_t audio_filter_lavf;
 
 static int lavf_parse_audio_track( const char *trackstr, int *track )
 {
+    int parsed_track;
+
     if( !trackstr || !strcmp( trackstr, "any" ) )
     {
         *track = TRACK_ANY;
         return 0;
     }
 
-    if( x264_otoi_checked( trackstr, track ) || *track < 0 )
+    if( x264_otoi_checked( trackstr, &parsed_track ) || parsed_track < 0 )
         return -1;
 
+    *track = parsed_track;
     return 0;
 }
 
@@ -194,9 +197,14 @@ static int init( hnd_t *handle, const char *opt_str )
     h->origtb = (timebase_t) { stream_timebase.num, stream_timebase.den };
 
     h->bufsize = DEFAULT_BUFSIZE;
-    h->surplus = h->info.framesize * 3 / 2;
-    assert( h->bufsize > h->surplus * 2 );
+    if( h->info.framesize > (size_t)(INTPTR_MAX / 3 * 2) )
+        goto codecfail;
+    h->surplus = (intptr_t)(h->info.framesize * 3 / 2);
+    if( h->surplus < 0 || h->surplus >= (intptr_t)(( h->bufsize + 1 ) / 2) )
+        goto codecfail;
     h->buffer  = av_malloc( (size_t)h->bufsize );
+    if( !h->buffer )
+        goto codecfail;
 
     if( !buffer_next_frame( h ) )
         goto codecfail;
@@ -209,6 +217,8 @@ codecfail:
 codecnotfound:
     AF_LOG_ERR( h, "no decoder found for track %d\n", h->track );
 fail:
+    if( h && h->buffer )
+        av_free( h->buffer );
     if( h && h->decode_frame )
         av_frame_free( &h->decode_frame );
     if( h && h->ctx )
@@ -241,6 +251,11 @@ static struct AVPacket *next_packet( hnd_t handle )
 {
     lavf_source_t *h = handle;
     AVPacket *pkt = calloc( 1, sizeof( AVPacket ) );
+    if( !pkt )
+    {
+        AF_LOG_ERR( h, "malloc failed\n" );
+        return NULL;
+    }
 
     int ret;
     do
@@ -287,8 +302,13 @@ static hnd_t copy_init( hnd_t filter_chain, const char *opts )
                 fprintf( stderr, "lavf [error]: failed to init aac_adtstoasc bitstream filter!\n" );
                 return NULL;
             }
-            avcodec_parameters_from_context( h->bsfs->par_in, h->ctx );
-            av_bsf_init( h->bsfs );
+            if( avcodec_parameters_from_context( h->bsfs->par_in, h->ctx ) < 0 ||
+                av_bsf_init( h->bsfs ) < 0 )
+            {
+                fprintf( stderr, "lavf [error]: failed to init aac_adtstoasc bitstream filter!\n" );
+                av_bsf_free( &h->bsfs );
+                return NULL;
+            }
             h->out = convert_to_audio_packet( h, h->pkt );
             h->info.extradata = h->ctx->extradata;
             h->info.extradata_size = h->ctx->extradata_size;
@@ -296,19 +316,21 @@ static hnd_t copy_init( hnd_t filter_chain, const char *opts )
         }
         else if( ( h->ctx->codec_id == AV_CODEC_ID_AC3 ) && !h->ctx->extradata )
         {
-            if( h->pkt->size < 0 )
+            if( h->pkt->size <= 0 || !h->pkt->data )
             {
                 fprintf( stderr, "lavf [error]: invalid AC3 packet size!\n" );
                 return NULL;
             }
-            h->ctx->extradata_size = h->pkt->size;
-            h->ctx->extradata = av_malloc( (size_t)h->ctx->extradata_size );
-            if( !h->ctx->extradata )
+            int extradata_size = h->pkt->size;
+            uint8_t *extradata = av_malloc( (size_t)extradata_size );
+            if( !extradata )
             {
                 fprintf( stderr, "lavf [error]: malloc failed!\n" );
                 return NULL;
             }
-            memcpy( h->ctx->extradata, h->pkt->data, (size_t)h->ctx->extradata_size );
+            memcpy( extradata, h->pkt->data, (size_t)extradata_size );
+            h->ctx->extradata_size = extradata_size;
+            h->ctx->extradata = extradata;
             h->out = convert_to_audio_packet( h, h->pkt );
             h->info.extradata = h->ctx->extradata;
             h->info.extradata_size = h->ctx->extradata_size;
@@ -318,6 +340,11 @@ static hnd_t copy_init( hnd_t filter_chain, const char *opts )
             h->out = convert_to_audio_packet( h, h->pkt );
 
         h->pkt = NULL;
+        if( !h->out )
+        {
+            fprintf( stderr, "lavf [error]: failed to convert initial audio packet!\n" );
+            return NULL;
+        }
         return chain;
     }
     fprintf( stderr, "lavf [error]: attempted to enter copy mode with a non-empty filter chain!" ); // as far as CLI users see, lavf isn't a filter
@@ -568,7 +595,11 @@ static int low_decode_audio( lavf_source_t *h, uint8_t *buf, intptr_t buflen )
 static struct AVPacket *decode_next_frame( lavf_source_t *h )
 {
     AVPacket *dst = calloc( 1, sizeof( AVPacket ) );
-    assert( !av_new_packet( dst, AVCODEC_MAX_AUDIO_FRAME_SIZE ) );
+    if( !dst || av_new_packet( dst, AVCODEC_MAX_AUDIO_FRAME_SIZE ) )
+    {
+        free( dst );
+        return NULL;
+    }
 
     int len = 0;
     while( ( len = low_decode_audio( h, dst->data, dst->size ) ) == 0 )
@@ -599,12 +630,20 @@ static int buffer_next_frame( lavf_source_t *h )
     }
     intptr_t dec_size = dec->size;
 
-    if( h->len + dec_size > h->bufsize )
+    if( h->len < 0 || h->len > h->bufsize )
     {
-        memmove( h->buffer, h->buffer + dec_size, (size_t)(h->bufsize - dec_size) );
-        h->len     -= dec_size;
-        h->bytepos += (uint64_t)dec_size;
+        free_avpacket( dec );
+        return 0;
     }
+
+    if( dec_size > h->bufsize - h->len )
+    {
+        intptr_t drop = X264_MIN( h->len, dec_size );
+        memmove( h->buffer, h->buffer + drop, (size_t)(h->len - drop) );
+        h->len     -= drop;
+        h->bytepos += (uint64_t)drop;
+    }
+    assert( dec_size <= h->bufsize - h->len );
     memcpy( h->buffer + h->len, dec->data, (size_t)dec_size );
     h->len += dec_size;
 
@@ -660,7 +699,8 @@ static int64_t fill_buffer_until( lavf_source_t *h, int64_t lastsample )
             break;
         }
     }
-    assert( ret >= 0 );
+    if( ret < 0 )
+        return -1;
     if( h->len < 0 ||
         h->bytepos > (uint64_t)INT64_MAX ||
         h->len > INT64_MAX - (int64_t)h->bytepos )
@@ -716,7 +756,11 @@ static struct audio_packet_t *get_samples( hnd_t handle, int64_t first_sample, i
             prev->flags |= AUDIO_FLAG_EOF;
             return prev;
         }
-        assert( prev->size == expected_size );
+        if( prev->size != expected_size )
+        {
+            x264_af_free_packet( prev );
+            goto fail;
+        }
 
         audio_packet_t *next = get_samples( h, pivot, last_sample );
         if( !next )
@@ -777,7 +821,6 @@ static struct audio_packet_t *get_samples( hnd_t handle, int64_t first_sample, i
         }
         if( start > h->bufsize || pkt->size > h->bufsize - start )
             goto fail;
-        assert( pkt->size <= h->bufsize - start );
         pkt->samples = x264_af_deinterleave2( h->buffer + start, h->samplefmt, pkt->channels, pkt->samplecount );
     }
 

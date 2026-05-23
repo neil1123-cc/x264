@@ -251,20 +251,20 @@ static int handle_opts(int *arg, const x264_cli_csp_t *csp, video_info_t *info, 
     {
         int mod = i&1 ? (csp->mod_height << info->interlaced) : csp->mod_width;
         opt = x264_get_option( optlist[i], opts );
+        int parsed_arg = 0;
         if( opt )
-            FAIL_IF_ERROR( x264_otoi_checked( opt, &arg[i] ),
+            FAIL_IF_ERROR( x264_otoi_checked( opt, &parsed_arg ),
                            "%s pad value '%s' is invalid\n", optlist[i], opt );
-        else
-            arg[i] = 0;
-        FAIL_IF_ERROR( i < 6 && arg[i] < 0,
+        FAIL_IF_ERROR( i < 6 && parsed_arg < 0,
                        "%s pad value '%s' is less than 0\n",
                        optlist[i], x264_otos( opt, "<unset>" ) );
-        FAIL_IF_ERROR( i >= 6 && (arg[i] < 0 || arg[i] > 255),
+        FAIL_IF_ERROR( i >= 6 && (parsed_arg < 0 || parsed_arg > 255),
                        "%s pad color '%s' is outside the 0..255 range\n",
                        optlist[i], x264_otos( opt, "<unset>" ) );
-        FAIL_IF_ERROR( i < 6 && arg[i] % mod,
+        FAIL_IF_ERROR( i < 6 && parsed_arg % mod,
                        "%s pad value '%s' is not a multiple of %d\n",
                        optlist[i], x264_otos( opt, "<unset>" ), mod );
+        arg[i] = parsed_arg;
     }
 	return 0;	
 }

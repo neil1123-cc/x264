@@ -241,19 +241,25 @@ static int parse_resize_ratio_component( const char **arg, uint32_t *dst )
 static int parse_resize_ratio( const char *arg, uint32_t *w, uint32_t *h )
 {
     const char *p = arg;
+    uint32_t parsed_w, parsed_h;
 
-    if( parse_resize_ratio_component( &p, w ) || (*p != ':' && *p != '/') )
+    if( !w || !h || parse_resize_ratio_component( &p, &parsed_w ) || (*p != ':' && *p != '/') )
         return -1;
     p++;
-    if( parse_resize_ratio_component( &p, h ) || *p )
+    if( parse_resize_ratio_component( &p, &parsed_h ) || *p )
         return -1;
 
+    *w = parsed_w;
+    *h = parsed_h;
     return 0;
 }
 
-static int handle_opts( const char * const *optlist, char **opts, video_info_t *info, resizer_hnd_t *h )
+static int handle_opts( const char * const *optlist, char **opts, video_info_t *info, resizer_hnd_t *h,
+                        uint32_t *sar_width, uint32_t *sar_height )
 {
     uint32_t out_sar_w, out_sar_h;
+    int dst_csp = h->dst_csp;
+    frame_prop_t dst = h->dst;
 
     char *str_width  = x264_get_option( optlist[0], opts );
     char *str_height = x264_get_option( optlist[1], opts );
@@ -296,9 +302,9 @@ static int handle_opts( const char * const *optlist, char **opts, video_info_t *
                     break;
             }
         FAIL_IF_ERROR( csp == X264_CSP_NONE, "unsupported colorspace `%s'\n", str_csp );
-        h->dst_csp = csp;
+        dst_csp = csp;
         if( depth == 16 )
-            h->dst_csp |= X264_CSP_HIGH_DEPTH;
+            dst_csp |= X264_CSP_HIGH_DEPTH;
     }
 
     /* if the input sar is currently invalid, set it to 1:1 so it can be used in math */
@@ -331,7 +337,7 @@ static int handle_opts( const char * const *optlist, char **opts, video_info_t *
         else FAIL_IF_ERROR( 1, "invalid fittobox mode `%s'\n", fittobox );
 
         /* maximally fit the new coded resolution to the box */
-        const x264_cli_csp_t *csp = x264_cli_get_csp( h->dst_csp );
+        const x264_cli_csp_t *csp = x264_cli_get_csp( dst_csp );
         double width_units = (double)info->height * in_sar_h * out_sar_w;
         double height_units = (double)info->width * in_sar_w * out_sar_h;
         width = width / csp->mod_width * csp->mod_width;
@@ -368,7 +374,7 @@ static int handle_opts( const char * const *optlist, char **opts, video_info_t *
         }
         else if( str_sar ) /* sar only -> adjust res */
         {
-             const x264_cli_csp_t *csp = x264_cli_get_csp( h->dst_csp );
+             const x264_cli_csp_t *csp = x264_cli_get_csp( dst_csp );
              double width_units = (double)in_sar_h * out_sar_w;
              double height_units = (double)in_sar_w * out_sar_h;
              width  = info->width;
@@ -386,18 +392,21 @@ static int handle_opts( const char * const *optlist, char **opts, video_info_t *
         }
         else /* csp only */
         {
-            h->dst.width  = info->width;
-            h->dst.height = info->height;
+            dst.width  = info->width;
+            dst.height = info->height;
             csp_only = 1;
         }
     }
     if( !csp_only )
     {
-        info->sar_width  = out_sar_w;
-        info->sar_height = out_sar_h;
-        h->dst.width  = width;
-        h->dst.height = height;
+        *sar_width  = out_sar_w;
+        *sar_height = out_sar_h;
+        dst.width  = width;
+        dst.height = height;
     }
+    h->dst_csp = dst_csp;
+    h->dst.width  = dst.width;
+    h->dst.height = dst.height;
     return 0;
 }
 
@@ -475,6 +484,8 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
         return -1;
     }
 
+    uint32_t updated_sar_width = info->sar_width;
+    uint32_t updated_sar_height = info->sar_height;
     h->ctx_flags = convert_method_to_flag( x264_otos( x264_get_option( optlist[5], opts ), "" ) );
 
     if( opts )
@@ -494,7 +505,7 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
         }
         else
         {
-            int err = handle_opts( optlist, opts, info, h );
+            int err = handle_opts( optlist, opts, info, h, &updated_sar_width, &updated_sar_height );
             free( opts );
             if( err )
             {
@@ -588,6 +599,8 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
     info->width     = h->dst.width;
     info->height    = h->dst.height;
     info->fullrange = h->dst.range;
+    info->sar_width  = updated_sar_width;
+    info->sar_height = updated_sar_height;
 
     h->prev_filter = *filter;
     h->prev_hnd = *handle;
@@ -603,7 +616,10 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
     if( !h || !output || frame < 0 || h->prev_filter.get_frame( h->prev_hnd, output, frame ) )
         return -1;
     if( h->variable_input && check_resizer( h, output ) )
+    {
+        h->prev_filter.release_frame( h->prev_hnd, output, frame );
         return -1;
+    }
     h->working = 1;
     if( h->pre_swap_chroma )
         XCHG( uint8_t*, output->img.plane[1], output->img.plane[2] );

@@ -103,26 +103,41 @@ static int audio_init( hnd_t handle, hnd_t filters, char *audio_enc, char *audio
     FAIL_IF_ERR( !henc, "mkv", "error opening audio encoder\n" );
 
     mkv_hnd_t *p_mkv = handle;
-    mkv_audio_hnd_t *a_mkv = p_mkv->a_mkv = calloc( 1, sizeof( mkv_audio_hnd_t ) );
+    mkv_audio_hnd_t *a_mkv = calloc( 1, sizeof( mkv_audio_hnd_t ) );
     if( !a_mkv )
     {
         x264_cli_log( "mkv", X264_LOG_ERROR, "malloc failed!\n" );
         goto error;
     }
 
+    audio_info_t *info = x264_audio_encoder_info( henc );
+    if( !info )
+    {
+        x264_cli_log( "mkv", X264_LOG_ERROR, "invalid audio codec information\n" );
+        goto error;
+    }
+
     a_mkv->lastdts = INVALID_DTS;
     a_mkv->encoder = henc;
-    a_mkv->info    = x264_audio_encoder_info( henc );
+    a_mkv->info    = info;
+    p_mkv->a_mkv   = a_mkv;
 
     return 1;
 
 error:
     x264_audio_encoder_close( henc );
-    if( p_mkv->a_mkv )
-        free( p_mkv->a_mkv );
-    p_mkv->a_mkv = NULL;
+    free( a_mkv );
 
     return -1;
+}
+
+static void mkv_close_audio( mkv_hnd_t *p_mkv )
+{
+    if( !p_mkv || !p_mkv->a_mkv )
+        return;
+    x264_audio_encoder_close( p_mkv->a_mkv->encoder );
+    free( p_mkv->a_mkv );
+    p_mkv->a_mkv = NULL;
 }
 #endif
 
@@ -141,8 +156,14 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
     }
 
 #if HAVE_AUDIO
-    FAIL_IF_ERR( audio_init( p_mkv, audio_filters, audio_enc, audio_params ) < 0,
-                 "mkv", "unable to init audio output\n" );
+    if( audio_init( p_mkv, audio_filters, audio_enc, audio_params ) < 0 )
+    {
+        int64_t last_delta[MK_MAX_TRACKS] = { 0 };
+        x264_cli_log( "mkv", X264_LOG_ERROR, "unable to init audio output\n" );
+        mk_close( p_mkv->w, last_delta );
+        free( p_mkv );
+        return -1;
+    }
 #endif
 
     *p_handle = p_mkv;
@@ -161,26 +182,26 @@ X264_STATIC_ASSERT( ARRAY_ELEMS(stereo_h_div) == STEREO_COUNT, "Matroska stereo 
 
 static int set_video_track( mkv_hnd_t *p_mkv, x264_param_t *p_param )
 {
-    mk_track_t *vtrack = &p_mkv->tracks[1];
-    mk_video_info_t *v = &vtrack->info.v;
+    mk_track_t vtrack = {0};
+    mk_video_info_t *v = &vtrack.info.v;
     int64_t dw, dh;
 
-    vtrack->type = MK_TRACK_VIDEO;
-    vtrack->lacing = MK_LACING_NONE;
-    vtrack->codec_id = "V_MPEG4/ISO/AVC";
-    vtrack->id = p_mkv->i_video_track = p_mkv->i_track_count = 1;
+    vtrack.type = MK_TRACK_VIDEO;
+    vtrack.lacing = MK_LACING_NONE;
+    vtrack.codec_id = "V_MPEG4/ISO/AVC";
+    vtrack.id = 1;
 
     if( !p_param->i_timebase_num || !p_param->i_timebase_den )
         return -1;
 
     if( p_param->i_fps_num > 0 && !p_param->b_vfr_input )
     {
-        if( mkv_default_duration_from_fps( &vtrack->default_frame_duration,
+        if( mkv_default_duration_from_fps( &vtrack.default_frame_duration,
                                            p_param->i_fps_num, p_param->i_fps_den ) )
             return -1;
     }
     else
-        vtrack->default_frame_duration = 0;
+        vtrack.default_frame_duration = 0;
 
     if( p_param->i_width <= 0 || p_param->i_height <= 0 )
         return -1;
@@ -213,6 +234,9 @@ static int set_video_track( mkv_hnd_t *p_mkv, x264_param_t *p_param )
     v->display_width = (unsigned)dw;
     v->display_height = (unsigned)dh;
 
+    p_mkv->tracks[1] = vtrack;
+    p_mkv->i_video_track = 1;
+    p_mkv->i_track_count = 1;
     p_mkv->i_timebase_num = p_param->i_timebase_num;
     p_mkv->i_timebase_den = p_param->i_timebase_den;
 
@@ -231,7 +255,7 @@ static int codec_private_required( const char *codec )
     return 0;
 }
 
-static int set_pcm_audio_framelen( audio_info_t *info, x264_param_t *p_param )
+static int get_pcm_audio_framelen( int *dst, audio_info_t *info, x264_param_t *p_param )
 {
     double framelen;
     if( info->samplerate <= 0 )
@@ -250,7 +274,7 @@ static int set_pcm_audio_framelen( audio_info_t *info, x264_param_t *p_param )
     }
     if( framelen != framelen || framelen <= 0.0 || framelen > INT_MAX )
         return -1;
-    info->framelen = (int)framelen;
+    *dst = (int)framelen;
     return 0;
 }
 
@@ -258,37 +282,41 @@ static int set_audio_track( mkv_hnd_t *p_mkv, x264_param_t *p_param )
 {
     mkv_audio_hnd_t *a_mkv = p_mkv->a_mkv;
     audio_info_t *info = a_mkv->info;
-    mk_track_t *atrack = &p_mkv->tracks[++p_mkv->i_track_count];
-    mk_audio_info_t *a = &atrack->info.a;
+    if( p_mkv->i_track_count >= MK_MAX_TRACKS - 1 )
+        return -1;
+    uint32_t audio_track_id = p_mkv->i_track_count + 1;
+    mk_track_t atrack = {0};
+    mk_audio_info_t *a = &atrack.info.a;
+    int framelen = info->framelen;
 
-    atrack->id = p_mkv->i_audio_track = p_mkv->i_track_count;
-    atrack->type = MK_TRACK_AUDIO;
-    atrack->lacing = MK_LACING_NONE;
+    atrack.id = audio_track_id;
+    atrack.type = MK_TRACK_AUDIO;
+    atrack.lacing = MK_LACING_NONE;
 
     if( !strcmp( info->codec_name, "aac" ) )
-        atrack->codec_id = MK_AUDIO_TAG_AAC;
+        atrack.codec_id = MK_AUDIO_TAG_AAC;
     else if( !strcmp( info->codec_name, "ac3" ) )
-        atrack->codec_id = MK_AUDIO_TAG_AC3;
+        atrack.codec_id = MK_AUDIO_TAG_AC3;
     else if( !strcmp( info->codec_name, "eac3" ) )
-        atrack->codec_id = MK_AUDIO_TAG_EAC3;
+        atrack.codec_id = MK_AUDIO_TAG_EAC3;
     else if( !strcmp( info->codec_name, "dca" ) )
-        atrack->codec_id = MK_AUDIO_TAG_DTS;
+        atrack.codec_id = MK_AUDIO_TAG_DTS;
     else if( !strcmp( info->codec_name, "vorbis" ) )
-        atrack->codec_id = MK_AUDIO_TAG_VORBIS;
+        atrack.codec_id = MK_AUDIO_TAG_VORBIS;
     else if( !strcmp( info->codec_name, "mp3" ) )
-        atrack->codec_id = MK_AUDIO_TAG_MP3;
+        atrack.codec_id = MK_AUDIO_TAG_MP3;
     else if( !strcmp( info->codec_name, "mp2" ) )
-        atrack->codec_id = MK_AUDIO_TAG_MP2;
+        atrack.codec_id = MK_AUDIO_TAG_MP2;
     else if( !strcmp( info->codec_name, "mp1" ) )
-        atrack->codec_id = MK_AUDIO_TAG_MP1;
+        atrack.codec_id = MK_AUDIO_TAG_MP1;
     else if( !strcmp( info->codec_name, "mlp" ) )
-        atrack->codec_id = MK_AUDIO_TAG_MLP;
+        atrack.codec_id = MK_AUDIO_TAG_MLP;
     else if( !strcmp( info->codec_name, "truehd" ) )
-        atrack->codec_id = MK_AUDIO_TAG_TRUEHD;
+        atrack.codec_id = MK_AUDIO_TAG_TRUEHD;
     else if( !strcmp( info->codec_name, "tta" ) )
-        atrack->codec_id = MK_AUDIO_TAG_TTA;
+        atrack.codec_id = MK_AUDIO_TAG_TTA;
     else if( !strcmp( info->codec_name, "raw" ) )
-        atrack->codec_id = MK_AUDIO_TAG_PCM_LE;
+        atrack.codec_id = MK_AUDIO_TAG_PCM_LE;
     else
     {
         x264_cli_log( "mkv", X264_LOG_ERROR, "unsupported audio codec\n" );
@@ -302,7 +330,7 @@ static int set_audio_track( mkv_hnd_t *p_mkv, x264_param_t *p_param )
     a->samplerate            = info->samplerate;
     a->channels              = info->channels;
 
-    if( !strcmp( atrack->codec_id, MK_AUDIO_TAG_AAC ) )
+    if( !strcmp( atrack.codec_id, MK_AUDIO_TAG_AAC ) )
     {
         audio_aac_info_t *aacinfo = info->opaque;
         if( aacinfo && aacinfo->has_sbr )
@@ -312,35 +340,40 @@ static int set_audio_track( mkv_hnd_t *p_mkv, x264_param_t *p_param )
         }
     }
 
-    if( !strcmp( atrack->codec_id, MK_AUDIO_TAG_PCM_LE ) )
+    if( !strcmp( atrack.codec_id, MK_AUDIO_TAG_PCM_LE ) )
     {
         if( info->chansize > INT_MAX / 8 )
             return -1;
         a->bit_depth         = info->chansize * 8;
 
         // this is slightly inaccurate for some fps and samplerate conbinations
-        if( set_pcm_audio_framelen( info, p_param ) )
+        if( get_pcm_audio_framelen( &framelen, info, p_param ) )
             return -1;
     }
 
-    atrack->default_frame_duration = x264_from_timebase( info->framelen, info->timebase, MKV_NANOSECONDS );
-    if( info->framelen > 0 &&
-        (atrack->default_frame_duration <= 0 || atrack->default_frame_duration == INT64_MAX) )
+    atrack.default_frame_duration = x264_from_timebase( framelen, info->timebase, MKV_NANOSECONDS );
+    if( framelen > 0 &&
+        (atrack.default_frame_duration <= 0 || atrack.default_frame_duration == INT64_MAX) )
         return -1;
 
-    if( codec_private_required( atrack->codec_id ) )
+    if( codec_private_required( atrack.codec_id ) )
     {
         if( info->extradata_size <= 0 || !info->extradata )
         {
             x264_cli_log( "mkv", X264_LOG_ERROR, "no extradata found!\n" );
             return -1;
         }
-        atrack->codec_private_size = (unsigned)info->extradata_size;
-        atrack->codec_private = malloc( (size_t)info->extradata_size );
-        if( !atrack->codec_private )
+        atrack.codec_private_size = (unsigned)info->extradata_size;
+        atrack.codec_private = malloc( (size_t)info->extradata_size );
+        if( !atrack.codec_private )
             return -1;
-        memcpy( atrack->codec_private, info->extradata, (size_t)info->extradata_size );
+        memcpy( atrack.codec_private, info->extradata, (size_t)info->extradata_size );
     }
+
+    p_mkv->tracks[audio_track_id] = atrack;
+    p_mkv->i_audio_track = audio_track_id;
+    p_mkv->i_track_count = audio_track_id;
+    info->framelen = framelen;
 
     return 0;
 }
@@ -553,11 +586,18 @@ static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest
     if( p_mkv->a_mkv )
     {
         mkv_audio_hnd_t *a_mkv = p_mkv->a_mkv;
-        FAIL_IF_ERR( a_mkv && write_audio( p_mkv, -1, 1 ) < 0, "mkv", "error flushing audio\n" );
-        i_last_delta[p_mkv->i_audio_track] = x264_from_timebase( a_mkv->info->last_delta, a_mkv->info->timebase, MKV_NANOSECONDS );
-        if( i_last_delta[p_mkv->i_audio_track] < 0 || i_last_delta[p_mkv->i_audio_track] == INT64_MAX )
+        if( write_audio( p_mkv, -1, 1 ) < 0 )
+        {
+            x264_cli_log( "mkv", X264_LOG_ERROR, "error flushing audio\n" );
             ret = -1;
-        x264_audio_encoder_close( p_mkv->a_mkv->encoder );
+        }
+        else
+        {
+            i_last_delta[p_mkv->i_audio_track] = x264_from_timebase( a_mkv->info->last_delta, a_mkv->info->timebase, MKV_NANOSECONDS );
+            if( i_last_delta[p_mkv->i_audio_track] < 0 || i_last_delta[p_mkv->i_audio_track] == INT64_MAX )
+                ret = -1;
+        }
+        mkv_close_audio( p_mkv );
     }
 #endif
 
@@ -565,8 +605,7 @@ static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest
         ret = -1;
 
 #if HAVE_AUDIO
-    if( p_mkv->a_mkv )
-        free( p_mkv->a_mkv );
+    mkv_close_audio( p_mkv );
 #endif
 
     int i;

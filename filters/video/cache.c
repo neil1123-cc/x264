@@ -152,9 +152,14 @@ static void fill_cache( cache_hnd_t *h, int frame )
         cli_pic_t temp;
         /* the old front frame is going to shift off, overwrite it with the new frame */
         cli_pic_t *cache = h->cache[0];
-        if( h->prev_filter.get_frame( h->prev_hnd, &temp, cur_frame ) ||
-            x264_cli_pic_copy( cache, &temp ) ||
-            h->prev_filter.release_frame( h->prev_hnd, &temp, cur_frame ) )
+        if( h->prev_filter.get_frame( h->prev_hnd, &temp, cur_frame ) )
+        {
+            h->eof = cur_frame;
+            return;
+        }
+        int copy_failed = x264_cli_pic_copy( cache, &temp );
+        int release_failed = h->prev_filter.release_frame( h->prev_hnd, &temp, cur_frame );
+        if( copy_failed || release_failed )
         {
             h->eof = cur_frame;
             return;

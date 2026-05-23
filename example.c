@@ -76,11 +76,16 @@ static int parse_example_dimension( const char **arg, int *dst )
 
 static int parse_example_resolution( const char *arg, int *width, int *height )
 {
-    if( parse_example_dimension( &arg, width ) || *arg++ != 'x' ||
-        parse_example_dimension( &arg, height ) || *example_skip_space( arg ) ||
-        *width > INT_MAX / *height )
+    int parsed_width;
+    int parsed_height;
+
+    if( parse_example_dimension( &arg, &parsed_width ) || *arg++ != 'x' ||
+        parse_example_dimension( &arg, &parsed_height ) || *example_skip_space( arg ) ||
+        parsed_width > INT_MAX / parsed_height )
         return -1;
 
+    *width = parsed_width;
+    *height = parsed_height;
     return 0;
 }
 

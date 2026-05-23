@@ -368,6 +368,9 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     avs_hnd_t *h = calloc( 1, sizeof(avs_hnd_t) );
     if( !h )
         return -1;
+    video_info_t updated_info = *info;
+    int input_range = opt->input_range;
+    int bit_depth = opt->bit_depth;
     FAIL_IF_ERROR_CLEANUP( custom_avs_load_library( h ), "failed to load avisynth\n" );
     h->env = h->func.avs_create_script_environment( AVS_INTERFACE_25 );
     FAIL_IF_ERROR_CLEANUP( !h->env, "failed to create avisynth script environment\n" );
@@ -453,7 +456,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         }
         FAIL_IF_ERROR_CLEANUP( !filter[i], "unable to find source filter to open `%s'\n", psz_filename );
         if( !strcasecmp( filter[i], "HBVFWSource" ) )
-            opt->bit_depth = 16;
+            bit_depth = 16;
     }
 #ifdef _WIN32
     free( ansi_filename );
@@ -465,7 +468,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     const AVS_VideoInfo *vi = h->func.avs_get_video_info( h->clip );
     FAIL_IF_ERROR_CLEANUP( !vi, "failed to read video info\n" );
     FAIL_IF_ERROR_CLEANUP( !avs_has_video( vi ), "`%s' has no video data\n", psz_filename );
-    FAIL_IF_ERROR_CLEANUP( invalid_avs_dimensions( vi->width, vi->height, opt->bit_depth > 8 ),
+    FAIL_IF_ERROR_CLEANUP( invalid_avs_dimensions( vi->width, vi->height, bit_depth > 8 ),
                            "invalid video dimensions (%dx%d)\n", vi->width, vi->height );
     FAIL_IF_ERROR_CLEANUP( vi->num_frames <= 0, "invalid frame count %d\n", vi->num_frames );
     FAIL_IF_ERROR_CLEANUP( !vi->fps_numerator || !vi->fps_denominator,
@@ -490,11 +493,11 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         }
         res = update_clip( h, &vi, tmp, res );
         FAIL_IF_ERROR_CLEANUP( !vi, "failed to read video info\n" );
-        FAIL_IF_ERROR_CLEANUP( invalid_avs_dimensions( vi->width, vi->height, opt->bit_depth > 8 ),
+        FAIL_IF_ERROR_CLEANUP( invalid_avs_dimensions( vi->width, vi->height, bit_depth > 8 ),
                                "invalid video dimensions (%dx%d)\n", vi->width, vi->height );
         FAIL_IF_ERROR_CLEANUP( vi->num_frames <= 0, "invalid frame count %d\n", vi->num_frames );
-        info->interlaced = 1;
-        info->tff = avs_is_tff( vi );
+        updated_info.interlaced = 1;
+        updated_info.tff = avs_is_tff( vi );
     }
 #if !HAVE_SWSCALE
     /* if swscale is not available, convert the CSP if necessary */
@@ -528,9 +531,9 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         {
             FAIL_IF_ERROR_CLEANUP( opt->output_csp < X264_CSP_I444 && (vi->width&1),
                                    "input clip width not divisible by 2 (%dx%d)\n", vi->width, vi->height );
-            FAIL_IF_ERROR_CLEANUP( opt->output_csp == X264_CSP_I420 && info->interlaced && (vi->height&3),
+            FAIL_IF_ERROR_CLEANUP( opt->output_csp == X264_CSP_I420 && updated_info.interlaced && (vi->height&3),
                                    "input clip height not divisible by 4 (%dx%d)\n", vi->width, vi->height );
-            FAIL_IF_ERROR_CLEANUP( (opt->output_csp == X264_CSP_I420 || info->interlaced) && (vi->height&1),
+            FAIL_IF_ERROR_CLEANUP( (opt->output_csp == X264_CSP_I420 || updated_info.interlaced) && (vi->height&1),
                                    "input clip height not divisible by 2 (%dx%d)\n", vi->width, vi->height );
         }
         char conv_func[16];
@@ -544,7 +547,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         arg_name[0] = NULL;
         if( opt->output_csp != X264_CSP_I400 )
         {
-            arg_arr[arg_count] = avs_new_value_bool( info->interlaced );
+            arg_arr[arg_count] = avs_new_value_bool( updated_info.interlaced );
             arg_name[arg_count] = "interlaced";
             arg_count++;
         }
@@ -553,7 +556,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         if( avs_version >= 2.56f && ((opt->output_csp == X264_CSP_RGB && avs_is_yuv( vi )) || (opt->output_csp != X264_CSP_RGB && avs_is_rgb( vi ))) )
         {
             // if converting from yuv, then we specify the matrix for the input, otherwise use the output's.
-            int use_pc_matrix = avs_is_yuv( vi ) ? opt->input_range == RANGE_PC : opt->output_range == RANGE_PC;
+            int use_pc_matrix = avs_is_yuv( vi ) ? input_range == RANGE_PC : opt->output_range == RANGE_PC;
             int matrix_len = snprintf( matrix, sizeof(matrix), "%s%s", use_pc_matrix ? "PC." : "Rec",
                                        ( vi->width > 1024 || vi->height > 576 ) ? "709" : "601" );
             FAIL_IF_ERROR_CLEANUP( matrix_len < 0 || matrix_len >= (int)sizeof(matrix),
@@ -562,7 +565,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
             arg_name[arg_count] = "matrix";
             arg_count++;
             // notification that the input range has changed to the desired one
-            opt->input_range = opt->output_range;
+            input_range = opt->output_range;
         }
         AVS_Value res2 = h->func.avs_invoke( h->env, conv_func, avs_new_value_array( arg_arr, arg_count ), arg_name );
         if( avs_is_error( res2 ) )
@@ -573,12 +576,12 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         }
         res = update_clip( h, &vi, res2, res );
         FAIL_IF_ERROR_CLEANUP( !vi, "failed to read video info\n" );
-        FAIL_IF_ERROR_CLEANUP( invalid_avs_dimensions( vi->width, vi->height, opt->bit_depth > 8 ),
+        FAIL_IF_ERROR_CLEANUP( invalid_avs_dimensions( vi->width, vi->height, bit_depth > 8 ),
                                "invalid video dimensions (%dx%d)\n", vi->width, vi->height );
         FAIL_IF_ERROR_CLEANUP( vi->num_frames <= 0, "invalid frame count %d\n", vi->num_frames );
     }
     /* if swscale is not available, change the range if necessary. This only applies to YUV-based CSPs however */
-    if( avs_is_yuv( vi ) && opt->output_range != RANGE_AUTO && ((opt->input_range == RANGE_PC) != opt->output_range) )
+    if( avs_is_yuv( vi ) && opt->output_range != RANGE_AUTO && ((input_range == RANGE_PC) != opt->output_range) )
     {
         const char *levels = opt->output_range ? "TV->PC" : "PC->TV";
         x264_cli_log( "avs", X264_LOG_WARNING, "performing %s conversion\n", levels );
@@ -595,25 +598,25 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         }
         res = update_clip( h, &vi, res2, res );
         FAIL_IF_ERROR_CLEANUP( !vi, "failed to read video info\n" );
-        FAIL_IF_ERROR_CLEANUP( invalid_avs_dimensions( vi->width, vi->height, opt->bit_depth > 8 ),
+        FAIL_IF_ERROR_CLEANUP( invalid_avs_dimensions( vi->width, vi->height, bit_depth > 8 ),
                                "invalid video dimensions (%dx%d)\n", vi->width, vi->height );
         FAIL_IF_ERROR_CLEANUP( vi->num_frames <= 0, "invalid frame count %d\n", vi->num_frames );
         // notification that the input range has changed to the desired one
-        opt->input_range = opt->output_range;
+        input_range = opt->output_range;
     }
 #endif
-    if( opt->bit_depth > 8 && opt->bit_depth != opt->x264_bit_depth && opt->bit_depth != 16 )
+    if( bit_depth > 8 && bit_depth != opt->x264_bit_depth && bit_depth != 16 )
     {
         AVS_Value arg_arr[] = { res, avs_new_value_int( 0 ), avs_new_value_int( 0 ), avs_new_value_int( 0 ),
                                      avs_new_value_int( 0 ), avs_new_value_int( 0 ),
-                                     avs_new_value_int( opt->bit_depth ), avs_new_value_int( 2 ),
+                                     avs_new_value_int( bit_depth ), avs_new_value_int( 2 ),
                                      avs_new_value_int( opt->x264_bit_depth ), avs_new_value_int( opt->x264_bit_depth > 8 ? 2 : 0 ) };
         const char *arg_name[] = { NULL, "Y", "Cb", "Cr",
                                           "grainY", "grainC",
                                           "input_depth", "input_mode",
                                           "output_depth", "output_mode" };
         AVS_Value res2 = h->func.avs_invoke( h->env, "f3kdb", avs_new_value_array( arg_arr, 10 ), arg_name );
-        x264_cli_log( "avs", X264_LOG_WARNING, "performing bit depth conversion using f3kdb: %d->%d\n", opt->bit_depth, opt->x264_bit_depth );
+        x264_cli_log( "avs", X264_LOG_WARNING, "performing bit depth conversion using f3kdb: %d->%d\n", bit_depth, opt->x264_bit_depth );
         if( avs_is_error( res2 ) )
         {
             x264_cli_log( "avs", X264_LOG_ERROR, "couldn't convert bit depth: %s\n", avs_as_error( res2 ) );
@@ -622,51 +625,51 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         }
         res = update_clip( h, &vi, res2, res );
         FAIL_IF_ERROR_CLEANUP( !vi, "failed to read video info\n" );
-        FAIL_IF_ERROR_CLEANUP( invalid_avs_dimensions( vi->width, vi->height, opt->bit_depth > 8 ),
+        FAIL_IF_ERROR_CLEANUP( invalid_avs_dimensions( vi->width, vi->height, bit_depth > 8 ),
                                "invalid video dimensions (%dx%d)\n", vi->width, vi->height );
         FAIL_IF_ERROR_CLEANUP( vi->num_frames <= 0, "invalid frame count %d\n", vi->num_frames );
         // notification that the input bit depth has changed to the desired one
-        opt->bit_depth = opt->x264_bit_depth;
+        bit_depth = opt->x264_bit_depth;
     }
 
     FAIL_IF_ERROR_CLEANUP( !vi->fps_numerator || !vi->fps_denominator,
                            "invalid framerate/timebase %u/%u\n", vi->fps_numerator, vi->fps_denominator );
 
-    info->width   = vi->width;
-    info->height  = vi->height;
-    info->fps_num = vi->fps_numerator;
-    info->fps_den = vi->fps_denominator;
-    h->num_frames = info->num_frames = vi->num_frames;
-    info->thread_safe = 1;
+    updated_info.width   = vi->width;
+    updated_info.height  = vi->height;
+    updated_info.fps_num = vi->fps_numerator;
+    updated_info.fps_den = vi->fps_denominator;
+    h->num_frames = updated_info.num_frames = vi->num_frames;
+    updated_info.thread_safe = 1;
     if( AVS_IS_RGB64( vi ) )
-        info->csp = X264_CSP_BGRA | X264_CSP_VFLIP | X264_CSP_HIGH_DEPTH;
+        updated_info.csp = X264_CSP_BGRA | X264_CSP_VFLIP | X264_CSP_HIGH_DEPTH;
     else if( avs_is_rgb32( vi ) )
-        info->csp = X264_CSP_BGRA | X264_CSP_VFLIP;
+        updated_info.csp = X264_CSP_BGRA | X264_CSP_VFLIP;
     else if( AVS_IS_RGB48( vi ) )
-        info->csp = X264_CSP_BGR | X264_CSP_VFLIP | X264_CSP_HIGH_DEPTH;
+        updated_info.csp = X264_CSP_BGR | X264_CSP_VFLIP | X264_CSP_HIGH_DEPTH;
     else if( avs_is_rgb24( vi ) )
-        info->csp = X264_CSP_BGR | X264_CSP_VFLIP;
+        updated_info.csp = X264_CSP_BGR | X264_CSP_VFLIP;
     else if( AVS_IS_YUV444P16( vi ) )
-        info->csp = X264_CSP_I444 | X264_CSP_HIGH_DEPTH;
+        updated_info.csp = X264_CSP_I444 | X264_CSP_HIGH_DEPTH;
     else if( AVS_IS_YV24( vi ) )
-        info->csp = X264_CSP_I444;
+        updated_info.csp = X264_CSP_I444;
     else if( AVS_IS_YUV422P16( vi ) )
-        info->csp = X264_CSP_I422 | X264_CSP_HIGH_DEPTH;
+        updated_info.csp = X264_CSP_I422 | X264_CSP_HIGH_DEPTH;
     else if( AVS_IS_YV16( vi ) )
-        info->csp = X264_CSP_I422;
+        updated_info.csp = X264_CSP_I422;
     else if( AVS_IS_YUV420P16( vi ) )
-        info->csp = X264_CSP_I420 | X264_CSP_HIGH_DEPTH;
+        updated_info.csp = X264_CSP_I420 | X264_CSP_HIGH_DEPTH;
     else if( AVS_IS_YV12( vi ) )
-        info->csp = X264_CSP_I420;
+        updated_info.csp = X264_CSP_I420;
     else if( AVS_IS_Y16( vi ) )
-        info->csp = X264_CSP_I400 | X264_CSP_HIGH_DEPTH;
+        updated_info.csp = X264_CSP_I400 | X264_CSP_HIGH_DEPTH;
     else if( AVS_IS_Y8( vi ) )
-        info->csp = X264_CSP_I400;
+        updated_info.csp = X264_CSP_I400;
     else if( avs_is_yuy2( vi ) )
-        info->csp = X264_CSP_YUYV;
+        updated_info.csp = X264_CSP_YUYV;
 #if HAVE_SWSCALE
     else if( AVS_IS_YV411( vi ) )
-        info->csp = AV_PIX_FMT_YUV411P | X264_CSP_OTHER;
+        updated_info.csp = AV_PIX_FMT_YUV411P | X264_CSP_OTHER;
 #endif
     else
     {
@@ -677,25 +680,28 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         goto fail;
     }
     avs_release_value_if_defined( h, &res );
-    info->vfr = 0;
+    updated_info.vfr = 0;
     if( !opt->b_accurate_fps )
-        x264_ntsc_fps( &info->fps_num, &info->fps_den );
+        x264_ntsc_fps( &updated_info.fps_num, &updated_info.fps_den );
 
-    if( opt->bit_depth > 8  && !(info->csp & X264_CSP_HIGH_DEPTH) )
+    if( bit_depth > 8  && !(updated_info.csp & X264_CSP_HIGH_DEPTH) )
     {
-        FAIL_IF_ERROR_CLEANUP( info->width & 3, "avisynth 16bit hack requires that width is at least mod4\n" );
+        FAIL_IF_ERROR_CLEANUP( updated_info.width & 3, "avisynth 16bit hack requires that width is at least mod4\n" );
         x264_cli_log( "avs", X264_LOG_INFO, "avisynth 16bit hack enabled\n" );
-        info->csp |= X264_CSP_HIGH_DEPTH;
-        info->width >>= 1;
-        if( opt->bit_depth == opt->x264_bit_depth )
+        updated_info.csp |= X264_CSP_HIGH_DEPTH;
+        updated_info.width >>= 1;
+        if( bit_depth == opt->x264_bit_depth )
         {
             /* HACK: totally skips depth filter to prevent dither error */
-            info->csp |= X264_CSP_SKIP_DEPTH_FILTER;
+            updated_info.csp |= X264_CSP_SKIP_DEPTH_FILTER;
         }
     }
-    FAIL_IF_ERROR_CLEANUP( invalid_dimensions( info->width, info->height ),
-                           "invalid video dimensions (%dx%d)\n", info->width, info->height );
+    FAIL_IF_ERROR_CLEANUP( invalid_dimensions( updated_info.width, updated_info.height ),
+                           "invalid video dimensions (%dx%d)\n", updated_info.width, updated_info.height );
 
+    *info = updated_info;
+    opt->input_range = input_range;
+    opt->bit_depth = bit_depth;
     *p_handle = h;
     return 0;
 

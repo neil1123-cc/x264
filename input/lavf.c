@@ -41,10 +41,24 @@
 #endif
 
 #define FAIL_IF_ERROR( cond, ... ) FAIL_IF_ERR( cond, "lavf", __VA_ARGS__ )
+#define FAIL_IF_ERROR_CLEANUP( cond, ... )\
+do\
+{\
+    if( cond )\
+    {\
+        x264_cli_log( "lavf", X264_LOG_ERROR, __VA_ARGS__ );\
+        goto fail;\
+    }\
+} while( 0 )
 
 static inline int invalid_dimensions( int width, int height )
 {
     return width <= 0 || height <= 0 || width > MAX_RESOLUTION || height > MAX_RESOLUTION;
+}
+
+static int set_avdict_option( AVDictionary **dict, const char *key, const char *value )
+{
+    return av_dict_set( dict, key, value, 0 ) < 0;
 }
 
 typedef struct
@@ -62,6 +76,8 @@ typedef struct
     int has_audio;
 #endif
 } lavf_hnd_t;
+
+static void lavf_cleanup_handle( lavf_hnd_t *h );
 
 /* handle the deprecated jpeg pixel formats */
 static int handle_jpeg( int csp, int *fullrange )
@@ -189,37 +205,42 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     lavf_hnd_t *h = calloc( 1, sizeof(lavf_hnd_t) );
     if( !h )
         return -1;
+    AVDictionary *options = NULL;
+    AVDictionary *avcodec_opts = NULL;
+    video_info_t updated_info = *info;
     if( !strcmp( psz_filename, "-" ) )
         psz_filename = "pipe:";
 
     h->frame = av_frame_alloc();
     if( !h->frame )
-        return -1;
+        goto fail;
     h->pkt = av_packet_alloc();
     if( !h->pkt )
-        return -1;
+        goto fail;
 
     /* if resolution was passed in, place it and colorspace into options. this allows raw video support */
-    AVDictionary *options = NULL;
     if( opt->resolution )
     {
-        av_dict_set( &options, "video_size", opt->resolution, 0 );
+        FAIL_IF_ERROR_CLEANUP( set_avdict_option( &options, "video_size", opt->resolution ),
+                               "failed to set input options\n" );
         const char *csp = opt->colorspace ? opt->colorspace : av_get_pix_fmt_name( AV_PIX_FMT_YUV420P );
-        av_dict_set( &options, "pixel_format", csp, 0 );
+        FAIL_IF_ERROR_CLEANUP( set_avdict_option( &options, "pixel_format", csp ),
+                               "failed to set input options\n" );
     }
 
     /* specify the input format. this is helpful when lavf fails to guess */
     const AVInputFormat *format = NULL;
     if( opt->format )
-        FAIL_IF_ERROR( !(format = av_find_input_format( opt->format )), "unknown file format: %s\n", opt->format );
+        FAIL_IF_ERROR_CLEANUP( !(format = av_find_input_format( opt->format )), "unknown file format: %s\n", opt->format );
 
-    FAIL_IF_ERROR( avformat_open_input( &h->lavf, psz_filename, format, &options ), "could not open input file\n" );
+    FAIL_IF_ERROR_CLEANUP( avformat_open_input( &h->lavf, psz_filename, format, &options ), "could not open input file\n" );
     if( options )
         av_dict_free( &options );
-    FAIL_IF_ERROR( avformat_find_stream_info( h->lavf, NULL ) < 0, "could not find input stream info\n" );
+    FAIL_IF_ERROR_CLEANUP( avformat_find_stream_info( h->lavf, NULL ) < 0, "could not find input stream info\n" );
 	
 #if HAVE_AUDIO
     h->filename = strdup( psz_filename );
+    FAIL_IF_ERROR_CLEANUP( !h->filename, "malloc failed\n" );
     int j = 0;
     while( j < h->lavf->nb_streams )
         h->has_audio |= !!(h->lavf->streams[j++]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO );
@@ -228,30 +249,30 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     int i = 0;
     while( i < h->lavf->nb_streams && h->lavf->streams[i]->codecpar->codec_type != AVMEDIA_TYPE_VIDEO )
         i++;
-    FAIL_IF_ERROR( i == h->lavf->nb_streams, "could not find video stream\n" );
+    FAIL_IF_ERROR_CLEANUP( i == h->lavf->nb_streams, "could not find video stream\n" );
     h->stream_id       = i;
     h->next_frame      = 0;
     h->lavc            = codec_from_stream( h->lavf->streams[i] );
     if( !h->lavc )
-        return -1;
+        goto fail;
 
     AVStream *s        = h->lavf->streams[i];
-    FAIL_IF_ERROR( s->avg_frame_rate.num < 0 || s->avg_frame_rate.den < 0 ||
-                   s->avg_frame_rate.num > UINT32_MAX || s->avg_frame_rate.den > UINT32_MAX,
-                   "invalid framerate\n" );
-    FAIL_IF_ERROR( s->time_base.num <= 0 || s->time_base.den <= 0 ||
-                   s->time_base.num > UINT32_MAX || s->time_base.den > UINT32_MAX,
-                   "invalid timebase\n" );
-    info->fps_num      = (uint32_t)s->avg_frame_rate.num;
-    info->fps_den      = (uint32_t)s->avg_frame_rate.den;
-    info->timebase_num = (uint32_t)s->time_base.num;
-    info->timebase_den = (uint32_t)s->time_base.den;
+    FAIL_IF_ERROR_CLEANUP( s->avg_frame_rate.num < 0 || s->avg_frame_rate.den < 0 ||
+                           s->avg_frame_rate.num > UINT32_MAX || s->avg_frame_rate.den > UINT32_MAX,
+                           "invalid framerate\n" );
+    FAIL_IF_ERROR_CLEANUP( s->time_base.num <= 0 || s->time_base.den <= 0 ||
+                           s->time_base.num > UINT32_MAX || s->time_base.den > UINT32_MAX,
+                           "invalid timebase\n" );
+    updated_info.fps_num      = (uint32_t)s->avg_frame_rate.num;
+    updated_info.fps_den      = (uint32_t)s->avg_frame_rate.den;
+    updated_info.timebase_num = (uint32_t)s->time_base.num;
+    updated_info.timebase_den = (uint32_t)s->time_base.den;
     /* lavf is thread unsafe as calling av_read_frame invalidates previously read AVPackets */
-    info->thread_safe  = 0;
-    h->vfr_input       = info->vfr;
+    updated_info.thread_safe  = 0;
+    h->vfr_input             = updated_info.vfr;
 
     if( !opt->b_accurate_fps )
-        x264_ntsc_fps( &info->fps_num, &info->fps_den );
+        x264_ntsc_fps( &updated_info.fps_num, &updated_info.fps_den );
 	
     if( opt->demuxer_threads > 1 )
         h->lavc->thread_count = opt->demuxer_threads;
@@ -261,57 +282,58 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         p = avcodec_find_decoder_by_name(opt->lavf_decoder);
     else
         p = avcodec_find_decoder(h->lavc->codec_id);
-    AVDictionary *avcodec_opts = NULL;
-    av_dict_set( &avcodec_opts, "strict", "-2", 0 );
-    FAIL_IF_ERROR( avcodec_open2( h->lavc, p, &avcodec_opts ),
-                   "could not find decoder for video stream\n" );
+    FAIL_IF_ERROR_CLEANUP( !p, "could not find decoder for video stream\n" );
+    FAIL_IF_ERROR_CLEANUP( set_avdict_option( &avcodec_opts, "strict", "-2" ),
+                           "failed to set decoder options\n" );
+    FAIL_IF_ERROR_CLEANUP( avcodec_open2( h->lavc, p, &avcodec_opts ),
+                           "could not find decoder for video stream\n" );
     if( avcodec_opts )
         av_dict_free( &avcodec_opts );
 
     /* prefetch the first frame and set/confirm flags */
     h->first_pic = malloc( sizeof(cli_pic_t) );
-    FAIL_IF_ERROR( !h->first_pic || lavf_input.picture_alloc( h->first_pic, h, X264_CSP_OTHER, info->width, info->height ),
-                   "malloc failed\n" );
-    if( read_frame_internal( h->first_pic, h, 0, info ) )
-        return -1;
+    FAIL_IF_ERROR_CLEANUP( !h->first_pic || lavf_input.picture_alloc( h->first_pic, h, X264_CSP_OTHER, updated_info.width, updated_info.height ),
+                           "malloc failed\n" );
+    if( read_frame_internal( h->first_pic, h, 0, &updated_info ) )
+        goto fail;
 
-    FAIL_IF_ERROR( invalid_dimensions( h->lavc->width, h->lavc->height ),
-                   "invalid video dimensions\n" );
-    info->width      = h->lavc->width;
-    info->height     = h->lavc->height;
-    info->csp        = h->first_pic->img.csp;
-    FAIL_IF_ERROR( s->nb_frames < 0 || s->nb_frames > INT_MAX, "invalid frame count\n" );
-    info->num_frames = s->nb_frames > 0 ? (int)s->nb_frames : 0;
-    if( info->num_frames == 0 && s->duration > 0 && s->avg_frame_rate.den )
+    FAIL_IF_ERROR_CLEANUP( invalid_dimensions( h->lavc->width, h->lavc->height ),
+                           "invalid video dimensions\n" );
+    updated_info.width      = h->lavc->width;
+    updated_info.height     = h->lavc->height;
+    updated_info.csp        = h->first_pic->img.csp;
+    FAIL_IF_ERROR_CLEANUP( s->nb_frames < 0 || s->nb_frames > INT_MAX, "invalid frame count\n" );
+    updated_info.num_frames = s->nb_frames > 0 ? (int)s->nb_frames : 0;
+    if( updated_info.num_frames == 0 && s->duration > 0 && s->avg_frame_rate.den )
     {
         double fps = (double)s->avg_frame_rate.num / s->avg_frame_rate.den;
         double duration_est = (double)s->duration * av_q2d(s->time_base);
         if( isfinite( fps ) && isfinite( duration_est ) && fps > 0 && duration_est > 0 )
         {
             double frame_est = duration_est * fps + 0.5;
-            FAIL_IF_ERROR( !isfinite( frame_est ) || frame_est > INT_MAX,
-                           "too many estimated frames\n" );
-            info->num_frames = (int)frame_est;
+            FAIL_IF_ERROR_CLEANUP( !isfinite( frame_est ) || frame_est > INT_MAX,
+                                   "too many estimated frames\n" );
+            updated_info.num_frames = (int)frame_est;
         }
     }
-    FAIL_IF_ERROR( h->lavc->sample_aspect_ratio.num < 0 || h->lavc->sample_aspect_ratio.den < 0 ||
-                   h->lavc->sample_aspect_ratio.num > UINT32_MAX ||
-                   h->lavc->sample_aspect_ratio.den > UINT32_MAX,
-                   "invalid sample aspect ratio\n" );
-    info->sar_height = (uint32_t)h->lavc->sample_aspect_ratio.den;
-    info->sar_width  = (uint32_t)h->lavc->sample_aspect_ratio.num;
-    info->fullrange |= h->lavc->color_range == AVCOL_RANGE_JPEG;
+    FAIL_IF_ERROR_CLEANUP( h->lavc->sample_aspect_ratio.num < 0 || h->lavc->sample_aspect_ratio.den < 0 ||
+                           h->lavc->sample_aspect_ratio.num > UINT32_MAX ||
+                           h->lavc->sample_aspect_ratio.den > UINT32_MAX,
+                           "invalid sample aspect ratio\n" );
+    updated_info.sar_height = (uint32_t)h->lavc->sample_aspect_ratio.den;
+    updated_info.sar_width  = (uint32_t)h->lavc->sample_aspect_ratio.num;
+    updated_info.fullrange |= h->lavc->color_range == AVCOL_RANGE_JPEG;
 	
     /* -1 = 'unset' (internal) , 2 from lavf|ffms = 'unset' */
     if( h->lavc->colorspace >= 0 && h->lavc->colorspace <= 8 && h->lavc->colorspace != 2 )
-        info->colormatrix = (int)h->lavc->colorspace;
+        updated_info.colormatrix = (int)h->lavc->colorspace;
     else
-        info->colormatrix = -1;
+        updated_info.colormatrix = -1;
 
     /* avisynth stores rgb data vertically flipped. */
     if( !strcasecmp( get_filename_extension( psz_filename ), "avs" ) &&
         (h->lavc->pix_fmt == AV_PIX_FMT_BGRA || h->lavc->pix_fmt == AV_PIX_FMT_BGR24) )
-        info->csp |= X264_CSP_VFLIP;
+        updated_info.csp |= X264_CSP_VFLIP;
 
     /* show video info */
     double duration = s->duration > 0 ? (double)s->duration * av_q2d(s->time_base) : 0;
@@ -331,9 +353,18 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
                   s->time_base.num, s->time_base.den,
                   duration_log / 60 / 60, duration_log / 60 % 60, duration_log - duration_log / 60 * 60 );
 
+    *info = updated_info;
     *p_handle = h;
 
     return 0;
+
+fail:
+    if( avcodec_opts )
+        av_dict_free( &avcodec_opts );
+    if( options )
+        av_dict_free( &options );
+    lavf_cleanup_handle( h );
+    return -1;
 }
 
 static int picture_alloc( cli_pic_t *pic, hnd_t handle, int csp, int width, int height )
@@ -355,9 +386,15 @@ static void picture_clean( cli_pic_t *pic, hnd_t handle )
     memset( pic, 0, sizeof(cli_pic_t) );
 }
 
-static int close_file( hnd_t handle )
+static void lavf_cleanup_handle( lavf_hnd_t *h )
 {
-    lavf_hnd_t *h = handle;
+    if( !h )
+        return;
+    if( h->first_pic )
+    {
+        picture_clean( h->first_pic, h );
+        free( h->first_pic );
+    }
     avcodec_free_context( &h->lavc );
     avformat_close_input( &h->lavf );
     av_packet_free( &h->pkt );
@@ -366,6 +403,11 @@ static int close_file( hnd_t handle )
     free( h->filename );
 #endif
     free( h );
+}
+
+static int close_file( hnd_t handle )
+{
+    lavf_cleanup_handle( handle );
     return 0;
 }
 

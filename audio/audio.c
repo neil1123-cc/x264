@@ -36,6 +36,7 @@ hnd_t x264_audio_open_from_file( const char *preferred_filter_name, const char *
     if( source->init( &h, init_arg ) < 0 || !h )
     {
         x264_cli_log( "audio", X264_LOG_ERROR, "error initializing source filter!\n" );
+        x264_af_close( h );
         free( init_arg );
         return NULL;
     }

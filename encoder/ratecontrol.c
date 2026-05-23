@@ -378,6 +378,7 @@ static int stats_parse_pass2_main( const char *line, const char **end,
 static int stats_parse_ref_list( const char **p, int refcount[16], int *refs )
 {
     const char *s = *p;
+    int parsed_refcount[16];
     int count = 0;
 
     for( ;; )
@@ -391,9 +392,10 @@ static int stats_parse_ref_list( const char **p, int refcount[16], int *refs )
         if( count >= 16 || stats_parse_int_value( &s, &value ) || value < 0 ||
             !isspace( (unsigned char)*s ) )
             return -1;
-        refcount[count++] = value;
+        parsed_refcount[count++] = value;
     }
 
+    memcpy( refcount, parsed_refcount, count * sizeof(*refcount) );
     *refs = count;
     *p = s;
     return 0;
@@ -548,19 +550,21 @@ static int stats_option_matches_int( const char *opts, const char *opt, int valu
     return p && !stats_parse_int_token( p, &i ) && i == value;
 }
 
-#define CMP_OPT_FIRST_PASS( opt, param_val )\
-{\
-    const char *opt_value = stats_find_option( opts, opt );\
-    if( opt_value && stats_parse_int_token( opt_value, &i ) )\
-    {\
-        x264_log( h, X264_LOG_ERROR, opt " specified in stats file not valid\n" );\
-        return -1;\
-    }\
-    if( opt_value && param_val != i )\
-    {\
-        x264_log( h, X264_LOG_ERROR, "different " opt " setting than first pass (%d vs %d)\n", param_val, i );\
-        return -1;\
-    }\
+static int stats_check_first_pass_int( x264_t *h, const char *opts, const char *opt, int param_val )
+{
+    int i;
+    const char *opt_value = stats_find_option( opts, opt );
+    if( opt_value && stats_parse_int_token( opt_value, &i ) )
+    {
+        x264_log( h, X264_LOG_ERROR, "%s specified in stats file not valid\n", opt );
+        return -1;
+    }
+    if( opt_value && param_val != i )
+    {
+        x264_log( h, X264_LOG_ERROR, "different %s setting than first pass (%d vs %d)\n", opt, param_val, i );
+        return -1;
+    }
+    return 0;
 }
 
 /* Terminology:
@@ -1128,6 +1132,54 @@ static void macroblock_tree_rescale_destroy( x264_ratecontrol_t *rc )
     }
 }
 
+static void ratecontrol_init_fail_cleanup( x264_t *h, char *stats_buf )
+{
+    x264_ratecontrol_t *rc = h->rc;
+
+    x264_free( stats_buf );
+    if( !rc )
+        return;
+
+    if( rc->p_stat_file_out )
+        fclose( rc->p_stat_file_out );
+    if( rc->p_mbtree_stat_file_out )
+        fclose( rc->p_mbtree_stat_file_out );
+    if( rc->p_mbtree_stat_file_in )
+        fclose( rc->p_mbtree_stat_file_in );
+
+    x264_free( rc->psz_stat_file_tmpname );
+    x264_free( rc->psz_mbtree_stat_file_tmpname );
+    x264_free( rc->psz_mbtree_stat_file_name );
+    x264_free( rc->pred );
+    x264_free( rc->pred_b_from_p );
+    x264_free( rc->entry );
+    x264_free( rc->entry_out );
+    macroblock_tree_rescale_destroy( rc );
+
+    if( rc->zones )
+    {
+        x264_param_t *default_param = rc->zones[0].param;
+        if( default_param )
+        {
+            x264_param_cleanup( default_param );
+            x264_free( default_param );
+        }
+        for( int i = 1; i < rc->i_zones; i++ )
+        {
+            x264_param_t *param = rc->zones[i].param;
+            if( param && param != default_param && param->param_free )
+            {
+                x264_param_cleanup( param );
+                param->param_free( param );
+            }
+        }
+        x264_free( rc->zones );
+    }
+
+    x264_free( h->rc );
+    h->rc = NULL;
+}
+
 static ALWAYS_INLINE float tapfilter( float *src, int pos, int max, int stride, float *coeff, int filtersize )
 {
     float sum = 0.f;
@@ -1379,7 +1431,8 @@ void x264_ratecontrol_init_reconfigurable( x264_t *h, int b_init )
 
 int x264_ratecontrol_new( x264_t *h )
 {
-    x264_ratecontrol_t *rc;
+    x264_ratecontrol_t *rc = NULL;
+    char *stats_buf = NULL;
 
     x264_emms();
 
@@ -1412,7 +1465,7 @@ int x264_ratecontrol_new( x264_t *h )
     if( h->param.rc.i_rc_method != X264_RC_ABR && h->param.rc.b_stat_read )
     {
         x264_log( h, X264_LOG_ERROR, "CRF/CQP is incompatible with 2pass.\n" );
-        return -1;
+        goto fail;
     }
 
     x264_ratecontrol_init_reconfigurable( h, 1 );
@@ -1430,7 +1483,7 @@ int x264_ratecontrol_new( x264_t *h )
         if( bits_required >= 63 )
         {
             x264_log( h, X264_LOG_ERROR, "HRD with very large timescale and bufsize not supported\n" );
-            return -1;
+            goto fail;
         }
     }
 
@@ -1499,13 +1552,13 @@ int x264_ratecontrol_new( x264_t *h )
     if( parse_zones( h ) < 0 )
     {
         x264_log( h, X264_LOG_ERROR, "failed to parse zones\n" );
-        return -1;
+        goto fail;
     }
 
     /* Load stat file and init 2pass algo */
     if( h->param.rc.b_stat_read )
     {
-        char *p, *stats_in, *stats_buf;
+        char *p, *stats_in;
 
         /* read 1st pass stats */
         assert( h->param.rc.psz_stat_in );
@@ -1513,19 +1566,19 @@ int x264_ratecontrol_new( x264_t *h )
         if( !stats_buf )
         {
             x264_log( h, X264_LOG_ERROR, "ratecontrol_init: can't open stats file\n" );
-            return -1;
+            goto fail;
         }
         if( h->param.rc.b_mb_tree )
         {
             char *mbtree_stats_in = strcat_filename( h->param.rc.psz_stat_in, ".mbtree" );
             if( !mbtree_stats_in )
-                return -1;
+                goto fail;
             rc->p_mbtree_stat_file_in = x264_fopen( mbtree_stats_in, "rb" );
             x264_free( mbtree_stats_in );
             if( !rc->p_mbtree_stat_file_in )
             {
                 x264_log( h, X264_LOG_ERROR, "ratecontrol_init: can't open mbtree stats file\n" );
-                return -1;
+                goto fail;
             }
         }
 
@@ -1533,7 +1586,7 @@ int x264_ratecontrol_new( x264_t *h )
         if( strncmp( stats_buf, "#options:", 9 ) )
         {
             x264_log( h, X264_LOG_ERROR, "options list in stats file not valid\n" );
-            return -1;
+            goto fail;
         }
 
         float res_factor, res_factor_bits;
@@ -1544,13 +1597,13 @@ int x264_ratecontrol_new( x264_t *h )
             const char *stats_opt_value;
             stats_in = strchr( stats_buf, '\n' );
             if( !stats_in )
-                return -1;
+                goto fail;
             *stats_in = '\0';
             stats_in++;
             if( stats_parse_resolution( opts, &i, &j ) )
             {
                 x264_log( h, X264_LOG_ERROR, "resolution specified in stats file not valid\n" );
-                return -1;
+                goto fail;
             }
             else if( h->param.rc.b_mb_tree )
             {
@@ -1565,23 +1618,24 @@ int x264_ratecontrol_new( x264_t *h )
             if( stats_parse_timebase( opts, &k, &l ) )
             {
                 x264_log( h, X264_LOG_ERROR, "timebase specified in stats file not valid\n" );
-                return -1;
+                goto fail;
             }
             if( k != h->param.i_timebase_num || l != h->param.i_timebase_den )
             {
                 x264_log( h, X264_LOG_ERROR, "timebase mismatch with 1st pass (%u/%u vs %u/%u)\n",
                           h->param.i_timebase_num, h->param.i_timebase_den, k, l );
-                return -1;
+                goto fail;
             }
 
-            CMP_OPT_FIRST_PASS( "bitdepth", BIT_DEPTH );
-            CMP_OPT_FIRST_PASS( "weightp", X264_MAX( 0, h->param.analyse.i_weighted_pred ) );
-            CMP_OPT_FIRST_PASS( "bframes", h->param.i_bframe );
-            CMP_OPT_FIRST_PASS( "b_pyramid", h->param.i_bframe_pyramid );
-            CMP_OPT_FIRST_PASS( "intra_refresh", h->param.b_intra_refresh );
-            CMP_OPT_FIRST_PASS( "open_gop", h->param.b_open_gop );
-            CMP_OPT_FIRST_PASS( "bluray_compat", h->param.b_bluray_compat );
-            CMP_OPT_FIRST_PASS( "mbtree", h->param.rc.b_mb_tree );
+            if( stats_check_first_pass_int( h, opts, "bitdepth", BIT_DEPTH ) ||
+                stats_check_first_pass_int( h, opts, "weightp", X264_MAX( 0, h->param.analyse.i_weighted_pred ) ) ||
+                stats_check_first_pass_int( h, opts, "bframes", h->param.i_bframe ) ||
+                stats_check_first_pass_int( h, opts, "b_pyramid", h->param.i_bframe_pyramid ) ||
+                stats_check_first_pass_int( h, opts, "intra_refresh", h->param.b_intra_refresh ) ||
+                stats_check_first_pass_int( h, opts, "open_gop", h->param.b_open_gop ) ||
+                stats_check_first_pass_int( h, opts, "bluray_compat", h->param.b_bluray_compat ) ||
+                stats_check_first_pass_int( h, opts, "mbtree", h->param.rc.b_mb_tree ) )
+                goto fail;
 
             if( stats_find_option( opts, "interlaced" ) )
             {
@@ -1590,12 +1644,12 @@ int x264_ratecontrol_new( x264_t *h )
                 if( stats_copy_option_token( opts, "interlaced", buf, sizeof(buf) ) )
                 {
                     x264_log( h, X264_LOG_ERROR, "interlaced specified in stats file not valid\n" );
-                    return -1;
+                    goto fail;
                 }
                 if( strcmp( current, buf ) )
                 {
                     x264_log( h, X264_LOG_ERROR, "different interlaced setting than first pass (%s vs %s)\n", current, buf );
-                    return -1;
+                    goto fail;
                 }
             }
 
@@ -1604,13 +1658,13 @@ int x264_ratecontrol_new( x264_t *h )
             {
                 char buf[13] = "infinite ";
                 if( h->param.i_keyint_max != X264_KEYINT_MAX_INFINITE && snprintf( buf, sizeof(buf), "%d ", h->param.i_keyint_max ) < 0 )
-                    return -1;
+                    goto fail;
                 size_t keyint_len = strlen( buf );
                 if( strncmp( keyint, buf, keyint_len ) )
                 {
                     x264_log( h, X264_LOG_ERROR, "different keyint setting than first pass (%.*s vs %.*s)\n",
                               (int)keyint_len-1, buf, (int)strcspn(keyint, " "), keyint );
-                    return -1;
+                    goto fail;
                 }
             }
 
@@ -1629,7 +1683,7 @@ int x264_ratecontrol_new( x264_t *h )
             else if( h->param.i_bframe )
             {
                 x264_log( h, X264_LOG_ERROR, "b_adapt method specified in stats file not valid\n" );
-                return -1;
+                goto fail;
             }
 
             if( (h->param.rc.b_mb_tree || h->param.rc.i_vbv_buffer_size) &&
@@ -1638,7 +1692,7 @@ int x264_ratecontrol_new( x264_t *h )
                 if( stats_parse_int_token( stats_opt_value, &i ) || i < 0 )
                 {
                     x264_log( h, X264_LOG_ERROR, "rc_lookahead specified in stats file not valid\n" );
-                    return -1;
+                    goto fail;
                 }
                 h->param.rc.i_lookahead = i;
             }
@@ -1652,7 +1706,7 @@ int x264_ratecontrol_new( x264_t *h )
         if( !num_entries )
         {
             x264_log( h, X264_LOG_ERROR, "empty stats file\n" );
-            return -1;
+            goto fail;
         }
         rc->num_entries = num_entries;
 
@@ -1665,7 +1719,7 @@ int x264_ratecontrol_new( x264_t *h )
         {
             x264_log( h, X264_LOG_ERROR, "2nd pass has more frames than 1st pass (%d vs %d)\n",
                       h->param.i_frame_total, rc->num_entries );
-            return -1;
+            goto fail;
         }
 
         CHECKED_MALLOCZERO( rc->entry, rc->num_entries * sizeof(ratecontrol_entry_t) );
@@ -1717,12 +1771,12 @@ int x264_ratecontrol_new( x264_t *h )
             if( frame_number < 0 || frame_number >= rc->num_entries )
             {
                 x264_log( h, X264_LOG_ERROR, "bad frame number (%d) at stats line %d\n", frame_number, i );
-                return -1;
+                goto fail;
             }
             if( frame_out_number < 0 || frame_out_number >= rc->num_entries )
             {
                 x264_log( h, X264_LOG_ERROR, "bad frame output number (%d) at stats line %d\n", frame_out_number, i );
-                return -1;
+                goto fail;
             }
             rce = &rc->entry[frame_number];
             rc->entry_out[frame_out_number] = rce;
@@ -1795,7 +1849,7 @@ int x264_ratecontrol_new( x264_t *h )
             {
 parse_error:
                 x264_log( h, X264_LOG_ERROR, "statistics are damaged at line %d, parser out=%d\n", i, e );
-                return -1;
+                goto fail;
             }
             rce->qscale = qp2qscale( qp_rc );
             total_qp_aq += qp_aq;
@@ -1807,17 +1861,18 @@ parse_error:
         {
             x264_log( h, X264_LOG_ERROR, "statistics are damaged at line %d, parser out=%d\n",
                       rc->num_entries, -1 );
-            return -1;
+            goto fail;
         }
         if( !h->param.b_stitchable )
             h->pps->i_pic_init_qp = SPEC_QP( (int)(total_qp_aq / rc->num_entries + 0.5) );
 
         x264_free( stats_buf );
+        stats_buf = NULL;
 
         if( h->param.rc.i_rc_method == X264_RC_ABR )
         {
             if( init_pass2( h ) < 0 )
-                return -1;
+                goto fail;
         } /* else we're using constant quant, so no need to run the bitrate allocation */
     }
 
@@ -1829,13 +1884,13 @@ parse_error:
         char *p;
         rc->psz_stat_file_tmpname = strcat_filename( h->param.rc.psz_stat_out, ".temp" );
         if( !rc->psz_stat_file_tmpname )
-            return -1;
+            goto fail;
 
         rc->p_stat_file_out = x264_fopen( rc->psz_stat_file_tmpname, "wb" );
         if( rc->p_stat_file_out == NULL )
         {
             x264_log( h, X264_LOG_ERROR, "ratecontrol_init: can't open stats file\n" );
-            return -1;
+            goto fail;
         }
 
         p = x264_param2string( &h->param, 1 );
@@ -1847,13 +1902,13 @@ parse_error:
             rc->psz_mbtree_stat_file_tmpname = strcat_filename( h->param.rc.psz_stat_out, ".mbtree.temp" );
             rc->psz_mbtree_stat_file_name = strcat_filename( h->param.rc.psz_stat_out, ".mbtree" );
             if( !rc->psz_mbtree_stat_file_tmpname || !rc->psz_mbtree_stat_file_name )
-                return -1;
+                goto fail;
 
             rc->p_mbtree_stat_file_out = x264_fopen( rc->psz_mbtree_stat_file_tmpname, "wb" );
             if( rc->p_mbtree_stat_file_out == NULL )
             {
                 x264_log( h, X264_LOG_ERROR, "ratecontrol_init: can't open mbtree stats file\n" );
-                return -1;
+                goto fail;
             }
         }
     }
@@ -1866,7 +1921,7 @@ parse_error:
             rc->mbtree.srcdim[1] = h->param.i_height;
         }
         if( macroblock_tree_rescale_init( h, rc ) < 0 )
-            return -1;
+            goto fail;
     }
 
     for( int i = 0; i<h->param.i_threads; i++ )
@@ -1883,6 +1938,7 @@ parse_error:
 
     return 0;
 fail:
+    ratecontrol_init_fail_cleanup( h, stats_buf );
     return -1;
 }
 
@@ -1926,30 +1982,30 @@ static int parse_zone_float( char **p, float *dst )
 static int parse_zone( x264_t *h, x264_zone_t *z, char *p )
 {
     char *tok;
-    z->param = NULL;
-    z->f_bitrate_factor = 1;
-    if( parse_zone_int( &p, &z->i_start ) || *p++ != ',' || parse_zone_int( &p, &z->i_end ) )
+    x264_zone_t parsed = { 0 };
+
+    parsed.f_bitrate_factor = 1;
+    if( parse_zone_int( &p, &parsed.i_start ) || *p++ != ',' || parse_zone_int( &p, &parsed.i_end ) )
     {
         x264_log( h, X264_LOG_ERROR, "invalid zone: \"%s\"\n", p );
         return -1;
     }
-    z->b_force_qp = 0;
     if( *p == ',' )
     {
         if( !strncmp( p + 1, "q=", 2 ) )
         {
             p += 3;
-            if( parse_zone_int( &p, &z->i_qp ) )
+            if( parse_zone_int( &p, &parsed.i_qp ) )
             {
                 x264_log( h, X264_LOG_ERROR, "invalid zone qp\n" );
                 return -1;
             }
-            z->b_force_qp = 1;
+            parsed.b_force_qp = 1;
         }
         else if( !strncmp( p + 1, "b=", 2 ) )
         {
             p += 3;
-            if( parse_zone_float( &p, &z->f_bitrate_factor ) )
+            if( parse_zone_float( &p, &parsed.f_bitrate_factor ) )
             {
                 x264_log( h, X264_LOG_ERROR, "invalid zone bitrate factor\n" );
                 return -1;
@@ -1957,16 +2013,19 @@ static int parse_zone( x264_t *h, x264_zone_t *z, char *p )
         }
     }
     if( !*p )
+    {
+        *z = parsed;
         return 0;
+    }
     if( *p != ',' )
     {
         x264_log( h, X264_LOG_ERROR, "invalid zone: \"%s\"\n", p );
         return -1;
     }
-    CHECKED_MALLOC( z->param, sizeof(x264_param_t) );
-    memcpy( z->param, &h->param, sizeof(x264_param_t) );
-    z->param->opaque = NULL;
-    z->param->param_free = x264_free;
+    CHECKED_MALLOC( parsed.param, sizeof(x264_param_t) );
+    memcpy( parsed.param, &h->param, sizeof(x264_param_t) );
+    parsed.param->opaque = NULL;
+    parsed.param->param_free = x264_free;
     p++;
     do
     {
@@ -1974,7 +2033,7 @@ static int parse_zone( x264_t *h, x264_zone_t *z, char *p )
         if( !tok_len )
         {
             x264_log( h, X264_LOG_ERROR, "empty zone param\n" );
-            return -1;
+            goto fail;
         }
         tok = p;
         p += tok_len;
@@ -1984,7 +2043,7 @@ static int parse_zone( x264_t *h, x264_zone_t *z, char *p )
             if( !*p )
             {
                 x264_log( h, X264_LOG_ERROR, "empty zone param\n" );
-                return -1;
+                goto fail;
             }
         }
         char *val = strchr( tok, '=' );
@@ -1993,24 +2052,49 @@ static int parse_zone( x264_t *h, x264_zone_t *z, char *p )
             *val = '\0';
             val++;
         }
-        if( x264_param_parse( z->param, tok, val ) )
+        if( x264_param_parse( parsed.param, tok, val ) )
         {
             x264_log( h, X264_LOG_ERROR, "invalid zone param: %s = %s\n", tok, val ? val : "(null)" );
-            return -1;
+            goto fail;
         }
     }
     while( *p );
+    *z = parsed;
     return 0;
 fail:
+    if( parsed.param && parsed.param->param_free )
+    {
+        x264_param_cleanup( parsed.param );
+        parsed.param->param_free( parsed.param );
+    }
     return -1;
+}
+
+static void cleanup_zone_params( x264_zone_t *zones, int i_zones )
+{
+    if( !zones )
+        return;
+    for( int i = 0; i < i_zones; i++ )
+        if( zones[i].param && zones[i].param->param_free )
+        {
+            x264_param_cleanup( zones[i].param );
+            zones[i].param->param_free( zones[i].param );
+            zones[i].param = NULL;
+        }
 }
 
 static int parse_zones( x264_t *h )
 {
     x264_ratecontrol_t *rc = h->rc;
-    if( h->param.rc.psz_zones && !h->param.rc.i_zones )
+    x264_zone_t *zones = h->param.rc.zones;
+    x264_zone_t *string_zones = NULL;
+    x264_zone_t *ratecontrol_zones = NULL;
+    char *psz_zones = NULL;
+    int i_zones = h->param.rc.i_zones;
+
+    if( h->param.rc.psz_zones && !i_zones )
     {
-        char *psz_zones, *p;
+        char *p;
         size_t psz_zones_len = strlen( h->param.rc.psz_zones );
         CHECKED_MALLOC( psz_zones, psz_zones_len + 1 );
         memcpy( psz_zones, h->param.rc.psz_zones, psz_zones_len + 1 );
@@ -2020,71 +2104,100 @@ static int parse_zones( x264_t *h )
         if( zone_count > INT_MAX )
         {
             x264_log( h, X264_LOG_ERROR, "too many zones\n" );
-            x264_free( psz_zones );
-            return -1;
+            goto fail;
         }
-        h->param.rc.i_zones = (int)zone_count;
-        CHECKED_MALLOC( h->param.rc.zones, zone_count * sizeof(x264_zone_t) );
+        if( zone_count > SIZE_MAX / sizeof(*string_zones) )
+        {
+            x264_log( h, X264_LOG_ERROR, "too many zones\n" );
+            goto fail;
+        }
+        i_zones = (int)zone_count;
+        CHECKED_MALLOCZERO( string_zones, zone_count * sizeof(*string_zones) );
         p = psz_zones;
-        for( int i = 0; i < h->param.rc.i_zones; i++ )
+        for( int i = 0; i < i_zones; i++ )
         {
             size_t i_tok = strcspn( p, "/" );
             p[i_tok] = 0;
-            if( parse_zone( h, &h->param.rc.zones[i], p ) )
+            if( parse_zone( h, &string_zones[i], p ) )
             {
-                x264_free( psz_zones );
-                return -1;
+                goto fail;
             }
             p += i_tok + 1;
         }
         x264_free( psz_zones );
+        psz_zones = NULL;
+        zones = string_zones;
     }
 
-    if( h->param.rc.i_zones > 0 )
+    if( i_zones > 0 )
     {
-        for( int i = 0; i < h->param.rc.i_zones; i++ )
+        if( !zones )
         {
-            x264_zone_t z = h->param.rc.zones[i];
+            x264_log( h, X264_LOG_ERROR, "invalid zones\n" );
+            goto fail;
+        }
+        for( int i = 0; i < i_zones; i++ )
+        {
+            x264_zone_t z = zones[i];
             if( z.i_start < 0 || z.i_start > z.i_end )
             {
                 x264_log( h, X264_LOG_ERROR, "invalid zone: start=%d end=%d\n",
                           z.i_start, z.i_end );
-                return -1;
+                goto fail;
             }
             else if( !z.b_force_qp && z.f_bitrate_factor <= 0 )
             {
                 x264_log( h, X264_LOG_ERROR, "invalid zone: bitrate_factor=%f\n",
                           z.f_bitrate_factor );
-                return -1;
+                goto fail;
             }
         }
 
-        if( h->param.rc.i_zones == INT_MAX )
+        if( i_zones == INT_MAX )
         {
             x264_log( h, X264_LOG_ERROR, "too many zones\n" );
-            return -1;
+            goto fail;
         }
-        rc->i_zones = h->param.rc.i_zones + 1;
-        CHECKED_MALLOC( rc->zones, (size_t)rc->i_zones * sizeof(x264_zone_t) );
-        memcpy( rc->zones+1, h->param.rc.zones, (size_t)(rc->i_zones-1) * sizeof(x264_zone_t) );
+        int ratecontrol_i_zones = i_zones + 1;
+        CHECKED_MALLOCZERO( ratecontrol_zones, (size_t)ratecontrol_i_zones * sizeof(*ratecontrol_zones) );
+        memcpy( ratecontrol_zones+1, zones, (size_t)i_zones * sizeof(x264_zone_t) );
 
         // default zone to fall back to if none of the others match
-        rc->zones[0].i_start = 0;
-        rc->zones[0].i_end = INT_MAX;
-        rc->zones[0].b_force_qp = 0;
-        rc->zones[0].f_bitrate_factor = 1;
-        CHECKED_MALLOC( rc->zones[0].param, sizeof(x264_param_t) );
-        memcpy( rc->zones[0].param, &h->param, sizeof(x264_param_t) );
-        rc->zones[0].param->opaque = NULL;
-        for( int i = 1; i < rc->i_zones; i++ )
+        ratecontrol_zones[0].i_start = 0;
+        ratecontrol_zones[0].i_end = INT_MAX;
+        ratecontrol_zones[0].b_force_qp = 0;
+        ratecontrol_zones[0].f_bitrate_factor = 1;
+        CHECKED_MALLOC( ratecontrol_zones[0].param, sizeof(x264_param_t) );
+        memcpy( ratecontrol_zones[0].param, &h->param, sizeof(x264_param_t) );
+        ratecontrol_zones[0].param->opaque = NULL;
+        for( int i = 1; i < ratecontrol_i_zones; i++ )
         {
-            if( !rc->zones[i].param )
-                rc->zones[i].param = rc->zones[0].param;
+            if( !ratecontrol_zones[i].param )
+                ratecontrol_zones[i].param = ratecontrol_zones[0].param;
         }
+
+        rc->i_zones = ratecontrol_i_zones;
+        rc->zones = ratecontrol_zones;
+        ratecontrol_zones = NULL;
+        x264_free( string_zones );
+        string_zones = NULL;
     }
 
     return 0;
 fail:
+    x264_free( psz_zones );
+    if( ratecontrol_zones )
+    {
+        x264_param_t *default_param = ratecontrol_zones[0].param;
+        if( default_param )
+        {
+            x264_param_cleanup( default_param );
+            x264_free( default_param );
+        }
+        x264_free( ratecontrol_zones );
+    }
+    cleanup_zone_params( string_zones, i_zones );
+    x264_free( string_zones );
     return -1;
 }
 

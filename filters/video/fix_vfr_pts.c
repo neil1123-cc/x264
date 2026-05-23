@@ -93,14 +93,24 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
         if( !h->buffer_allocated )
         {
             if( x264_cli_pic_alloc( &h->buffer, h->holder.img.csp, h->holder.img.width, h->holder.img.height ) )
+            {
+                h->prev_filter.release_frame( h->prev_hnd, &h->holder, frame );
+                h->holder_frame = -1;
                 return -1;
+            }
             h->buffer_allocated = 1;
         }
         if( frame == INT_MAX )
+        {
+            h->prev_filter.release_frame( h->prev_hnd, &h->holder, frame );
+            h->holder_frame = -1;
             return -1;
+        }
         h->holder_frame = frame+1;
         /* copy the current frame to the buffer, release it, and then read in the next frame to the placeholder */
-        if( x264_cli_pic_copy( &h->buffer, &h->holder ) || h->prev_filter.release_frame( h->prev_hnd, &h->holder, frame ) )
+        int copy_failed = x264_cli_pic_copy( &h->buffer, &h->holder );
+        int release_failed = h->prev_filter.release_frame( h->prev_hnd, &h->holder, frame );
+        if( copy_failed || release_failed )
             return -1;
         h->holder_ret = h->prev_filter.get_frame( h->prev_hnd, &h->holder, h->holder_frame );
         /* suppress non-monotonic pts warnings by setting the duration to be at least 1 */
