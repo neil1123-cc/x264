@@ -4,7 +4,6 @@
 #include "libswresample/swresample.h"
 #include "libavutil/channel_layout.h"
 
-#include <assert.h>
 #include <float.h>
 
 #include "audio/encoders.h"
@@ -242,7 +241,8 @@ static int get_codec_sample_fmts( const AVCodec *codec, enum AVSampleFormat *fmt
 
 static hnd_t init( hnd_t filter_chain, const char *opt_str )
 {
-    assert( filter_chain );
+    if( !filter_chain )
+        return NULL;
     enc_lavc_t *h = calloc( 1, sizeof( enc_lavc_t ) );
     if( !h )
         return NULL;
@@ -535,7 +535,8 @@ error:
 
 static audio_info_t *get_info( hnd_t handle )
 {
-    assert( handle );
+    if( !handle )
+        return NULL;
     enc_lavc_t *h = handle;
 
     return &h->info;
@@ -544,9 +545,10 @@ static audio_info_t *get_info( hnd_t handle )
 static audio_packet_t *get_next_packet( hnd_t handle )
 {
     enc_lavc_t *h = handle;
+    if( !h || !h->filter_chain || !h->ctx || !h->frame || !h->avr || h->buf_size <= 0 )
+        return NULL;
     if( h->finishing )
         return NULL;
-    assert( h->ctx );
 
     audio_packet_t *smp = NULL;
     audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
@@ -640,12 +642,16 @@ error:
 static void skip_samples( hnd_t handle, uint64_t samplecount )
 {
     enc_lavc_t *h = handle;
+    if( !h )
+        return;
     add_skip_samples( &h->last_sample, samplecount );
 }
 
 static audio_packet_t *finish( hnd_t handle )
 {
     enc_lavc_t *h = handle;
+    if( !h || !h->ctx || h->buf_size <= 0 )
+        return NULL;
 
     h->finishing = 1;
 
@@ -678,6 +684,8 @@ error:
 
 static void free_packet( hnd_t handle, audio_packet_t *packet )
 {
+    if( !packet )
+        return;
     packet->owner = NULL;
     x264_af_free_packet( packet );
 }
@@ -685,6 +693,8 @@ static void free_packet( hnd_t handle, audio_packet_t *packet )
 static void lavc_close( hnd_t handle )
 {
     enc_lavc_t *h = handle;
+    if( !h )
+        return;
 
     // FFmpeg 8.x: Use avcodec_free_context instead of avcodec_close + av_free
     if( h->ctx )

@@ -213,7 +213,7 @@ char *x264_slurp_file( const char *filename )
         goto error;
 
     b_error |= fread( buf, 1, i_size, fh ) != (uint64_t)i_size;
-    fclose( fh );
+    b_error |= fclose( fh );
     if( b_error )
     {
         x264_free( buf );

@@ -190,7 +190,8 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
 
 	subtitles_hnd_t *h;
 	csri_fmt fmt;
-	if( !handle || !filter || !info )
+	if( !handle || !*handle || !filter || !info ||
+	    !filter->get_frame || !filter->release_frame || !filter->free )
 		return -1;
 	if (!(h = calloc(1, sizeof(subtitles_hnd_t))))
 		return -1;
@@ -247,7 +248,8 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 {
 	subtitles_hnd_t *h = handle;
 	csri_frame fr = {0};
-	if( !h || !output || !h->subrenderinst || !csri_render )
+	if( !h || !output || !h->subrenderinst || !csri_render || !h->prev_hnd ||
+	    !h->prev_filter.get_frame || !h->prev_filter.release_frame || frame < 0 )
 		return -1;
 	if( h->prev_filter.get_frame( h->prev_hnd, output, frame ) )
 		return -1;
@@ -281,6 +283,8 @@ static int release_frame( hnd_t handle, cli_pic_t *pic, int frame )
 	subtitles_hnd_t *h = handle;
 	/* NO filter should ever have a dependent release based on the plane pointers,
 	 * so avoid unnecessary unshifting */
+	if( !h || !pic || !h->prev_hnd || !h->prev_filter.release_frame )
+		return -1;
 	return h->prev_filter.release_frame( h->prev_hnd, pic, frame );
 }
 
@@ -291,7 +295,8 @@ static void free_filter( hnd_t handle )
 		return;
 	if( h->subrenderinst && csri_close )
 		csri_close( h->subrenderinst );
-	h->prev_filter.free( h->prev_hnd );
+	if( h->prev_hnd && h->prev_filter.free )
+		h->prev_filter.free( h->prev_hnd );
 	free( h );
 }
 

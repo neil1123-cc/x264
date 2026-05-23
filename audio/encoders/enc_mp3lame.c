@@ -2,7 +2,6 @@
 #include "filters/audio/internal.h"
 
 #include "lame/lame.h"
-#include <assert.h>
 #include <float.h>
 
 typedef struct enc_lame_t
@@ -80,7 +79,8 @@ static int parse_int_option( const char *opt, int def, int *dst )
 
 static hnd_t init( hnd_t filter_chain, const char *opt_str )
 {
-    assert( filter_chain );
+    if( !filter_chain )
+        return NULL;
     audio_hnd_t *chain = filter_chain;
     if( chain->info.channels <= 0 || chain->info.samplerate <= 0 )
     {
@@ -207,7 +207,8 @@ error:
 
 static audio_info_t *get_info( hnd_t handle )
 {
-    assert( handle );
+    if( !handle )
+        return NULL;
     enc_lame_t *h = handle;
 
     return &h->info;
@@ -215,6 +216,8 @@ static audio_info_t *get_info( hnd_t handle )
 
 static void free_packet( hnd_t handle, audio_packet_t *packet )
 {
+    if( !packet )
+        return;
     packet->owner = NULL;
     x264_af_free_packet( packet );
 }
@@ -274,6 +277,8 @@ static int mp3len( uint8_t *data )
 static int get_next_mp3frame( hnd_t handle, uint8_t *data )
 {
     enc_lame_t *h = handle;
+    if( !h || !data || !h->buffer )
+        return 0;
     int outlen;
 
     if( h->buf_index < 4 )
@@ -294,6 +299,8 @@ static int get_next_mp3frame( hnd_t handle, uint8_t *data )
 static audio_packet_t *get_next_packet( hnd_t handle )
 {
     enc_lame_t *h = handle;
+    if( !h || !h->filter_chain || !h->lame || !h->buffer || !h->bufsize )
+        return NULL;
     int len;
 
     if( h->finishing )
@@ -329,8 +336,13 @@ static audio_packet_t *get_next_packet( hnd_t handle )
 
         if( h->buf_index > h->bufsize )
             goto error;
-        len = lame_encode_buffer_float( h->lame, h->in->samples[0], h->in->samples[1],
-                                              h->in->samplecount, h->buffer + h->buf_index, h->bufsize - h->buf_index );
+        if( h->in->channels != (unsigned)h->info.channels ||
+            !h->in->samples || !h->in->samples[0] ||
+            (h->info.channels > 1 && !h->in->samples[1]) )
+            goto error;
+        float *right = h->info.channels > 1 ? h->in->samples[1] : h->in->samples[0];
+        len = lame_encode_buffer_float( h->lame, h->in->samples[0], right,
+                                        h->in->samplecount, h->buffer + h->buf_index, h->bufsize - h->buf_index );
 
         if( len < 0 || (size_t)len > h->bufsize - h->buf_index )
             goto error;
@@ -358,12 +370,16 @@ error:
 static void skip_samples( hnd_t handle, uint64_t samplecount )
 {
     enc_lame_t *h = handle;
+    if( !h )
+        return;
     add_skip_samples( &h->last_sample, samplecount );
 }
 
 static audio_packet_t *finish( hnd_t encoder )
 {
     enc_lame_t *h = encoder;
+    if( !h || !h->lame || !h->buffer || !h->bufsize )
+        return NULL;
     int len;
 
     audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
@@ -399,8 +415,11 @@ error:
 static void mp3_close( hnd_t handle )
 {
     enc_lame_t *h = handle;
+    if( !h )
+        return;
 
-    lame_close( h->lame );
+    if( h->lame )
+        lame_close( h->lame );
     if( h->in )
         x264_af_free_packet( h->in );
     if( h->buffer )

@@ -596,34 +596,45 @@ int mk_close( mk_writer *w, int64_t *last_delta )
     int ret = 0;
     if( !w )
         return -1;
+    if( !w->fp )
+    {
+        mk_destroy_contexts( w );
+        free( w );
+        return -1;
+    }
     if( mk_close_cluster( w ) < 0 )
         ret = -1;
     if( w->wrote_header && x264_is_regular_file( w->fp ) )
     {
-        uint32_t i;
-        int64_t total_duration = INT64_MAX;
-        for( i=1; i<=w->track_count; i++ )
-        {
-            int64_t last_frametime = last_delta[i] ? last_delta[i] : w->def_duration[i];
-            if( last_frametime < 0 || w->max_frame_tc[i] < 0 ||
-                last_frametime > INT64_MAX - w->max_frame_tc[i] )
-            {
-                ret = -1;
-                continue;
-            }
-            int64_t track_duration = w->max_frame_tc[i] + last_frametime;
-            total_duration = X264_MIN( track_duration, total_duration );
-        }
-        double duration = w->timescale > 0 && total_duration != INT64_MAX
-                        ? (double)total_duration / (double)w->timescale : -1.0;
-        if( duration < 0.0 || duration > FLT_MAX || w->duration_ptr > LONG_MAX ||
-            fseek( w->fp, (long)w->duration_ptr, SEEK_SET ) ||
-            mk_write_float_raw( w->root, (float)duration ) < 0 ||
-            mk_flush_context_data( w->root ) < 0 )
+        if( !last_delta || w->track_count >= MK_MAX_TRACKS )
             ret = -1;
+        else
+        {
+            int64_t total_duration = INT64_MAX;
+            for( uint32_t i = 1; i <= w->track_count; i++ )
+            {
+                int64_t last_frametime = last_delta[i] ? last_delta[i] : w->def_duration[i];
+                if( last_frametime < 0 || w->max_frame_tc[i] < 0 ||
+                    last_frametime > INT64_MAX - w->max_frame_tc[i] )
+                {
+                    ret = -1;
+                    continue;
+                }
+                int64_t track_duration = w->max_frame_tc[i] + last_frametime;
+                total_duration = X264_MIN( track_duration, total_duration );
+            }
+            double duration = w->timescale > 0 && total_duration != INT64_MAX
+                            ? (double)total_duration / (double)w->timescale : -1.0;
+            if( duration < 0.0 || duration > FLT_MAX || w->duration_ptr > LONG_MAX ||
+                fseek( w->fp, (long)w->duration_ptr, SEEK_SET ) ||
+                mk_write_float_raw( w->root, (float)duration ) < 0 ||
+                mk_flush_context_data( w->root ) < 0 )
+                ret = -1;
+        }
     }
     mk_destroy_contexts( w );
-    fclose( w->fp );
+    if( fclose( w->fp ) )
+        ret = -1;
     free( w );
     return ret;
 }

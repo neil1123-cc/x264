@@ -132,9 +132,11 @@ static cl_program opencl_cache_load( x264_t *h, const char *dev_name, const char
     cl_program program = NULL;
     uint8_t *binary = NULL;
 
-    fseek( fp, 0, SEEK_END );
+    if( fseek( fp, 0, SEEK_END ) )
+        goto fail;
     int64_t file_size = ftell( fp );
-    fseek( fp, 0, SEEK_SET );
+    if( fseek( fp, 0, SEEK_SET ) )
+        goto fail;
     if( file_size < 0 || (uint64_t)file_size > SIZE_MAX )
         goto fail;
     size_t size = file_size;
@@ -166,7 +168,11 @@ static cl_program opencl_cache_load( x264_t *h, const char *dev_name, const char
         program = NULL;
 
 fail:
-    fclose( fp );
+    if( fclose( fp ) && program )
+    {
+        ocl->clReleaseProgram( program );
+        program = NULL;
+    }
     x264_free( binary );
     return program;
 }
@@ -184,6 +190,7 @@ static void opencl_cache_save( x264_t *h, cl_program program, const char *dev_na
 
     x264_opencl_function_t *ocl = h->opencl.ocl;
     uint8_t *binary = NULL;
+    int b_write_error = 0;
 
     size_t size = 0;
     cl_int status = ocl->clGetProgramInfo( program, CL_PROGRAM_BINARY_SIZES, sizeof(size_t), &size, NULL );
@@ -201,18 +208,20 @@ static void opencl_cache_save( x264_t *h, cl_program program, const char *dev_na
         goto fail;
     }
 
-    fputs( dev_name, fp );
-    fputc( '\n', fp );
-    fputs( dev_vendor, fp );
-    fputc( '\n', fp );
-    fputs( driver_version, fp );
-    fputc( '\n', fp );
-    fputs( x264_opencl_source_hash, fp );
-    fputc( '\n', fp );
-    fwrite( binary, 1, size, fp );
+    b_write_error |= fputs( dev_name, fp ) < 0;
+    b_write_error |= fputc( '\n', fp ) == EOF;
+    b_write_error |= fputs( dev_vendor, fp ) < 0;
+    b_write_error |= fputc( '\n', fp ) == EOF;
+    b_write_error |= fputs( driver_version, fp ) < 0;
+    b_write_error |= fputc( '\n', fp ) == EOF;
+    b_write_error |= fputs( x264_opencl_source_hash, fp ) < 0;
+    b_write_error |= fputc( '\n', fp ) == EOF;
+    b_write_error |= fwrite( binary, 1, size, fp ) != size;
 
 fail:
-    fclose( fp );
+    b_write_error |= fclose( fp );
+    if( b_write_error )
+        x264_log( h, X264_LOG_INFO, "OpenCL: failed to write clbin file, no cache file generated\n" );
     x264_free( binary );
     return;
 }
@@ -316,9 +325,12 @@ static cl_program opencl_compile( x264_t *h )
         x264_log( h, X264_LOG_WARNING, "OpenCL: Compilation failed, unable to create file x264_kernel_build_log.txt\n" );
         goto fail;
     }
-    fwrite( build_log, 1, build_log_len, log_file );
-    fclose( log_file );
-    x264_log( h, X264_LOG_WARNING, "OpenCL: kernel build errors written to x264_kernel_build_log.txt\n" );
+    int b_log_error = fwrite( build_log, 1, build_log_len, log_file ) != build_log_len;
+    b_log_error |= fclose( log_file );
+    if( b_log_error )
+        x264_log( h, X264_LOG_WARNING, "OpenCL: failed to write kernel build errors to x264_kernel_build_log.txt\n" );
+    else
+        x264_log( h, X264_LOG_WARNING, "OpenCL: kernel build errors written to x264_kernel_build_log.txt\n" );
 
 fail:
     x264_free( build_log );

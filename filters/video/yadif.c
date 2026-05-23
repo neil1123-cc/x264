@@ -102,6 +102,9 @@ static int yadif_init( hnd_t *handle, cli_vid_filter_t *filter,
                        video_info_t *info, x264_param_t *param, char *opt_string )
 {
     yadif_handle_t *h;
+    if( !handle || !*handle || !filter || !info || !param ||
+        !filter->get_frame || !filter->release_frame || !filter->free )
+        return -1;
     const x264_cli_csp_t *csp = info ? x264_cli_get_csp( info->csp ) : NULL;
     video_info_t updated_info;
 
@@ -237,7 +240,8 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame_out )
     struct yadif_context yctx;
     cli_pic_t prev, cur, next;
 
-    if( !h || !output || frame_out < 0 )
+    if( !h || !output || !h->csp || !filter_line || !h->prev_handle ||
+        !h->prev_filter.get_frame || !h->prev_filter.release_frame || frame_out < 0 )
         return -1;
 
     int df       = x264_cli_csp_depth_factor( h->buffer.img.csp );
@@ -354,6 +358,8 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame_out )
 
 static int release_frame( hnd_t handle, cli_pic_t *pic, int frame )
 {
+    if( !handle || !pic )
+        return -1;
     return 0;
 }
 
@@ -361,7 +367,10 @@ static void free_filter( hnd_t handle )
 {
     yadif_handle_t *h = handle;
 
-    h->prev_filter.free( h->prev_handle );
+    if( !h )
+        return;
+    if( h->prev_handle && h->prev_filter.free )
+        h->prev_filter.free( h->prev_handle );
     x264_cli_pic_clean( &h->buffer );
     free( h );
 }

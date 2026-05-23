@@ -43,6 +43,9 @@ static void help( int longhelp )
 
 static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x264_param_t *param, char *opt_string )
 {
+    if( !handle || !*handle || !filter || !info || !filter->get_frame || !filter->release_frame || !filter->free )
+        return -1;
+
     vflip_handle *h = calloc( 1, sizeof(vflip_handle) );
     if( !h )
         return -1;
@@ -60,19 +63,26 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
 static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 {
     vflip_handle *h = handle;
+    if( !h || !output || !h->prev_handle || !h->prev_filter.get_frame )
+        return -1;
     return h->prev_filter.get_frame( h->prev_handle, output, frame );
 }
 
 static int release_frame( hnd_t handle, cli_pic_t *pic, int frame )
 {
     vflip_handle *h = handle;
+    if( !h || !pic || !h->prev_handle || !h->prev_filter.release_frame )
+        return -1;
     return h->prev_filter.release_frame( h->prev_handle, pic, frame );
 }
 
 static void free_filter( hnd_t handle )
 {
     vflip_handle *h = handle;
-    h->prev_filter.free( h->prev_handle );
+    if( !h )
+        return;
+    if( h->prev_handle && h->prev_filter.free )
+        h->prev_filter.free( h->prev_handle );
     free( h );
 }
 

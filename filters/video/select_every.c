@@ -70,6 +70,9 @@ static void help( int longhelp )
 
 static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x264_param_t *param, char *opt_string )
 {
+    if( !handle || !*handle || !filter || !info || !param ||
+        !filter->get_frame || !filter->release_frame || !filter->free )
+        return -1;
     if( !opt_string )
         return -1;
     selvry_hnd_t *h = calloc( 1, sizeof(selvry_hnd_t) );
@@ -214,6 +217,8 @@ fail:
 static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 {
     selvry_hnd_t *h = handle;
+    if( !h || !output || !h->prev_hnd || !h->prev_filter.get_frame )
+        return -1;
     int pat_frame;
     if( select_every_frame_number( h, frame, &pat_frame ) )
         return -1;
@@ -232,6 +237,8 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 static int release_frame( hnd_t handle, cli_pic_t *pic, int frame )
 {
     selvry_hnd_t *h = handle;
+    if( !h || !pic || !h->prev_hnd || !h->prev_filter.release_frame )
+        return -1;
     int pat_frame;
     if( select_every_frame_number( h, frame, &pat_frame ) )
         return -1;
@@ -241,7 +248,10 @@ static int release_frame( hnd_t handle, cli_pic_t *pic, int frame )
 static void free_filter( hnd_t handle )
 {
     selvry_hnd_t *h = handle;
-    h->prev_filter.free( h->prev_hnd );
+    if( !h )
+        return;
+    if( h->prev_hnd && h->prev_filter.free )
+        h->prev_filter.free( h->prev_hnd );
     free( h->pattern );
     free( h );
 }

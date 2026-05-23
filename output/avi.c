@@ -37,6 +37,7 @@ typedef struct
 static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest_pts )
 {
     avi_hnd_t *h = handle;
+    int ret = 0;
 
     if( !h )
         return 0;
@@ -51,7 +52,8 @@ static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest
     {
         if( h->video_stm->codec )
         {
-            av_write_trailer( h->mux_fc );
+            if( av_write_trailer( h->mux_fc ) < 0 )
+                ret = -1;
             av_freep( &h->video_stm->codec->extradata );
             av_freep( &h->video_stm->codec );
         }
@@ -60,7 +62,8 @@ static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest
 
     if( h->mux_fc && h->mux_fc->pb )
     {
-        avio_close( h->mux_fc->pb );
+        if( avio_close( h->mux_fc->pb ) < 0 )
+            ret = -1;
         h->mux_fc->pb = NULL;
     }
 
@@ -69,7 +72,7 @@ static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest
 
     free( h );
 
-    return 0;
+    return ret;
 }
 
 static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt, hnd_t audio_filters, char *audio_encoder, char *audio_parameters )
@@ -77,13 +80,15 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
     avi_hnd_t *h;
     AVOutputFormat *mux_fmt;
 
+    if( !psz_filename || !p_handle )
+        return -1;
     *p_handle = NULL;
 
     FILE *fh = x264_fopen( psz_filename, "w" );
     if( !fh )
         return -1;
     int b_regular = x264_is_regular_file( fh );
-    fclose( fh );
+    FAIL_IF_ERR( fclose( fh ), "avi", "failed to close output probe file `%s'\n", psz_filename );
     FAIL_IF_ERR( !b_regular, "avi", "AVI output is incompatible with non-regular file `%s'\n", psz_filename );
 
     if( !(h = malloc( sizeof(avi_hnd_t) )) )

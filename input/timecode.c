@@ -634,7 +634,7 @@ static int parse_tcfile( FILE *tcfile_in, timecode_hnd_t *h, video_info_t *info 
             h->timebase_den = info->fps_num;
         else if( h->auto_timebase_den )
         {
-            assert( timecodes_num > 1 );
+            FAIL_IF_ERROR( timecodes_num <= 1, "too few timecodes for automatic timebase generation\n" );
             size_t fpss_num = (size_t)timecodes_num - 1;
             FAIL_IF_ERROR( fpss_num > SIZE_MAX / sizeof(double), "too many tcfile fps entries\n" );
             fpss = malloc( fpss_num * sizeof(double) );
@@ -784,7 +784,13 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
 
     if( parse_tcfile( tcfile_in, h, info ) < 0 )
         goto fail;
-    fclose( tcfile_in );
+    if( fclose( tcfile_in ) )
+    {
+        tcfile_in = NULL;
+        x264_cli_log( "timecode", X264_LOG_ERROR, "failed to close timecode file `%s'\n", psz_filename );
+        goto fail;
+    }
+    tcfile_in = NULL;
 
     info->timebase_num = (uint32_t)h->timebase_num;
     info->timebase_den = (uint32_t)h->timebase_den;
@@ -837,7 +843,8 @@ static int get_frame_pts( timecode_hnd_t *h, int frame, int real_frame, int64_t 
 static int read_frame( cli_pic_t *pic, hnd_t handle, int frame )
 {
     timecode_hnd_t *h = handle;
-    if( frame == INT_MAX )
+    if( !pic || !h || !h->p_handle || !h->input.read_frame ||
+        frame < 0 || frame == INT_MAX )
         return -1;
     if( h->input.read_frame( pic, h->p_handle, frame ) )
         return -1;
@@ -855,6 +862,8 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int frame )
 static int release_frame( cli_pic_t *pic, hnd_t handle )
 {
     timecode_hnd_t *h = handle;
+    if( !pic || !h || !h->p_handle )
+        return -1;
     if( h->input.release_frame )
         return h->input.release_frame( pic, h->p_handle );
     return 0;
@@ -863,23 +872,31 @@ static int release_frame( cli_pic_t *pic, hnd_t handle )
 static int picture_alloc( cli_pic_t *pic, hnd_t handle, int csp, int width, int height )
 {
     timecode_hnd_t *h = handle;
+    if( !pic || !h || !h->p_handle || !h->input.picture_alloc )
+        return -1;
     return h->input.picture_alloc( pic, h->p_handle, csp, width, height );
 }
 
 static void picture_clean( cli_pic_t *pic, hnd_t handle )
 {
     timecode_hnd_t *h = handle;
+    if( !pic || !h || !h->p_handle || !h->input.picture_clean )
+        return;
     h->input.picture_clean( pic, h->p_handle );
 }
 
 static int close_file( hnd_t handle )
 {
     timecode_hnd_t *h = handle;
+    int ret = 0;
+    if( !h )
+        return 0;
     if( h->pts )
         free( h->pts );
-    h->input.close_file( h->p_handle );
+    if( h->p_handle && h->input.close_file )
+        ret = h->input.close_file( h->p_handle );
     free( h );
-    return 0;
+    return ret;
 }
 
 const cli_input_t timecode_input = { open_file, picture_alloc, read_frame, release_frame, picture_clean, close_file };

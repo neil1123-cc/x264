@@ -61,6 +61,16 @@ do\
     }\
 } while( 0 )
 
+#define MP4_CLOSE_LOG_IF_ERR( cond, ... )\
+do\
+{\
+    if( cond )\
+    {\
+        MP4_LOG_ERROR( __VA_ARGS__ );\
+        ret = -1;\
+    }\
+} while( 0 )
+
 /* For open_file() */
 #define MP4_FAIL_IF_ERR_EX( cond, ... )\
 do\
@@ -387,13 +397,13 @@ static void remove_audio_hnd( mp4_audio_hnd_t *p_audio )
 }
 #endif
 
-static void remove_mp4_hnd( hnd_t handle )
+static int remove_mp4_hnd( hnd_t handle )
 {
     mp4_hnd_t *p_mp4 = handle;
     if( !p_mp4 )
-        return;
+        return 0;
     lsmash_cleanup_summary( (lsmash_summary_t *)p_mp4->summary );
-    lsmash_close_file( &p_mp4->file_param );
+    int ret = lsmash_close_file( &p_mp4->file_param );
     lsmash_destroy_root( p_mp4->p_root );
     free( p_mp4->p_sei_buffer );
 #if HAVE_ANY_AUDIO
@@ -404,6 +414,7 @@ static void remove_mp4_hnd( hnd_t handle )
     }
 #endif
     free( p_mp4 );
+    return ret;
 }
 
 #if HAVE_ANY_AUDIO
@@ -951,8 +962,14 @@ static int write_audio_frames( mp4_hnd_t *p_mp4, double video_dts, int finish )
     if( !p_mp4 || !p_mp4->audio_hnd || video_dts != video_dts )
         return -1;
     mp4_audio_hnd_t *p_audio = p_mp4->audio_hnd;
-    assert( p_audio );
-    if( !p_audio->summary || !p_audio->summary->frequency )
+#if HAVE_AUDIO
+    if( !p_audio->encoder )
+        return -1;
+#else
+    if( !p_audio->p_importer )
+        return -1;
+#endif
+    if( !p_audio->summary || !p_audio->summary->frequency || !p_audio->info )
         return -1;
 
 #if HAVE_AUDIO
@@ -1053,13 +1070,14 @@ static int close_file_audio( mp4_hnd_t* p_mp4, double actual_duration )
 {
     if( !p_mp4 || !p_mp4->audio_hnd || !p_mp4->i_movie_timescale || actual_duration != actual_duration )
         return -1;
+    int ret = 0;
     mp4_audio_hnd_t *p_audio = p_mp4->audio_hnd;
     if( !p_audio->summary || !p_audio->summary->frequency || !p_audio->info )
         return -1;
     double media_duration = actual_duration / p_mp4->i_movie_timescale + (double)p_audio->info->priming / p_audio->summary->frequency;
-    MP4_LOG_IF_ERR( ( write_audio_frames( p_mp4, media_duration, 0 ) || // FIXME: I wonder why is this needed?
-                      write_audio_frames( p_mp4, 0, 1 ) ),
-                    "failed to flush audio frame(s).\n" );
+    MP4_CLOSE_LOG_IF_ERR( ( write_audio_frames( p_mp4, media_duration, 0 ) || // FIXME: I wonder why is this needed?
+                            write_audio_frames( p_mp4, 0, 1 ) ),
+                          "failed to flush audio frame(s).\n" );
     uint32_t last_delta;
     if( lsmash_check_codec_type_identical( p_audio->codec_type, QT_CODEC_TYPE_RAW_AUDIO )
      || lsmash_check_codec_type_identical( p_audio->codec_type, QT_CODEC_TYPE_SOWT_AUDIO )
@@ -1079,8 +1097,8 @@ static int close_file_audio( mp4_hnd_t* p_mp4, double actual_duration )
         return -1;
     if( p_audio->i_numframe > 0 )
     {
-        MP4_LOG_IF_ERR( lsmash_flush_pooled_samples( p_mp4->p_root, p_audio->i_track, last_delta ),
-                        "failed to flush the rest of audio samples.\n" );
+        MP4_CLOSE_LOG_IF_ERR( lsmash_flush_pooled_samples( p_mp4->p_root, p_audio->i_track, last_delta ),
+                              "failed to flush the rest of audio samples.\n" );
         long double audio_samples = (long double)(p_audio->i_numframe - 1) * p_audio->summary->samples_in_frame + last_delta;
         actual_duration = audio_samples > p_audio->info->priming ? (double)(audio_samples - p_audio->info->priming) : 0;
         if( actual_duration )
@@ -1090,19 +1108,19 @@ static int close_file_audio( mp4_hnd_t* p_mp4, double actual_duration )
         actual_duration = 0;
     lsmash_edit_t edit;
     edit.duration   = 0;
-    MP4_LOG_IF_ERR( mp4_double_to_duration( &edit.duration, actual_duration ),
-                    "audio edit duration is out of range.\n" );
+    MP4_CLOSE_LOG_IF_ERR( mp4_double_to_duration( &edit.duration, actual_duration ),
+                          "audio edit duration is out of range.\n" );
     edit.start_time = p_audio->info->priming;
     edit.rate       = ISOM_EDIT_MODE_NORMAL;
     if( !p_mp4->b_fragments )
     {
-        MP4_LOG_IF_ERR( lsmash_create_explicit_timeline_map( p_mp4->p_root, p_audio->i_track, edit ),
-                        "failed to set timeline map for audio.\n" );
+        MP4_CLOSE_LOG_IF_ERR( lsmash_create_explicit_timeline_map( p_mp4->p_root, p_audio->i_track, edit ),
+                              "failed to set timeline map for audio.\n" );
     }
     else if( !p_mp4->b_stdout )
-        MP4_LOG_IF_ERR( lsmash_modify_explicit_timeline_map( p_mp4->p_root, p_audio->i_track, 1, edit ),
-                        "failed to update timeline map for audio.\n" );
-    return 0;
+        MP4_CLOSE_LOG_IF_ERR( lsmash_modify_explicit_timeline_map( p_mp4->p_root, p_audio->i_track, 1, edit ),
+                              "failed to update timeline map for audio.\n" );
+    return ret;
 }
 #endif /* #if HAVE_ANY_AUDIO */
 
@@ -1143,6 +1161,7 @@ int remux_callback( void* param, uint64_t done, uint64_t total )
 static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest_pts )
 {
     mp4_hnd_t *p_mp4 = handle;
+    int ret = 0;
 
     if( !p_mp4 )
         return 0;
@@ -1160,14 +1179,17 @@ static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest
                                        p_mp4->i_time_inc > UINT32_MAX ||
                                        flush_sample_delta > UINT32_MAX / p_mp4->i_time_inc;
             uint32_t flush_delta = flush_delta_overflow ? 0 : (uint32_t)(flush_sample_delta * p_mp4->i_time_inc);
-            MP4_LOG_IF_ERR( flush_delta_overflow ||
-                             lsmash_flush_pooled_samples( p_mp4->p_root, p_mp4->i_track, flush_delta ),
-                            "failed to flush the rest of samples.\n" );
+            MP4_CLOSE_LOG_IF_ERR( flush_delta_overflow ||
+                                   lsmash_flush_pooled_samples( p_mp4->p_root, p_mp4->i_track, flush_delta ),
+                                  "failed to flush the rest of samples.\n" );
 
             if( p_mp4->i_movie_timescale != 0 && p_mp4->i_video_timescale != 0 )    /* avoid zero division */
                 actual_duration = (((double)largest_pts + last_delta) * (double)p_mp4->i_time_inc / p_mp4->i_video_timescale) * p_mp4->i_movie_timescale;
             else
+            {
                 MP4_LOG_ERROR( "timescale is broken.\n" );
+                ret = -1;
+            }
 
             /*
              * Declare the explicit time-line mapping.
@@ -1183,28 +1205,28 @@ static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest
              */
             lsmash_edit_t edit;
             edit.duration   = 0;
-            MP4_LOG_IF_ERR( mp4_double_to_duration( &edit.duration, actual_duration ),
-                            "video edit duration is out of range.\n" );
-            MP4_LOG_IF_ERR( p_mp4->i_first_cts > INT64_MAX, "video edit start time is out of range.\n" );
+            MP4_CLOSE_LOG_IF_ERR( mp4_double_to_duration( &edit.duration, actual_duration ),
+                                  "video edit duration is out of range.\n" );
+            MP4_CLOSE_LOG_IF_ERR( p_mp4->i_first_cts > INT64_MAX, "video edit start time is out of range.\n" );
             edit.start_time = (int64_t)p_mp4->i_first_cts;
             edit.rate       = ISOM_EDIT_MODE_NORMAL;
             if( !p_mp4->b_fragments )
             {
-                MP4_LOG_IF_ERR( lsmash_create_explicit_timeline_map( p_mp4->p_root, p_mp4->i_track, edit ),
-                                "failed to set timeline map for video.\n" );
+                MP4_CLOSE_LOG_IF_ERR( lsmash_create_explicit_timeline_map( p_mp4->p_root, p_mp4->i_track, edit ),
+                                      "failed to set timeline map for video.\n" );
             }
             else if( !p_mp4->b_stdout )
-                MP4_LOG_IF_ERR( lsmash_modify_explicit_timeline_map( p_mp4->p_root, p_mp4->i_track, 1, edit ),
-                                "failed to update timeline map for video.\n" );
+                MP4_CLOSE_LOG_IF_ERR( lsmash_modify_explicit_timeline_map( p_mp4->p_root, p_mp4->i_track, 1, edit ),
+                                      "failed to update timeline map for video.\n" );
         }
 
 #if HAVE_ANY_AUDIO
-        MP4_LOG_IF_ERR( p_mp4->audio_hnd && p_mp4->audio_hnd->i_track && close_file_audio( p_mp4, actual_duration ),
-                        "failed to close audio.\n" );
+        MP4_CLOSE_LOG_IF_ERR( p_mp4->audio_hnd && p_mp4->audio_hnd->i_track && close_file_audio( p_mp4, actual_duration ),
+                              "failed to close audio.\n" );
 #endif
 
         if( p_mp4->psz_chapter && (p_mp4->major_brand != ISOM_BRAND_TYPE_QT) )
-            MP4_LOG_IF_ERR( lsmash_set_tyrant_chapter( p_mp4->p_root, p_mp4->psz_chapter, p_mp4->b_add_bom ), "failed to set chapter list.\n" );
+            MP4_CLOSE_LOG_IF_ERR( lsmash_set_tyrant_chapter( p_mp4->p_root, p_mp4->psz_chapter, p_mp4->b_add_bom ), "failed to set chapter list.\n" );
 
         if( !p_mp4->b_no_remux )
         {
@@ -1215,19 +1237,22 @@ static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest
             remux_info.func = remux_callback;
             remux_info.buffer_size = 4*1024*1024; // 4MiB
             remux_info.param = &cb_param;
-            MP4_LOG_IF_ERR( lsmash_finish_movie( p_mp4->p_root, &remux_info ), "failed to finish movie.\n" );
+            MP4_CLOSE_LOG_IF_ERR( lsmash_finish_movie( p_mp4->p_root, &remux_info ), "failed to finish movie.\n" );
         }
         else
-            MP4_LOG_IF_ERR( lsmash_finish_movie( p_mp4->p_root, NULL ), "failed to finish movie.\n" );
+            MP4_CLOSE_LOG_IF_ERR( lsmash_finish_movie( p_mp4->p_root, NULL ), "failed to finish movie.\n" );
     }
 
-    remove_mp4_hnd( p_mp4 ); /* including lsmash_destroy_root( p_mp4->p_root ); */
+    MP4_CLOSE_LOG_IF_ERR( remove_mp4_hnd( p_mp4 ),
+                          "failed to close output file.\n" ); /* including lsmash_destroy_root( p_mp4->p_root ); */
 
-    return 0;
+    return ret;
 }
 
 static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt, hnd_t audio_filters, char *audio_enc, char *audio_params )
 {
+    if( !psz_filename || !p_handle || !opt )
+        return -1;
     *p_handle = NULL;
 
     int b_regular = strcmp( psz_filename, "-" );
@@ -1237,7 +1262,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
         FILE *fh = x264_fopen( psz_filename, "wb" );
         MP4_FAIL_IF_ERR( !fh, "cannot open output file `%s'.\n", psz_filename );
         b_regular = x264_is_regular_file( fh );
-        fclose( fh );
+        MP4_FAIL_IF_ERR( fclose( fh ), "failed to close output probe file `%s'.\n", psz_filename );
     }
 
     mp4_hnd_t *p_mp4 = calloc( 1, sizeof(mp4_hnd_t) );
@@ -1269,7 +1294,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
         p_mp4->b_add_bom   = opt->add_bom;
         FILE *fh = x264_fopen( p_mp4->psz_chapter, "rb" );
         MP4_FAIL_IF_ERR_EX( !fh, "can't open `%s'\n", p_mp4->psz_chapter );
-        fclose( fh );
+        MP4_FAIL_IF_ERR_EX( fclose( fh ), "failed to close `%s'\n", p_mp4->psz_chapter );
     }
     p_mp4->psz_language         = opt->language;
     p_mp4->b_no_pasp            = opt->no_sar;
@@ -1323,8 +1348,10 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
 {
     mp4_hnd_t *p_mp4 = handle;
     uint64_t i_media_timescale;
-	
-	set_recovery_param( p_mp4, p_param );
+    if( !p_mp4 || !p_mp4->p_root || !p_mp4->summary || !p_param )
+        return -1;
+
+    set_recovery_param( p_mp4, p_param );
 
     p_mp4->i_delay_frames = p_param->i_bframe ? (p_param->i_bframe_pyramid ? 2 : 1) : 0;
     p_mp4->i_dts_compress_multiplier = p_mp4->b_dts_compress * p_mp4->i_delay_frames + 1;
@@ -1503,7 +1530,7 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
 {
     mp4_hnd_t *p_mp4 = handle;
 
-    if( !p_mp4 || !p_nal ||
+    if( !p_mp4 || !p_mp4->p_root || !p_mp4->summary || !p_mp4->i_track || !p_nal ||
         p_nal[0].i_payload < H264_NALU_LENGTH_SIZE || p_nal[1].i_payload < H264_NALU_LENGTH_SIZE || p_nal[2].i_payload < 0 ||
         !p_nal[0].p_payload || !p_nal[1].p_payload || (p_nal[2].i_payload && !p_nal[2].p_payload) )
         return -1;
@@ -1608,7 +1635,8 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
     uint64_t dts = 0;
     uint64_t cts = 0;
 
-    if( !p_mp4 || !p_picture || i_size < 0 || (i_size && !p_nalu) ||
+    if( !p_mp4 || !p_mp4->p_root || !p_mp4->i_track || !p_mp4->i_sample_entry ||
+        !p_picture || i_size < 0 || (i_size && !p_nalu) ||
         p_mp4->i_numframe == INT_MAX ||
         p_mp4->i_sei_size > UINT32_MAX - (uint32_t)i_size )
         return -1;

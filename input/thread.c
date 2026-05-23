@@ -51,7 +51,8 @@ typedef struct thread_input_arg_t
 static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, cli_input_opt_t *opt )
 {
     thread_hnd_t *h;
-    if( !p_handle || !*p_handle || !info || !cli_input.picture_alloc )
+    if( !p_handle || !*p_handle || !info ||
+        !cli_input.picture_alloc || !cli_input.picture_clean || !cli_input.read_frame )
         return -1;
 
     h = calloc( 1, sizeof(thread_hnd_t) );
@@ -121,7 +122,7 @@ static int read_frame( cli_pic_t *p_pic, hnd_t handle, int i_frame )
     else
     {
         if( h->next_frame >= 0 )
-            thread_input.release_frame( &h->pic, handle );
+            ret |= thread_input.release_frame( &h->pic, handle );
         ret |= h->input.read_frame( p_pic, h->p_handle, i_frame );
     }
 
@@ -168,6 +169,7 @@ static void picture_clean( cli_pic_t *pic, hnd_t handle )
 static int close_file( hnd_t handle )
 {
     thread_hnd_t *h = handle;
+    int ret = 0;
     if( !h )
         return 0;
     if( h->pool )
@@ -175,10 +177,10 @@ static int close_file( hnd_t handle )
     if( h->p_handle && h->input.picture_clean )
         h->input.picture_clean( &h->pic, h->p_handle );
     if( h->p_handle && h->input.close_file )
-        h->input.close_file( h->p_handle );
+        ret = h->input.close_file( h->p_handle );
     free( h->next_args );
     free( h );
-    return 0;
+    return ret;
 }
 
 const cli_input_t thread_input = { open_file, picture_alloc, read_frame, release_frame, picture_clean, close_file };

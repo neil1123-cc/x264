@@ -354,11 +354,15 @@ do\
 
 static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, cli_input_opt_t *opt )
 {
+    if( !psz_filename || !p_handle || !info || !opt )
+        return -1;
+    *p_handle = NULL;
+
     FILE *fh = x264_fopen( psz_filename, "r" );
     if( !fh )
         return -1;
     int b_regular = x264_is_regular_file( fh );
-    fclose( fh );
+    FAIL_IF_ERROR( fclose( fh ), "failed to close input probe file `%s'\n", psz_filename );
     FAIL_IF_ERROR( !b_regular, "AVS input is incompatible with non-regular file `%s'\n", psz_filename );
 
     AVS_Value res = avs_void;
@@ -716,6 +720,8 @@ fail:
 
 static int picture_alloc( cli_pic_t *pic, hnd_t handle, int csp, int width, int height )
 {
+    if( !pic )
+        return -1;
     if( x264_cli_pic_alloc( pic, X264_CSP_NONE, width, height ) )
         return -1;
     pic->img.csp = csp;
@@ -736,7 +742,9 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
     static const int plane[] = { AVS_PLANAR_Y, AVS_PLANAR_U, AVS_PLANAR_V };
     X264_STATIC_ASSERT( ARRAY_ELEMS(plane) == X264_AVS_PLANES, "Avisynth plane table size must match YUV plane domain" );
     avs_hnd_t *h = handle;
-    if( i_frame < 0 || i_frame >= h->num_frames )
+    if( !pic || !h || !h->clip || !h->func.avs_get_frame || !h->func.avs_clip_get_error ||
+        !h->func.avs_release_video_frame || pic->img.planes <= 0 || pic->img.planes > X264_AVS_PLANES ||
+        i_frame < 0 || i_frame >= h->num_frames )
         return -1;
     AVS_VideoFrame *frm = h->func.avs_get_frame( h->clip, i_frame );
     const char *err = h->func.avs_clip_get_error( h->clip );
@@ -757,6 +765,12 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
     {
         /* explicitly cast away the const attribute to avoid a warning */
         pic->img.plane[i] = (uint8_t*)AVS_GET_READ_PTR_P( frm, plane[i] );
+        if( !pic->img.plane[i] )
+        {
+            h->func.avs_release_video_frame( frm );
+            pic->opaque = NULL;
+            return -1;
+        }
         pic->img.stride[i] = AVS_GET_PITCH_P( frm, plane[i] );
     }
     return 0;
@@ -765,12 +779,16 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
 static int release_frame( cli_pic_t *pic, hnd_t handle )
 {
     avs_hnd_t *h = handle;
+    if( !pic || !h || !h->func.avs_release_video_frame || !pic->opaque )
+        return -1;
     h->func.avs_release_video_frame( pic->opaque );
     return 0;
 }
 
 static void picture_clean( cli_pic_t *pic, hnd_t handle )
 {
+    if( !pic )
+        return;
     memset( pic, 0, sizeof(cli_pic_t) );
 }
 
@@ -785,6 +803,8 @@ static int close_file( hnd_t handle )
 static hnd_t open_audio( hnd_t handle, int track )
 {
     avs_hnd_t *h = handle;
+    if( !h || !h->filename )
+        return NULL;
     if( !h->has_audio )
         return NULL;
     return x264_audio_open_from_file( "avs", h->filename, track );

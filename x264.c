@@ -802,13 +802,31 @@ REALIGN_STACK int main( int argc, char **argv )
     if( filter.free )
         filter.free( opt.hin );
     else if( opt.hin )
-        cli_input.close_file( opt.hin );
+    {
+        if( cli_input.close_file( opt.hin ) )
+        {
+            x264_cli_log( "x264", X264_LOG_ERROR, "failed to close input file\n" );
+            ret = -1;
+        }
+    }
     if( opt.hout )
-        cli_output.close_file( opt.hout, 0, 0 );
-    if( opt.tcfile_out )
-        fclose( opt.tcfile_out );
-    if( opt.qpfile )
-        fclose( opt.qpfile );
+    {
+        if( cli_output.close_file( opt.hout, 0, 0 ) )
+        {
+            x264_cli_log( "x264", X264_LOG_ERROR, "failed to close output file\n" );
+            ret = -1;
+        }
+    }
+    if( opt.tcfile_out && fclose( opt.tcfile_out ) )
+    {
+        x264_cli_log( "x264", X264_LOG_ERROR, "failed to close timecode output file\n" );
+        ret = -1;
+    }
+    if( opt.qpfile && fclose( opt.qpfile ) )
+    {
+        x264_cli_log( "x264", X264_LOG_ERROR, "failed to close qpfile\n" );
+        ret = -1;
+    }
     x264_param_cleanup( &param );
 
 #ifdef _WIN32
@@ -1976,7 +1994,11 @@ static int select_input( const char *demuxer, char *used_demuxer, size_t used_de
         if( f )
         {
             b_regular = x264_is_regular_file( f );
-            fclose( f );
+            if( fclose( f ) )
+            {
+                x264_cli_log( "x264", X264_LOG_ERROR, "failed to close input probe file `%s'\n", filename );
+                return -1;
+            }
         }
     }
     const char *module = b_auto ? ext : demuxer;
@@ -3135,7 +3157,10 @@ static int encode( x264_param_t *param, cli_opt_t *opt )
         }
 
         if( filter.release_frame( opt->hin, &cli_pic, i_frame + opt->i_seek ) )
+        {
+            retval = -1;
             break;
+        }
 
         /* update status line (up to 1000 times per input file) */
         if( opt->b_progress && i_frame_output )
@@ -3194,7 +3219,8 @@ fail:
     if( b_ctrl_c )
 		x264_cli_printf( X264_LOG_INFO, "aborted at input frame %d, output frame %d\n", opt->i_seek + i_frame, i_frame_output );
 
-    cli_output.close_file( opt->hout, largest_pts, second_largest_pts );
+    if( cli_output.close_file( opt->hout, largest_pts, second_largest_pts ) )
+        retval = -1;
     opt->hout = NULL;
 
     if( i_frame_output > 0 )

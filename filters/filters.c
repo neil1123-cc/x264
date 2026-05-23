@@ -126,7 +126,8 @@ char **x264_split_options( const char *opt_str, const char * const *options )
         opt_str += !!*opt_str;
     }
 
-    assert( offset == size );
+    if( offset != size )
+        goto fail;
     return opts;
 
 fail:

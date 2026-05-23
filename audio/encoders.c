@@ -1,6 +1,5 @@
 #include "audio/encoders.h"
 
-#include <assert.h>
 #include <stdlib.h>
 
 typedef struct {
@@ -101,7 +100,6 @@ struct aenc_t
 
 hnd_t x264_audio_encoder_open( const audio_encoder_t *encoder, hnd_t filter_chain, const char *opts )
 {
-    assert( encoder && filter_chain );
     if( !encoder || !filter_chain || !encoder->init )
         return NULL;
     struct aenc_t *enc = calloc( 1, sizeof( struct aenc_t ) );
@@ -125,25 +123,26 @@ hnd_t x264_audio_encoder_open( const audio_encoder_t *encoder, hnd_t filter_chai
 
 audio_info_t *x264_audio_encoder_info( hnd_t encoder )
 {
-    assert( encoder );
     struct aenc_t *enc = encoder;
+    if( !enc || !enc->enc || !enc->handle || !enc->enc->get_info )
+        return NULL;
 
     return enc->enc->get_info( enc->handle );
 }
 
 audio_packet_t *x264_audio_encode_frame( hnd_t encoder )
 {
-    assert( encoder );
     struct aenc_t *enc = encoder;
+    if( !enc || !enc->enc || !enc->handle || !enc->enc->get_next_packet )
+        return NULL;
 
     return enc->enc->get_next_packet( enc->handle );
 }
 
 void x264_audio_encoder_skip_samples( hnd_t encoder, uint64_t samplecount )
 {
-    assert( encoder );
     struct aenc_t *enc = encoder;
-    if( !enc || !enc->enc || !enc->enc->skip_samples )
+    if( !enc || !enc->enc || !enc->handle || !enc->enc->skip_samples )
         return;
 
     return enc->enc->skip_samples( enc->handle, samplecount );
@@ -151,16 +150,18 @@ void x264_audio_encoder_skip_samples( hnd_t encoder, uint64_t samplecount )
 
 audio_packet_t *x264_audio_encoder_finish( hnd_t encoder )
 {
-    assert( encoder );
     struct aenc_t *enc = encoder;
+    if( !enc || !enc->enc || !enc->handle || !enc->enc->finish )
+        return NULL;
 
     return enc->enc->finish( enc->handle );
 }
 
 void x264_audio_free_frame( hnd_t encoder, audio_packet_t *frame )
 {
-    assert( encoder );
     struct aenc_t *enc = encoder;
+    if( !enc || !enc->enc || !enc->handle || !frame || !enc->enc->free_packet )
+        return;
 
     return enc->enc->free_packet( enc->handle, frame );
 }
@@ -171,8 +172,10 @@ void x264_audio_encoder_close( hnd_t encoder )
         return;
     struct aenc_t *enc = encoder;
 
-    enc->enc->close( enc->handle );
-    x264_af_close( enc->filters );
+    if( enc->enc && enc->handle && enc->enc->close )
+        enc->enc->close( enc->handle );
+    if( enc->filters )
+        x264_af_close( enc->filters );
     free( enc );
 }
 
@@ -382,13 +385,16 @@ void x264_audio_encoder_show_help( int longhelp )
 
 hnd_t x264_audio_copy_open( hnd_t handle )
 {
-    assert( handle );
+    if( !handle )
+        return NULL;
+    audio_hnd_t UNUSED *h = handle;
+    if( !h->self || !h->self->name )
+        return NULL;
 #define IFRET( dec )                                                                \
         extern const audio_encoder_t audio_copy_ ## dec;                            \
         if( !strcmp( #dec, h->self->name ) )                                        \
             return x264_audio_encoder_open( &( audio_copy_ ## dec ), handle, NULL );
 #if HAVE_AUDIO
-    audio_hnd_t UNUSED *h = handle;
 #if HAVE_LAVF
     IFRET( lavf );
 #endif

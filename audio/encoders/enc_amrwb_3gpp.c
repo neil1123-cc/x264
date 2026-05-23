@@ -4,7 +4,6 @@
 #include "typedef.h"
 #include "enc_if.h"
 #include <math.h>
-#include <assert.h>
 #include <float.h>
 
 typedef struct enc_amrwb_3gpp_t
@@ -84,7 +83,8 @@ static int parse_float_option( const char *opt, double def, float *dst )
 
 static hnd_t init( hnd_t filter_chain, const char *opt_str )
 {
-    assert( filter_chain );
+    if( !filter_chain )
+        return NULL;
     audio_hnd_t *chain = filter_chain;
 
     if( chain->info.channels != 1 )
@@ -196,13 +196,14 @@ error:
 
 static audio_info_t *get_info( hnd_t handle )
 {
-    assert( handle );
     enc_amrwb_3gpp_t *h = handle;
-    return &h->info;
+    return h ? &h->info : NULL;
 }
 
 static void free_packet( hnd_t handle, audio_packet_t *packet )
 {
+    if( !packet )
+        return;
     packet->owner = NULL;
     x264_af_free_packet( packet );
 }
@@ -212,7 +213,7 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     enc_amrwb_3gpp_t *h = handle;
     audio_packet_t *in = NULL;
 
-    if( h->finishing )
+    if( !h || !h->filter_chain || !h->amrwb_3gpp || !h->bufsize || h->finishing )
         return NULL;
 
     audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
@@ -282,6 +283,8 @@ error:
 static void skip_samples( hnd_t handle, uint64_t samplecount )
 {
     enc_amrwb_3gpp_t *h = handle;
+    if( !h )
+        return;
     add_skip_samples( &h->last_sample, samplecount );
 }
 
@@ -293,8 +296,11 @@ static audio_packet_t *finish( hnd_t encoder )
 static void amrwb_3gpp_close( hnd_t handle )
 {
     enc_amrwb_3gpp_t *h = handle;
+    if( !h )
+        return;
 
-    E_IF_exit( h->amrwb_3gpp );
+    if( h->amrwb_3gpp )
+        E_IF_exit( h->amrwb_3gpp );
     if( h->info.extradata )
         free( h->info.extradata );
     free( h );

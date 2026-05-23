@@ -143,6 +143,8 @@ static void mkv_close_audio( mkv_hnd_t *p_mkv )
 
 static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt, hnd_t audio_filters, char *audio_enc, char *audio_params )
 {
+    if( !psz_filename || !p_handle )
+        return -1;
     *p_handle = NULL;
     mkv_hnd_t *p_mkv = calloc( 1, sizeof(mkv_hnd_t) );
     if( !p_mkv )
@@ -382,6 +384,8 @@ static int set_audio_track( mkv_hnd_t *p_mkv, x264_param_t *p_param )
 static int set_param( hnd_t handle, x264_param_t *p_param )
 {
     mkv_hnd_t   *p_mkv = handle;
+    if( !p_mkv || !p_mkv->w || !p_param )
+        return -1;
 
     FAIL_IF_ERR( set_video_track( p_mkv, p_param ), "mkv", "failed to create video track\n" );
 
@@ -395,6 +399,9 @@ static int set_param( hnd_t handle, x264_param_t *p_param )
 static int write_headers( hnd_t handle, x264_nal_t *p_nal )
 {
     mkv_hnd_t *p_mkv = handle;
+    if( !p_mkv || !p_mkv->w || !p_nal ||
+        !p_mkv->i_video_track || p_mkv->i_video_track >= MK_MAX_TRACKS )
+        return -1;
     mk_track_t *vtrack = &p_mkv->tracks[p_mkv->i_video_track];
 
     if( p_nal[0].i_payload < 8 || p_nal[1].i_payload < 5 )
@@ -462,14 +469,21 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
 #if HAVE_AUDIO
 static int write_audio( mkv_hnd_t *p_mkv, int64_t video_dts, int finish )
 {
+    if( !p_mkv || !p_mkv->a_mkv || !p_mkv->w )
+        return -1;
     mkv_audio_hnd_t *a_mkv = p_mkv->a_mkv;
-
-    assert( a_mkv );
+    if( !a_mkv->encoder || !a_mkv->info || a_mkv->info->samplerate <= 0 )
+        return -1;
 
     if( a_mkv->lastdts == INVALID_DTS )
     {
         if( video_dts > 0 )
-            x264_audio_encoder_skip_samples( a_mkv->encoder, (double)video_dts * a_mkv->info->samplerate / (double)MKV_NANOSECONDS );
+        {
+            uint64_t skip_ns = (uint64_t)video_dts;
+            uint64_t samplerate = (uint64_t)a_mkv->info->samplerate;
+            uint64_t skip_samples = skip_ns > UINT64_MAX / samplerate ? UINT64_MAX : skip_ns * samplerate / MKV_NANOSECONDS;
+            x264_audio_encoder_skip_samples( a_mkv->encoder, skip_samples );
+        }
         a_mkv->lastdts = video_dts; // first frame (nonzero if --seek is used)
     }
 
@@ -539,7 +553,9 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
     int skip = 0;
     int64_t i_stamp;
 
-    if( i_size < 0 || (i_size && !p_nalu) ||
+    if( !p_mkv || !p_mkv->w || !p_picture ||
+        !p_mkv->i_video_track || p_mkv->i_video_track >= MK_MAX_TRACKS ||
+        i_size < 0 || (i_size && !p_nalu) ||
         mkv_timebase_to_ns( &i_stamp, p_picture->i_pts, p_mkv->i_timebase_num, p_mkv->i_timebase_den ) )
         return -1;
 
@@ -575,18 +591,26 @@ static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest
     int ret = 0;
     int64_t i_last_delta[MK_MAX_TRACKS] = { 0 };
 
-    if( largest_pts >= second_largest_pts && second_largest_pts >= 0 )
+    if( !p_mkv || !p_mkv->w )
+        return 0;
+
+    int valid_video_track = p_mkv->i_video_track && p_mkv->i_video_track < MK_MAX_TRACKS;
+    if( valid_video_track && largest_pts >= second_largest_pts && second_largest_pts >= 0 )
     {
         if( mkv_timebase_to_ns( &i_last_delta[p_mkv->i_video_track], largest_pts - second_largest_pts,
                                 p_mkv->i_timebase_num, p_mkv->i_timebase_den ) )
             ret = -1;
     }
+    else if( !valid_video_track )
+        ret = -1;
 
 #if HAVE_AUDIO
     if( p_mkv->a_mkv )
     {
         mkv_audio_hnd_t *a_mkv = p_mkv->a_mkv;
-        if( write_audio( p_mkv, -1, 1 ) < 0 )
+        if( !a_mkv->info || !p_mkv->i_audio_track || p_mkv->i_audio_track >= MK_MAX_TRACKS )
+            ret = -1;
+        else if( write_audio( p_mkv, -1, 1 ) < 0 )
         {
             x264_cli_log( "mkv", X264_LOG_ERROR, "error flushing audio\n" );
             ret = -1;
@@ -609,7 +633,7 @@ static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest
 #endif
 
     int i;
-    for( i=1; i<=p_mkv->i_track_count; i++ )
+    for( i=1; i<=p_mkv->i_track_count && i<MK_MAX_TRACKS; i++ )
     {
         if( p_mkv->tracks[i].codec_private_size )
             free( p_mkv->tracks[i].codec_private );

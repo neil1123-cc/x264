@@ -80,6 +80,9 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
     /* upon a <= 0 cache request, do nothing */
     if( size <= 0 )
         return 0;
+    if( !handle || !*handle || !filter || !info ||
+        !filter->get_frame || !filter->release_frame || !filter->free )
+        return -1;
     if( size > INT_MAX || (uintmax_t)size + 1 > SIZE_MAX / sizeof(cli_pic_t*) )
         return -1;
     cache_hnd_t *h = calloc( 1, sizeof(cache_hnd_t) );
@@ -179,6 +182,9 @@ static void fill_cache( cache_hnd_t *h, int frame )
 static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 {
     cache_hnd_t *h = handle;
+    if( !h || !output || !h->cache || !h->prev_hnd ||
+        !h->prev_filter.get_frame || !h->prev_filter.release_frame )
+        return -1;
     FAIL_IF_ERR( frame < h->first_frame, NAME, "frame %d is before first cached frame %d \n", frame, h->first_frame );
     fill_cache( h, frame );
     if( (int64_t)frame > cache_last_frame( h ) ) /* eof */
@@ -199,7 +205,10 @@ static int release_frame( hnd_t handle, cli_pic_t *pic, int frame )
 static void free_filter( hnd_t handle )
 {
     cache_hnd_t *h = handle;
-    h->prev_filter.free( h->prev_hnd );
+    if( !h )
+        return;
+    if( h->prev_hnd && h->prev_filter.free )
+        h->prev_filter.free( h->prev_hnd );
     cache_free_partial( h );
 }
 

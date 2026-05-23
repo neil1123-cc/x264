@@ -68,6 +68,8 @@ static size_t gop_frame_digits( int frame )
 
 static char *gop_alloc_prefixed_filename( gop_hnd_t *hnd, const char *suffix )
 {
+    if( !hnd || !hnd->filename_prefix || !suffix )
+        return NULL;
     size_t dir_len = hnd->dir_prefix ? strlen( hnd->dir_prefix ) : 0;
     size_t prefix_len = strlen( hnd->filename_prefix );
     size_t suffix_len = strlen( suffix );
@@ -94,6 +96,8 @@ static char *gop_alloc_prefixed_filename( gop_hnd_t *hnd, const char *suffix )
 
 static char *gop_alloc_data_filename( gop_hnd_t *hnd )
 {
+    if( !hnd || !hnd->filename_prefix )
+        return NULL;
     size_t dir_len = hnd->dir_prefix ? strlen( hnd->dir_prefix ) : 0;
     size_t prefix_len = strlen( hnd->filename_prefix );
     size_t frame_digits = gop_frame_digits( hnd->i_numframe );
@@ -123,6 +127,8 @@ static char *gop_alloc_data_filename( gop_hnd_t *hnd )
 
 static FILE* gop_open_file_for_write( const char *fname, int retry, gop_hnd_t *hnd )
 {
+    if( !fname || !hnd )
+        return NULL;
     while( 1 )
     {
         FILE *fp = x264_fopen( fname, "wb" );
@@ -143,16 +149,21 @@ static FILE* gop_open_file_for_write( const char *fname, int retry, gop_hnd_t *h
     return NULL;
 }
 
-static void gop_clean_up( gop_hnd_t *hnd )
+static int gop_clean_up( gop_hnd_t *hnd )
 {
+    int ret = 0;
+
+    if( !hnd )
+        return 0;
+
     if( hnd->data_file )
     {
-        fclose( hnd->data_file );
+        ret |= fclose( hnd->data_file );
         hnd->data_file = NULL;
     }
     if( hnd->gop_file )
     {
-        fclose( hnd->gop_file );
+        ret |= fclose( hnd->gop_file );
         hnd->gop_file = NULL;
     }
     if( hnd->filename_prefix )
@@ -165,10 +176,16 @@ static void gop_clean_up( gop_hnd_t *hnd )
         free( hnd->dir_prefix );
         hnd->dir_prefix = NULL;
     }
+
+    return ret ? -1 : 0;
 }
 
 static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt, hnd_t audio_filters, char *audio_encoder, char *audio_parameters )
 {
+    if( !psz_filename || !p_handle )
+        return -1;
+    *p_handle = NULL;
+
     gop_hnd_t *hnd = calloc( 1, sizeof(gop_hnd_t) );
     if( !hnd )
         return -1;
@@ -247,7 +264,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
 static int set_param( hnd_t handle, x264_param_t *p_param )
 {
     gop_hnd_t *hnd = (gop_hnd_t *)handle;
-    if( !hnd || !hnd->filename_prefix || !hnd->gop_file || !p_param )
+    if( !hnd || hnd->b_fail || !hnd->filename_prefix || !hnd->gop_file || !p_param )
         return -1;
 
     /* Force Annex-B off and no repeat headers for GOP output. */
@@ -300,7 +317,7 @@ static int write_headers( hnd_t handle, x264_nal_t *p_nal )
 {
     gop_hnd_t *hnd = (gop_hnd_t *)handle;
     int size = 0;
-    if( !hnd || !hnd->filename_prefix || !hnd->gop_file || !p_nal )
+    if( !hnd || hnd->b_fail || !hnd->filename_prefix || !hnd->gop_file || !p_nal )
         return -1;
 
     /* Build headers filename */
@@ -342,7 +359,7 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
 {
     gop_hnd_t *hnd = (gop_hnd_t *)handle;
     enum { GOP_TIMESTAMP_PAYLOAD_SIZE = 2 * sizeof(int64_t) };
-    if( !hnd || !hnd->filename_prefix || !hnd->gop_file || !p_picture || i_size < 0 || (i_size && !p_nalu) ||
+    if( !hnd || hnd->b_fail || !hnd->filename_prefix || !hnd->gop_file || !p_picture || i_size < 0 || (i_size && !p_nalu) ||
         hnd->i_numframe == INT_MAX || GOP_TIMESTAMP_PAYLOAD_SIZE > UINT8_MAX )
         return -1;
     int is_keyframe = (p_picture->i_type == X264_TYPE_IDR);
@@ -352,7 +369,11 @@ static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_
         /* Close previous data file if exists */
         if( hnd->data_file )
         {
-            fclose( hnd->data_file );
+            if( fclose( hnd->data_file ) )
+            {
+                hnd->data_file = NULL;
+                return -1;
+            }
             hnd->data_file = NULL;
         }
 
@@ -412,9 +433,9 @@ static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest
     if( !hnd )
         return 0;
 
-    gop_clean_up( hnd );
+    int ret = gop_clean_up( hnd );
     free( hnd );
-    return 0;
+    return ret;
 }
 
 const cli_output_t gop_output = { open_file, set_param, write_headers, write_frame, close_file };

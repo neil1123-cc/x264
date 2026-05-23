@@ -22,8 +22,6 @@
 #include <QTML.h>
 #include <QuickTimeComponents.h>
 
-#include <assert.h>
-
 typedef struct
 {
     int is_vbr;
@@ -360,10 +358,11 @@ static CFArrayRef configure_codec_settings_array( CFArrayRef current_array, Code
 
 OSStatus configure_quicktime_component( enc_qtaac_t *h )
 {
-    assert( h );
-    audio_hnd_t *chain = h->filter_chain;
     AudioStreamBasicDescription indesc, outdesc;
     CFArrayRef config_array=NULL;
+    if( !h || !h->filter_chain || !h->ci )
+        goto error;
+    audio_hnd_t *chain = h->filter_chain;
 
     memset( &indesc, 0, sizeof(indesc) );
     indesc.mSampleRate = chain->info.samplerate;
@@ -542,46 +541,57 @@ static OSStatus register_quicktime_component( void )
 
 static void read_AudioSpecificConfig( UInt8 *esds_buf, UInt32 size, UInt8 **asc, UInt32 *asc_size )
 {
+    if( !asc || !asc_size )
+        return;
     *asc_size = 0;
     *asc  = NULL;
+    if( !esds_buf )
+        return;
 
-    while( size > 0 || !(*asc) )
+    while( size > 0 && !*asc )
     {
         UInt8 tag;
         UInt32 tag_size = 0;
-        int i;
 
         tag = *esds_buf;
         esds_buf++;
         size--;
 
-        for( i=0; i<4; i++ )
+        int complete = 0;
+        for( int i = 0; i < 4; i++ )
         {
-            tag_size = (tag_size << 7) | (esds_buf[i] & 0x7F);
-            if( !(esds_buf[i] >> 7) )
+            if( !size )
+                return;
+            UInt8 byte = *esds_buf++;
+            size--;
+            tag_size = (tag_size << 7) | (byte & 0x7F);
+            if( !(byte >> 7) )
             {
-                esds_buf += i+1;
-                size -= i+1;
+                complete = 1;
                 break;
             }
         }
+        if( !complete || tag_size > size )
+            return;
 
         switch( tag )
         {
             case 0x03:
+                if( tag_size < 3 )
+                    return;
                 esds_buf += 3;
                 size -= 3;
                 continue;
             case 0x04:
+                if( tag_size < 13 )
+                    return;
                 esds_buf += 13;
                 size -= 13;
                 continue;
             case 0x05:
                 *asc = esds_buf;
                 *asc_size = tag_size;
-                esds_buf += tag_size;
-                size -= tag_size;
-                continue;
+                return;
             default:
                 esds_buf += tag_size;
                 size -= tag_size;
@@ -592,7 +602,8 @@ static void read_AudioSpecificConfig( UInt8 *esds_buf, UInt32 size, UInt8 **asc,
 
 static hnd_t qtaac_init( hnd_t filter_chain, const char *opt_str )
 {
-    assert( filter_chain );
+    if( !filter_chain )
+        return NULL;
 
     static const char * const optlist[] = { AUDIO_CODEC_COMMON_OPTIONS, "samplerate", "sbr", "mode", NULL };
 	char **opts     = x264_split_options( opt_str, optlist);
@@ -802,14 +813,15 @@ error:
 
 static audio_info_t *get_info( hnd_t handle )
 {
-    assert( handle );
     enc_qtaac_t *h = handle;
 
-    return &h->info;
+    return h ? &h->info : NULL;
 }
 
 static void free_packet( hnd_t handle, audio_packet_t *packet )
 {
+    if( !packet )
+        return;
     packet->owner = NULL;
     x264_af_free_packet( packet );
 }
@@ -832,7 +844,14 @@ static OSStatus pcmInputDataProc( ComponentInstance ci,
                           void *inRefCon )
 {
     enc_qtaac_t *h = inRefCon;
+    if( !h || !ioNumberDataPackets || !ioData || ioData->mNumberBuffers < 1 )
+        return -1;
     UInt32 requested_packets = *ioNumberDataPackets;
+
+    if( !h->filter_chain || h->info.channels <= 0 ||
+        h->info.channels > (int)(sizeof(qt_channel_map) / sizeof(qt_channel_map[0])) ||
+        h->info.samplesize <= 0 )
+        goto error;
 
     if( h->finishing || ( h->in && ( h->in->flags & AUDIO_FLAG_EOF ) ) )
         goto eof_reached;
@@ -903,6 +922,9 @@ static audio_packet_t *fill_buffer( enc_qtaac_t *h )
 {
     audio_packet_t *out = NULL;
 
+    if( !h || !h->ci || !h->buffer || h->bufsize <= 0 || h->info.channels <= 0 )
+        return NULL;
+
     UInt32 npackets = 1;
     AudioStreamPacketDescription desc = { .mStartOffset = 0, };
     AudioBufferList list = { .mNumberBuffers = 1,
@@ -953,7 +975,7 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     enc_qtaac_t *h = handle;
     audio_packet_t *out = NULL;
 
-    if( h->finishing )
+    if( !h || h->finishing )
         return NULL;
 
     do
@@ -979,6 +1001,8 @@ static audio_packet_t *get_next_packet( hnd_t handle )
 static void skip_samples( hnd_t handle, uint64_t samplecount )
 {
     enc_qtaac_t *h = handle;
+    if( !h )
+        return;
     add_skip_samples( &h->last_sample, samplecount );
 }
 
@@ -986,6 +1010,9 @@ static audio_packet_t *finish( hnd_t encoder )
 {
     enc_qtaac_t *h = encoder;
     audio_packet_t *out = NULL;
+
+    if( !h )
+        return NULL;
 
     h->finishing = 1;
 
@@ -1004,8 +1031,9 @@ static audio_packet_t *finish( hnd_t encoder )
 
 static void qtaac_close( hnd_t handle )
 {
-    assert( handle );
     enc_qtaac_t *h = handle;
+    if( !h )
+        return;
 
     if( h->ci )
         CloseComponent( h->ci );

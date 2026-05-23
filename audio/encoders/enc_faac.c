@@ -2,7 +2,6 @@
 #include "filters/audio/internal.h"
 
 #include <faac.h>
-#include <assert.h>
 #include <float.h>
 
 typedef struct enc_faac_t
@@ -102,7 +101,8 @@ static const int faac_channel_map[][8] = {
 
 static hnd_t init( hnd_t filter_chain, const char *opt_str )
 {
-    assert( filter_chain );
+    if( !filter_chain )
+        return NULL;
     audio_hnd_t *chain = filter_chain;
 
     if( chain->info.channels <= 0 || chain->info.samplerate <= 0 )
@@ -269,14 +269,14 @@ error:
 
 static audio_info_t *get_info( hnd_t handle )
 {
-    assert( handle );
     enc_faac_t *h = handle;
-
-    return &h->info;
+    return h ? &h->info : NULL;
 }
 
 static void free_packet( hnd_t handle, audio_packet_t *packet )
 {
+    if( !packet )
+        return;
     packet->owner = NULL;
     x264_af_free_packet( packet );
 }
@@ -286,7 +286,7 @@ static audio_packet_t *get_next_packet( hnd_t handle )
     enc_faac_t *h = handle;
     int ret;
 
-    if( h->finishing )
+    if( !h || !h->filter_chain || !h->faac || !h->bufsize || h->finishing )
         return NULL;
 
     audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
@@ -357,6 +357,8 @@ error:
 static void skip_samples( hnd_t handle, uint64_t samplecount )
 {
     enc_faac_t *h = handle;
+    if( !h )
+        return;
     add_skip_samples( &h->last_sample, samplecount );
 }
 
@@ -364,6 +366,9 @@ static audio_packet_t *finish( hnd_t encoder )
 {
     enc_faac_t *h = encoder;
     int ret;
+
+    if( !h || !h->faac || !h->bufsize )
+        return NULL;
 
     audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
     if( !out )
@@ -390,8 +395,11 @@ error:
 static void faac_close( hnd_t handle )
 {
     enc_faac_t *h = handle;
+    if( !h )
+        return;
 
-    faacEncClose( h->faac );
+    if( h->faac )
+        faacEncClose( h->faac );
     if( h->in )
         x264_af_free_packet( h->in );
     if( h->samplebuffer )

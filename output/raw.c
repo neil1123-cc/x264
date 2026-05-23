@@ -37,6 +37,10 @@ static int add_payload_size( int *dst, int payload )
 
 static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt, hnd_t audio_filters, char *audio_enc, char *audio_params )
 {
+    if( !psz_filename || !p_handle )
+        return -1;
+    *p_handle = NULL;
+
     FAIL_IF_ERR( audio_enc && ( strcmp( audio_enc, "none" ) && strcmp( audio_enc, "auto" ) ), "raw",
                  "audio is not supported on this muxer\n" );
 
@@ -50,34 +54,40 @@ static int open_file( char *psz_filename, hnd_t *p_handle, cli_output_opt_t *opt
 
 static int set_param( hnd_t handle, x264_param_t *p_param )
 {
-    return 0;
+    return handle && p_param ? 0 : -1;
 }
 
 static int write_headers( hnd_t handle, x264_nal_t *p_nal )
 {
     int size = 0;
 
-    if( handle && p_nal &&
-        !add_payload_size( &size, p_nal[0].i_payload ) &&
-        !add_payload_size( &size, p_nal[1].i_payload ) &&
-        !add_payload_size( &size, p_nal[2].i_payload ) &&
-        (!size || p_nal[0].p_payload) &&
-        fwrite( p_nal[0].p_payload, (size_t)size, 1, (FILE*)handle ) )
-        return size;
-    return -1;
+    if( !handle || !p_nal ||
+        add_payload_size( &size, p_nal[0].i_payload ) ||
+        add_payload_size( &size, p_nal[1].i_payload ) ||
+        add_payload_size( &size, p_nal[2].i_payload ) )
+        return -1;
+    if( !size )
+        return 0;
+    if( !p_nal[0].p_payload || fwrite( p_nal[0].p_payload, (size_t)size, 1, (FILE*)handle ) != 1 )
+        return -1;
+    return size;
 }
 
 static int write_frame( hnd_t handle, uint8_t *p_nalu, int i_size, x264_picture_t *p_picture )
 {
-    if( handle && i_size >= 0 && (!i_size || p_nalu) && fwrite( p_nalu, (size_t)i_size, 1, (FILE*)handle ) )
-        return i_size;
-    return -1;
+    if( !handle || i_size < 0 || (i_size && !p_nalu) )
+        return -1;
+    if( !i_size )
+        return 0;
+    return fwrite( p_nalu, (size_t)i_size, 1, (FILE*)handle ) == 1 ? i_size : -1;
 }
 
 static int close_file( hnd_t handle, int64_t largest_pts, int64_t second_largest_pts )
 {
-    if( !handle || handle == stdout )
+    if( !handle )
         return 0;
+    if( handle == stdout )
+        return fflush( stdout );
 
     return fclose( (FILE*)handle );
 }

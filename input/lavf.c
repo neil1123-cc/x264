@@ -112,6 +112,8 @@ static AVCodecContext *codec_from_stream( AVStream *stream )
 
 static int read_frame_internal( cli_pic_t *p_pic, lavf_hnd_t *h, int i_frame, video_info_t *info )
 {
+    if( !p_pic || !h || !h->lavf || !h->lavc || !h->frame || !h->pkt || i_frame < 0 )
+        return -1;
     if( h->first_pic && !info )
     {
         /* see if the frame we are requesting is the frame we have already read and stored.
@@ -202,6 +204,10 @@ static int read_frame_internal( cli_pic_t *p_pic, lavf_hnd_t *h, int i_frame, vi
 
 static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, cli_input_opt_t *opt )
 {
+    if( !psz_filename || !p_handle || !info || !opt )
+        return -1;
+    *p_handle = NULL;
+
     lavf_hnd_t *h = calloc( 1, sizeof(lavf_hnd_t) );
     if( !h )
         return -1;
@@ -369,6 +375,8 @@ fail:
 
 static int picture_alloc( cli_pic_t *pic, hnd_t handle, int csp, int width, int height )
 {
+    if( !pic )
+        return -1;
     if( x264_cli_pic_alloc( pic, X264_CSP_NONE, width, height ) )
         return -1;
     pic->img.csp = csp;
@@ -383,6 +391,8 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
 
 static void picture_clean( cli_pic_t *pic, hnd_t handle )
 {
+    if( !pic )
+        return;
     memset( pic, 0, sizeof(cli_pic_t) );
 }
 
@@ -415,6 +425,8 @@ static int close_file( hnd_t handle )
 static hnd_t open_audio( hnd_t handle, int track )
 {
     lavf_hnd_t *h = handle;
+    if( !h || !h->filename )
+        return NULL;
     if( !x264_is_regular_file_path( h->filename ) )
     {
         x264_cli_log( "lavf", X264_LOG_WARNING, "reading audio from non-regular files is not implemented yet.\n" );

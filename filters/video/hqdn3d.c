@@ -187,6 +187,8 @@ static int init(hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info,
 {
     double lum_spac, lum_tmp, chrom_spac, chrom_tmp;
 
+    if( !handle || !*handle || !filter || !filter->get_frame || !filter->release_frame || !filter->free )
+        return -1;
     FAIL_IF_ERROR( !info || info->width <= 0 || info->height <= 0 ||
         info->width > MAX_RESOLUTION || info->height > MAX_RESOLUTION,
         "invalid input resolution %dx%d\n", info ? info->width : 0, info ? info->height : 0 );
@@ -371,7 +373,9 @@ static int get_frame(hnd_t handle, cli_pic_t *out, int frame)
     cli_pic_t in;
     int ret;
 
-    if( !h || !out || frame < 0 || h->prev_filter.get_frame(h->prev_hnd, &in, frame) )
+    if( !h || !out || !h->csp || !h->line || !h->prev_hnd ||
+        !h->prev_filter.get_frame || !h->prev_filter.release_frame ||
+        frame < 0 || h->prev_filter.get_frame(h->prev_hnd, &in, frame) )
         return -1;
 
     ret = x264_cli_pic_copy( &h->buffer, &in );
@@ -380,8 +384,12 @@ static int get_frame(hnd_t handle, cli_pic_t *out, int frame)
         return -1;
 
     *out = h->buffer;
+    if( out->img.planes < 0 || out->img.planes > 3 )
+        return -1;
 
     for(int i = 0; i < out->img.planes; i++) {
+        if( !h->frame[i] )
+            return -1;
         int width = out->img.width * h->csp->width[i];
         int height = out->img.height * h->csp->height[i];
         int stride = out->img.stride[i];
@@ -397,13 +405,18 @@ static int get_frame(hnd_t handle, cli_pic_t *out, int frame)
 
 static int release_frame(hnd_t handle, cli_pic_t *pic, int frame)
 {
+    if( !handle || !pic )
+        return -1;
     return 0;
 }
 
 static void free_filter(hnd_t handle)
 {
     hqdn3d_hnd_t *h = handle;
-    h->prev_filter.free(h->prev_hnd);
+    if( !h )
+        return;
+    if( h->prev_hnd && h->prev_filter.free )
+        h->prev_filter.free(h->prev_hnd);
     x264_cli_pic_clean( &h->buffer );
     free(h->line);
     for(int i = 0; i < 3; i++)

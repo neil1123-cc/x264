@@ -82,6 +82,10 @@ static int raw_parse_resolution( const char *p, char **end, int *width, int *hei
 
 static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, cli_input_opt_t *opt )
 {
+    if( !psz_filename || !p_handle || !info || !opt )
+        return -1;
+    *p_handle = NULL;
+
     raw_hnd_t *h = calloc( 1, sizeof(raw_hnd_t) );
     if( !h )
         return -1;
@@ -153,6 +157,7 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
     updated_info.vfr         = 0;
 
     const x264_cli_csp_t *csp = x264_cli_get_csp( updated_info.csp );
+    FAIL_IF_ERROR_CLEANUP( !csp, "unsupported colorspace\n" );
     for( int i = 0; i < csp->planes; i++ )
     {
         h->plane_size[i] = x264_cli_pic_plane_size( updated_info.csp, updated_info.width, updated_info.height, i );
@@ -160,12 +165,14 @@ static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, c
         /* x264_cli_pic_plane_size returns the size in bytes, we need the value in pixels from here on */
         h->plane_size[i] /= x264_cli_csp_depth_factor( updated_info.csp );
     }
+    FAIL_IF_ERROR_CLEANUP( h->frame_size <= 0, "invalid frame size\n" );
 
     if( x264_is_regular_file( h->fh ) )
     {
-        fseek( h->fh, 0, SEEK_END );
+        FAIL_IF_ERROR_CLEANUP( fseek( h->fh, 0, SEEK_END ), "unable to seek input file\n" );
         int64_t size = ftell( h->fh );
-        fseek( h->fh, 0, SEEK_SET );
+        FAIL_IF_ERROR_CLEANUP( size < 0, "unable to determine input file size\n" );
+        FAIL_IF_ERROR_CLEANUP( fseek( h->fh, 0, SEEK_SET ), "unable to seek input file\n" );
         int64_t num_frames = size / h->frame_size;
         FAIL_IF_ERROR_CLEANUP( num_frames > INT_MAX, "too many frames\n" );
         updated_info.num_frames = (int)num_frames;
@@ -191,16 +198,25 @@ fail:
 
 static int read_frame_internal( cli_pic_t *pic, raw_hnd_t *h, int bit_depth_uc )
 {
+    if( !pic || !h || (!h->use_mmap && !h->fh) || pic->img.planes <= 0 || pic->img.planes > 4 )
+        return -1;
+    if( h->use_mmap && !pic->img.plane[0] )
+        return -1;
     int pixel_depth = x264_cli_csp_depth_factor( pic->img.csp );
+    if( pixel_depth <= 0 )
+        return -1;
 
     for( int i = 0; i < pic->img.planes; i++ )
     {
+        if( h->plane_size[i] < 0 )
+            return -1;
         if( h->use_mmap )
         {
             if( i )
                 pic->img.plane[i] = pic->img.plane[i-1] + pixel_depth * h->plane_size[i-1];
         }
-        else if( fread( pic->img.plane[i], (size_t)pixel_depth, (size_t)h->plane_size[i], h->fh ) != (size_t)h->plane_size[i] )
+        else if( (h->plane_size[i] && !pic->img.plane[i]) ||
+                 fread( pic->img.plane[i], (size_t)pixel_depth, (size_t)h->plane_size[i], h->fh ) != (size_t)h->plane_size[i] )
             return -1;
 
         if( bit_depth_uc && h->bit_depth != h->x264_bit_depth )
@@ -220,17 +236,25 @@ static int read_frame_internal( cli_pic_t *pic, raw_hnd_t *h, int bit_depth_uc )
 static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
 {
     raw_hnd_t *h = handle;
+    if( !pic || !h || !h->fh || i_frame < 0 || i_frame == INT_MAX )
+        return -1;
 
     if( h->use_mmap )
     {
-        pic->img.plane[0] = x264_cli_mmap( &h->mmap, i_frame * h->frame_size, h->frame_size );
+        if( h->frame_size <= 0 || i_frame > INT64_MAX / h->frame_size )
+            return -1;
+        pic->img.plane[0] = x264_cli_mmap( &h->mmap, (int64_t)i_frame * h->frame_size, h->frame_size );
         if( !pic->img.plane[0] )
             return -1;
     }
     else if( i_frame > h->next_frame )
     {
         if( x264_is_regular_file( h->fh ) )
-            fseek( h->fh, i_frame * h->frame_size, SEEK_SET );
+        {
+            if( h->frame_size <= 0 || i_frame > INT64_MAX / h->frame_size ||
+                fseek( h->fh, (int64_t)i_frame * h->frame_size, SEEK_SET ) )
+                return -1;
+        }
         else
             while( i_frame > h->next_frame )
             {
@@ -250,20 +274,30 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
 static int release_frame( cli_pic_t *pic, hnd_t handle )
 {
     raw_hnd_t *h = handle;
+    if( !pic || !h )
+        return -1;
     if( h->use_mmap )
+    {
+        if( !pic->img.plane[0] )
+            return -1;
         return x264_cli_munmap( &h->mmap, pic->img.plane[0], h->frame_size );
+    }
     return 0;
 }
 
 static int picture_alloc( cli_pic_t *pic, hnd_t handle, int csp, int width, int height )
 {
     raw_hnd_t *h = handle;
+    if( !pic || !h )
+        return -1;
     return (h->use_mmap ? x264_cli_pic_init_noalloc : x264_cli_pic_alloc)( pic, csp, width, height );
 }
 
 static void picture_clean( cli_pic_t *pic, hnd_t handle )
 {
     raw_hnd_t *h = handle;
+    if( !pic || !h )
+        return;
     if( h->use_mmap )
         memset( pic, 0, sizeof(cli_pic_t) );
     else
@@ -273,13 +307,15 @@ static void picture_clean( cli_pic_t *pic, hnd_t handle )
 static int close_file( hnd_t handle )
 {
     raw_hnd_t *h = handle;
+    int ret = 0;
     if( !h || !h->fh )
         return 0;
     if( h->use_mmap )
         x264_cli_mmap_close( &h->mmap );
-    fclose( h->fh );
+    if( h->fh != stdin )
+        ret = fclose( h->fh );
     free( h );
-    return 0;
+    return ret;
 }
 
 const cli_input_t raw_input = { open_file, picture_alloc, read_frame, release_frame, picture_clean, close_file };

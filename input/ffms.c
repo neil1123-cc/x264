@@ -114,6 +114,10 @@ static int handle_jpeg( int csp, int *fullrange )
 
 static int open_file( char *psz_filename, hnd_t *p_handle, video_info_t *info, cli_input_opt_t *opt )
 {
+    if( !psz_filename || !p_handle || !info || !opt )
+        return -1;
+    *p_handle = NULL;
+
     ffms_hnd_t *h = calloc( 1, sizeof(ffms_hnd_t) );
     if( !h )
         return -1;
@@ -283,6 +287,8 @@ fail:
 
 static int picture_alloc( cli_pic_t *pic, hnd_t handle, int csp, int width, int height )
 {
+    if( !pic )
+        return -1;
     if( x264_cli_pic_alloc( pic, X264_CSP_NONE, width, height ) )
         return -1;
     pic->img.csp = csp;
@@ -293,7 +299,8 @@ static int picture_alloc( cli_pic_t *pic, hnd_t handle, int csp, int width, int 
 static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
 {
     ffms_hnd_t *h = handle;
-    if( i_frame >= h->num_frames )
+    if( !pic || !h || i_frame < 0 || i_frame >= h->num_frames ||
+        !h->video_source || (h->vfr_input && !h->track) )
         return -1;
     FFMS_ErrorInfo e;
     e.BufferSize = 0;
@@ -323,12 +330,16 @@ static int read_frame( cli_pic_t *pic, hnd_t handle, int i_frame )
 
 static void picture_clean( cli_pic_t *pic, hnd_t handle )
 {
+    if( !pic )
+        return;
     memset( pic, 0, sizeof(cli_pic_t) );
 }
 
 static int close_file( hnd_t handle )
 {
     ffms_hnd_t *h = handle;
+    if( !h )
+        return 0;
     FFMS_DestroyVideoSource( h->video_source );
 #if HAVE_AUDIO
     free( h->filename );
@@ -341,6 +352,8 @@ static int close_file( hnd_t handle )
 static hnd_t open_audio( hnd_t handle, int track )
 {
     ffms_hnd_t *h = handle;
+    if( !h || !h->filename )
+        return NULL;
     if( !x264_is_regular_file_path( h->filename ) )
     {
         x264_cli_log( "ffms", X264_LOG_WARNING, "reading audio from non-regular files is not implemented yet.\n" );

@@ -196,7 +196,7 @@ void flv_rewrite_amf_be24( flv_buffer *c, unsigned length, unsigned start )
 {
     if( !c || c->error )
         return;
-    if( length > 0xFFFFFF || start > c->d_cur || c->d_cur - start < 3 )
+    if( length > 0xFFFFFF || start > c->d_cur || c->d_cur - start < 3 || !c->data )
     {
         c->error = 1;
         return;
@@ -213,6 +213,11 @@ int flv_flush_data( flv_buffer *c )
         return -1;
     if( !c->d_cur )
         return 0;
+    if( !c->data )
+    {
+        c->error = 1;
+        return -1;
+    }
     if( c->d_total > UINT64_MAX - c->d_cur )
     {
         c->error = 1;

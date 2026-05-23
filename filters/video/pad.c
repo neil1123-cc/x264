@@ -281,6 +281,9 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info,
                  x264_param_t *param, char *opt_string )
 {
     int arg[9];
+    if( !handle || !*handle || !filter || !info || !param ||
+        !filter->get_frame || !filter->release_frame || !filter->free )
+        return -1;
     const x264_cli_csp_t *csp = x264_cli_get_csp( info->csp );
     FAIL_IF_ERROR( !csp || info->width <= 0 || info->height <= 0,
                    "invalid input properties\n" );
@@ -413,6 +416,9 @@ static int get_frame( hnd_t handle, cli_pic_t *out, int frame )
     int depth_factor;
     cli_pic_t in;
 
+    if( !h || !out || !h->csp || !h->prev_handle ||
+        !h->prev_filter.get_frame || !h->prev_filter.release_frame || frame < 0 )
+        return -1;
     if( h->prev_filter.get_frame( h->prev_handle, &in, frame ) )
         return -1;
 
@@ -441,6 +447,8 @@ static int get_frame( hnd_t handle, cli_pic_t *out, int frame )
 
 static int release_frame( hnd_t handle, cli_pic_t *pic, int frame )
 {
+    if( !handle || !pic )
+        return -1;
     /* pad_handle_t *h = handle;
     set_frame_colors( &h->buffer, h->color ); */
     return 0;
@@ -449,7 +457,10 @@ static int release_frame( hnd_t handle, cli_pic_t *pic, int frame )
 static void free_filter( hnd_t handle )
 {
     pad_handle_t *h = handle;
-    h->prev_filter.free( h->prev_handle );
+    if( !h )
+        return;
+    if( h->prev_handle && h->prev_filter.free )
+        h->prev_filter.free( h->prev_handle );
     x264_cli_pic_clean( &h->buffer );
     free( h );
 }

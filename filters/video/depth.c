@@ -168,6 +168,8 @@ static void scale_image( cli_image_t *output, cli_image_t *img )
 static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 {
     depth_hnd_t *h = handle;
+    if( !h || !output || !h->prev_hnd || !h->prev_filter.get_frame )
+        return -1;
 
     if( h->prev_filter.get_frame( h->prev_hnd, output, frame ) )
         return -1;
@@ -188,13 +190,18 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 static int release_frame( hnd_t handle, cli_pic_t *pic, int frame )
 {
     depth_hnd_t *h = handle;
+    if( !h || !pic || !h->prev_hnd || !h->prev_filter.release_frame )
+        return -1;
     return h->prev_filter.release_frame( h->prev_hnd, pic, frame );
 }
 
 static void free_filter( hnd_t handle )
 {
     depth_hnd_t *h = handle;
-    h->prev_filter.free( h->prev_hnd );
+    if( !h )
+        return;
+    if( h->prev_hnd && h->prev_filter.free )
+        h->prev_filter.free( h->prev_hnd );
     x264_cli_pic_clean( &h->buffer );
     x264_free( h );
 }
@@ -202,6 +209,10 @@ static void free_filter( hnd_t handle )
 static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info,
                  x264_param_t *param, char *opt_string )
 {
+    if( !handle || !*handle || !filter || !info || !param ||
+        !filter->get_frame || !filter->release_frame || !filter->free )
+        return -1;
+
     if( info->csp & X264_CSP_SKIP_DEPTH_FILTER )
     {
         x264_cli_log( "depth", X264_LOG_INFO, "skipped depth filter\n" );

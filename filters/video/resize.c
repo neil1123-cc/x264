@@ -418,24 +418,32 @@ static int init_sws_context( resizer_hnd_t *h )
     if( !h->ctx )
         return -1;
 
-    av_opt_set_int( h->ctx, "sws_flags",  h->ctx_flags,   0 );
-    av_opt_set_int( h->ctx, "dstw",       h->dst.width,   0 );
-    av_opt_set_int( h->ctx, "dsth",       h->dst.height,  0 );
-    av_opt_set_int( h->ctx, "dst_format", h->dst.pix_fmt, 0 );
-    av_opt_set_int( h->ctx, "dst_range",  h->dst.range,   0 );
-
-    av_opt_set_int( h->ctx, "srcw",       h->scale.width,   0 );
-    av_opt_set_int( h->ctx, "srch",       h->scale.height,  0 );
-    av_opt_set_int( h->ctx, "src_format", h->scale.pix_fmt, 0 );
-    av_opt_set_int( h->ctx, "src_range",  h->scale.range,   0 );
+    if( av_opt_set_int( h->ctx, "sws_flags",  h->ctx_flags,   0 ) < 0 ||
+        av_opt_set_int( h->ctx, "dstw",       h->dst.width,   0 ) < 0 ||
+        av_opt_set_int( h->ctx, "dsth",       h->dst.height,  0 ) < 0 ||
+        av_opt_set_int( h->ctx, "dst_format", h->dst.pix_fmt, 0 ) < 0 ||
+        av_opt_set_int( h->ctx, "dst_range",  h->dst.range,   0 ) < 0 ||
+        av_opt_set_int( h->ctx, "srcw",       h->scale.width,   0 ) < 0 ||
+        av_opt_set_int( h->ctx, "srch",       h->scale.height,  0 ) < 0 ||
+        av_opt_set_int( h->ctx, "src_format", h->scale.pix_fmt, 0 ) < 0 ||
+        av_opt_set_int( h->ctx, "src_range",  h->scale.range,   0 ) < 0 )
+        goto fail;
 
     /* use the correct matrix coefficients (only YUV -> RGB conversions are supported) */
-    sws_setColorspaceDetails( h->ctx,
-                              sws_getCoefficients( ( h->scale.width > 1024 || h->scale.height > 576 ) ? SWS_CS_ITU709 : SWS_CS_ITU601 ), h->scale.range,
-                              sws_getCoefficients( (  h->dst.width  > 1024 ||  h->dst.height  > 576 ) ? SWS_CS_ITU709 : SWS_CS_ITU601 ), h->dst.range,
-                              0, 1<<16, 1<<16 );
+    if( sws_setColorspaceDetails( h->ctx,
+                                  sws_getCoefficients( ( h->scale.width > 1024 || h->scale.height > 576 ) ? SWS_CS_ITU709 : SWS_CS_ITU601 ), h->scale.range,
+                                  sws_getCoefficients( (  h->dst.width  > 1024 ||  h->dst.height  > 576 ) ? SWS_CS_ITU709 : SWS_CS_ITU601 ), h->dst.range,
+                                  0, 1<<16, 1<<16 ) < 0 )
+        goto fail;
 
-    return sws_init_context( h->ctx, NULL, NULL ) < 0;
+    if( sws_init_context( h->ctx, NULL, NULL ) < 0 )
+        goto fail;
+    return 0;
+
+fail:
+    sws_freeContext( h->ctx );
+    h->ctx = NULL;
+    return -1;
 }
 
 static int check_resizer( resizer_hnd_t *h, cli_pic_t *in )
@@ -465,12 +473,17 @@ static int check_resizer( resizer_hnd_t *h, cli_pic_t *in )
 
 static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x264_param_t *param, char *opt_string )
 {
+    if( !info || !param )
+        return -1;
     /* if called for normalizing the csp to known formats and the format is not unknown, exit */
     if( opt_string && !strcmp( opt_string, "normcsp" ) && !(info->csp&X264_CSP_OTHER) )
         return 0;
     /* if called by x264cli and nothing needs to be done, exit */
     if( !opt_string && !full_check( info, param ) )
         return 0;
+    if( !handle || !*handle || !filter ||
+        !filter->get_frame || !filter->release_frame || !filter->free )
+        return -1;
 
     static const char * const optlist[] = { "width", "height", "sar", "fittobox", "csp", "method", NULL };
     char **opts = x264_split_options( opt_string, optlist );
@@ -613,7 +626,10 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
 static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 {
     resizer_hnd_t *h = handle;
-    if( !h || !output || frame < 0 || h->prev_filter.get_frame( h->prev_hnd, output, frame ) )
+    if( !h || !output || !h->prev_hnd ||
+        !h->prev_filter.get_frame || !h->prev_filter.release_frame || frame < 0 )
+        return -1;
+    if( h->prev_filter.get_frame( h->prev_hnd, output, frame ) )
         return -1;
     if( h->variable_input && check_resizer( h, output ) )
     {
@@ -625,8 +641,15 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
         XCHG( uint8_t*, output->img.plane[1], output->img.plane[2] );
     if( h->ctx && !h->fast_mono )
     {
-        sws_scale( h->ctx, (const uint8_t* const*)output->img.plane, output->img.stride,
-                   0, output->img.height, h->buffer.img.plane, h->buffer.img.stride );
+        int scale_ret = sws_scale( h->ctx, (const uint8_t* const*)output->img.plane, output->img.stride,
+                                   0, output->img.height, h->buffer.img.plane, h->buffer.img.stride );
+        if( scale_ret < 0 )
+        {
+            if( h->pre_swap_chroma )
+                XCHG( uint8_t*, output->img.plane[1], output->img.plane[2] );
+            h->prev_filter.release_frame( h->prev_hnd, output, frame );
+            return -1;
+        }
         output->img = h->buffer.img; /* copy img data */
     }
     else
@@ -640,13 +663,18 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 static int release_frame( hnd_t handle, cli_pic_t *pic, int frame )
 {
     resizer_hnd_t *h = handle;
+    if( !h || !pic || !h->prev_hnd || !h->prev_filter.release_frame )
+        return -1;
     return h->prev_filter.release_frame( h->prev_hnd, pic, frame );
 }
 
 static void free_filter( hnd_t handle )
 {
     resizer_hnd_t *h = handle;
-    h->prev_filter.free( h->prev_hnd );
+    if( !h )
+        return;
+    if( h->prev_hnd && h->prev_filter.free )
+        h->prev_filter.free( h->prev_hnd );
     if( h->ctx )
         sws_freeContext( h->ctx );
     if( h->buffer_allocated )
@@ -659,6 +687,8 @@ static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x2
 {
     int ret = 0;
 
+    if( !info || !param )
+        return -1;
     if( !opt_string )
         ret = full_check( info, param );
     else

@@ -1,8 +1,6 @@
 #include "audio/encoders.h"
 #include "filters/audio/internal.h"
 
-#include <assert.h>
-
 typedef struct enc_raw_t
 {
     audio_info_t info;
@@ -41,7 +39,8 @@ static void add_skip_samples( int64_t *last_sample, uint64_t samplecount )
 
 static hnd_t init( hnd_t filter_chain, const char *opts )
 {
-    assert( filter_chain );
+    if( !filter_chain )
+        return NULL;
     enc_raw_t *h = calloc( 1, sizeof( enc_raw_t ) );
     if( !h )
         return NULL;
@@ -75,7 +74,8 @@ static hnd_t init( hnd_t filter_chain, const char *opts )
 
 static audio_info_t *get_info( hnd_t handle )
 {
-    assert( handle );
+    if( !handle )
+        return NULL;
     enc_raw_t *h = handle;
 
     return &h->info;
@@ -84,6 +84,8 @@ static audio_info_t *get_info( hnd_t handle )
 static audio_packet_t *get_next_packet( hnd_t handle )
 {
     enc_raw_t *h = handle;
+    if( !h || !h->filter_chain )
+        return NULL;
     if( h->finishing )
         return NULL;
 
@@ -131,12 +133,17 @@ error:
 static void skip_samples( hnd_t handle, uint64_t samplecount )
 {
     enc_raw_t *h = handle;
+    if( !h )
+        return;
     add_skip_samples( &h->last_sample, samplecount );
 }
 
 static audio_packet_t *finish( hnd_t handle )
 {
-    ((enc_raw_t*)handle)->finishing = 1;
+    enc_raw_t *h = handle;
+    if( !h )
+        return NULL;
+    h->finishing = 1;
     return NULL;
 }
 

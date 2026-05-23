@@ -40,7 +40,9 @@ cli_vid_filter_t source_filter;
 
 static int init( hnd_t *handle, cli_vid_filter_t *filter, video_info_t *info, x264_param_t *param, char *opt_string )
 {
-    if( !handle || !*handle || !info || info->width <= 0 || info->height <= 0 ||
+    if( !handle || !*handle || !filter || !info ||
+        !cli_input.picture_alloc || !cli_input.read_frame ||
+        info->width <= 0 || info->height <= 0 ||
         info->width > MAX_RESOLUTION || info->height > MAX_RESOLUTION )
         return -1;
 
@@ -66,7 +68,8 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 {
     source_hnd_t *h = handle;
     /* do not allow requesting of frames from before the current position */
-    if( !h || !output || frame < 0 || frame <= h->cur_frame ||
+    if( !h || !h->hin || !output || !cli_input.read_frame ||
+        frame < 0 || frame <= h->cur_frame ||
         cli_input.read_frame( &h->pic, h->hin, frame ) )
         return -1;
     h->cur_frame = frame;
@@ -77,6 +80,8 @@ static int get_frame( hnd_t handle, cli_pic_t *output, int frame )
 static int release_frame( hnd_t handle, cli_pic_t *pic, int frame )
 {
     source_hnd_t *h = handle;
+    if( !h || !h->hin || !pic )
+        return -1;
     if( cli_input.release_frame && cli_input.release_frame( &h->pic, h->hin ) )
         return -1;
     return 0;
@@ -87,8 +92,9 @@ static void free_filter( hnd_t handle )
     source_hnd_t *h = handle;
     if( !h )
         return;
-    cli_input.picture_clean( &h->pic, h->hin );
-    if( h->hin )
+    if( cli_input.picture_clean )
+        cli_input.picture_clean( &h->pic, h->hin );
+    if( h->hin && cli_input.close_file )
         cli_input.close_file( h->hin );
     free( h );
 }

@@ -1,6 +1,5 @@
 #include "audio/encoders.h"
 #include "filters/audio/internal.h"
-#include <assert.h>
 #include <stdio.h>
 #include <inttypes.h>
 #include <limits.h>
@@ -42,9 +41,9 @@ static void lsmash_free_extradata( audio_info_t *info )
 
 static int lsmash_init( hnd_t *handle, const char *opt_str )
 {
-    assert( opt_str );
-    assert( !(*handle) ); // This must be the first filter
-	static const char * const optlist[] = { "filename", "track", NULL };
+    if( !handle || *handle || !opt_str ) // This must be the first filter
+        return -1;
+    static const char * const optlist[] = { "filename", "track", NULL };
     char **opts = x264_split_options( opt_str, optlist );
 
     if( !opts )
@@ -219,6 +218,8 @@ fail:
     if( h )
     {
         lsmash_free_extradata( &h->info );
+        free( h->info.opaque );
+        h->info.opaque = NULL;
         if( h->summary )
         {
             lsmash_cleanup_summary( (lsmash_summary_t *)h->summary );
@@ -252,7 +253,8 @@ static void free_packet( hnd_t handle, audio_packet_t *pkt )
 
 static void lsmash_close( hnd_t handle )
 {
-    assert( handle );
+    if( !handle )
+        return;
     lsmash_source_t *h = handle;
 
     if( h->summary )
@@ -271,6 +273,9 @@ static void lsmash_close( hnd_t handle )
 static audio_packet_t *get_next_au( hnd_t handle )
 {
     lsmash_source_t *h = handle;
+    if( !h || !h->summary || !h->importer ||
+        h->info.channels <= 0 || h->info.framelen <= 0 )
+        return NULL;
     audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
 
     if( !out )
@@ -322,6 +327,8 @@ static audio_packet_t *get_next_au( hnd_t handle )
 static void skip_samples( hnd_t handle, uint64_t samplecount )
 {
     lsmash_source_t *h = handle;
+    if( !h )
+        return;
 
     if( h->info.framelen <= 0 )
         return;
@@ -348,16 +355,20 @@ static void skip_samples( hnd_t handle, uint64_t samplecount )
 static audio_info_t *get_info( hnd_t handle )
 {
     audio_hnd_t *h = handle;
+    if( !h )
+        return NULL;
     return &h->info;
 }
 
 static hnd_t copy_init( hnd_t filter_chain, const char *opts )
 {
-    assert( filter_chain );
+    if( !filter_chain )
+        return NULL;
     audio_hnd_t *chain = filter_chain;
     if( chain->self == &audio_filter_lsmash )
     {
-        return chain;
+        lsmash_source_t *h = filter_chain;
+        return h->summary && h->importer ? chain : NULL;
     }
     fprintf( stderr, "lsmash [error]: attempted to enter copy mode with a non-empty filter chain!\n" ); // as far as CLI users see, lavf isn't a filter
     return NULL;

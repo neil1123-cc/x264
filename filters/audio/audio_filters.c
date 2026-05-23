@@ -1,7 +1,5 @@
 #include "filters/audio/internal.h"
 
-#include <assert.h>
-
 static void x264_af_free_packet_default( audio_packet_t *pkt )
 {
     if( pkt->priv )

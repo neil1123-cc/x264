@@ -2,7 +2,6 @@
 #include "libavformat/avformat.h"
 #include "libavcodec/avcodec.h"
 #include "libavcodec/bsf.h"
-#include <assert.h>
 #include <stdio.h>
 #include <inttypes.h>
 
@@ -64,8 +63,8 @@ static int lavf_parse_audio_track( const char *trackstr, int *track )
 
 static int init( hnd_t *handle, const char *opt_str )
 {
-    assert( opt_str );
-    assert( !(*handle) ); // This must be the first filter
+    if( !handle || *handle || !opt_str ) // This must be the first filter
+        return -1;
     static const char * const optlist[] = { "filename", "track", NULL };
     char **opts = x264_split_options( opt_str, optlist );
 
@@ -235,6 +234,8 @@ fail2:
 
 static inline void free_avpacket( AVPacket *pkt )
 {
+    if( !pkt )
+        return;
     av_packet_unref( pkt );
     free( pkt );
 }
@@ -250,6 +251,8 @@ static void free_packet( hnd_t handle, audio_packet_t *pkt )
 static struct AVPacket *next_packet( hnd_t handle )
 {
     lavf_source_t *h = handle;
+    if( !h || !h->lavf )
+        return NULL;
     AVPacket *pkt = calloc( 1, sizeof( AVPacket ) );
     if( !pkt )
     {
@@ -281,11 +284,14 @@ static struct AVPacket *next_packet( hnd_t handle )
 
 static hnd_t copy_init( hnd_t filter_chain, const char *opts )
 {
-    assert( filter_chain );
+    if( !filter_chain )
+        return NULL;
     audio_hnd_t *chain = filter_chain;
     if( chain->self == &audio_filter_lavf )
     {
         lavf_source_t *h = filter_chain;
+        if( !h->ctx )
+            return NULL;
         h->copy = 1;
 
         if( !h->pkt )
@@ -354,12 +360,14 @@ static hnd_t copy_init( hnd_t filter_chain, const char *opts )
 static audio_info_t *get_info( hnd_t handle )
 {
     audio_hnd_t *h = handle;
+    if( !h )
+        return NULL;
     return &h->info;
 }
 
 static int copy_packet_payload( lavf_source_t *h, audio_packet_t *out, const uint8_t *data, int size )
 {
-    if( size < 0 || h->info.samplesize < 0 || (size && !data) )
+    if( !h || !out || size < 0 || h->info.samplesize < 0 || (size && !data) )
         return -1;
     out->samplecount = h->info.last_delta;
     if( !out->samplecount && h->info.framelen > 0 )
@@ -380,10 +388,15 @@ static audio_packet_t *convert_to_audio_packet( hnd_t handle, AVPacket *pkt )
 {
     lavf_source_t *h = handle;
     audio_packet_t *out = calloc( 1, sizeof( audio_packet_t ) );
-    if( !out || pkt->size < 0 )
+    if( !h || !pkt || pkt->size < 0 )
     {
         free_avpacket( pkt );
         free( out );
+        return NULL;
+    }
+    if( !out )
+    {
+        free_avpacket( pkt );
         return NULL;
     }
 
@@ -445,6 +458,8 @@ static audio_packet_t *convert_to_audio_packet( hnd_t handle, AVPacket *pkt )
 static audio_packet_t *get_next_packet( hnd_t handle )
 {
     lavf_source_t *h = handle;
+    if( !h || !h->copy || !h->ctx )
+        return NULL;
 
     if( h->eof )
         return NULL;
@@ -477,6 +492,8 @@ static void skip_samples( hnd_t handle, uint64_t samplecount )
 {
     // WARNING: this cannot be made exact
     lavf_source_t *h = handle;
+    if( !h || !h->copy )
+        return;
     if( h->info.framelen <= 0 )
         return;
     uint64_t framelen = (uint64_t)h->info.framelen;
@@ -520,6 +537,10 @@ static int decode_audio_frame( lavf_source_t *h, uint8_t *buf, intptr_t buflen )
                                                   h->ctx->sample_fmt, 1 );
     if( channels <= 0 || data_size <= 0 || data_size > buflen )
         return -1;
+    if( !h->decode_frame->extended_data || !h->decode_frame->extended_data[0] )
+        return -1;
+    if( planar && data_size % channels )
+        return -1;
 
     int plane_size = data_size / (planar ? channels : 1);
 
@@ -530,6 +551,8 @@ static int decode_audio_frame( lavf_source_t *h, uint8_t *buf, intptr_t buflen )
         uint8_t *out = ((uint8_t *)buf) + plane_size;
         for( int ch = 1; ch < channels; ch++ )
         {
+            if( !h->decode_frame->extended_data[ch] )
+                return -1;
             memcpy( out, h->decode_frame->extended_data[ch], (size_t)plane_size );
             out += plane_size;
         }
@@ -542,6 +565,8 @@ static int low_decode_audio( lavf_source_t *h, uint8_t *buf, intptr_t buflen )
 {
     static uint8_t desync_warn = 0;
     int ret;
+    if( !h || !h->ctx || !h->decode_frame || !buf || buflen <= 0 )
+        return -1;
 
     // Try to get a decoded frame first (might already have one buffered)
     ret = decode_audio_frame( h, buf, buflen );
@@ -643,7 +668,11 @@ static int buffer_next_frame( lavf_source_t *h )
         h->len     -= drop;
         h->bytepos += (uint64_t)drop;
     }
-    assert( dec_size <= h->bufsize - h->len );
+    if( dec_size > h->bufsize - h->len )
+    {
+        free_avpacket( dec );
+        return 0;
+    }
     memcpy( h->buffer + h->len, dec->data, (size_t)dec_size );
     h->len += dec_size;
 
@@ -712,8 +741,11 @@ static int64_t fill_buffer_until( lavf_source_t *h, int64_t lastsample )
 static struct audio_packet_t *get_samples( hnd_t handle, int64_t first_sample, int64_t last_sample )
 {
     lavf_source_t *h = handle;
-    assert( !h->copy );
-    assert( first_sample >= 0 && last_sample > first_sample );
+    if( !h )
+        return NULL;
+    if( h->copy || !h->buffer || first_sample < 0 || last_sample <= first_sample ||
+        h->info.channels <= 0 || h->info.samplesize <= 0 )
+        return NULL;
 
     if( fill_buffer_until( h, first_sample ) < 0 )
         return NULL;
@@ -833,7 +865,8 @@ fail:
 
 static void lavf_close( hnd_t handle )
 {
-    assert( handle );
+    if( !handle )
+        return;
     lavf_source_t *h = handle;
     av_free( h->buffer );
     if( h->pkt )

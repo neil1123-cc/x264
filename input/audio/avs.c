@@ -1,5 +1,4 @@
 #include "filters/audio/internal.h"
-#include <assert.h>
 #include <stdio.h>
 #include <inttypes.h>
 #include <limits.h>
@@ -304,9 +303,9 @@ static int avs_parse_audio_track( const char *trackstr, int *track )
 
 static int init( hnd_t *handle, const char *opt_str )
 {
-    assert( opt_str );
-    assert( !(*handle) ); // This must be the first filter
-	static const char * const optlist[] = { "filename", "track", NULL };
+    if( !handle || *handle || !opt_str ) // This must be the first filter
+        return -1;
+    static const char * const optlist[] = { "filename", "track", NULL };
     char **opts = x264_split_options( opt_str, optlist );
 
     if( !opts )
@@ -459,6 +458,8 @@ fail2:
 
 static void free_packet( hnd_t handle, audio_packet_t *pkt )
 {
+    if( !pkt )
+        return;
     pkt->owner = NULL;
     x264_af_free_packet( pkt );
 }
@@ -466,9 +467,9 @@ static void free_packet( hnd_t handle, audio_packet_t *pkt )
 static struct audio_packet_t *get_samples( hnd_t handle, int64_t first_sample, int64_t last_sample )
 {
     avs_source_t *h = handle;
-    assert( first_sample >= 0 && last_sample > first_sample );
     if( !h || !h->clip || !h->buffer || first_sample < 0 || last_sample <= first_sample ||
-        h->info.channels <= 0 || h->info.samplesize <= 0 || h->num_samples < 0 )
+        h->info.channels <= 0 || h->info.samplesize <= 0 || h->num_samples < 0 ||
+        h->sample_fmt == SMPFMT_NONE || !h->func.avs_get_audio )
         return NULL;
 
     if( h->eof )
@@ -521,12 +522,15 @@ fail:
 
 static void avs_close_file( hnd_t handle )
 {
-    assert( handle );
+    if( !handle )
+        return;
     avs_source_t *h = handle;
-    h->func.avs_release_clip( h->clip );
-    if( h->func.avs_delete_script_environment )
+    if( h->clip && h->func.avs_release_clip )
+        h->func.avs_release_clip( h->clip );
+    if( h->env && h->func.avs_delete_script_environment )
         h->func.avs_delete_script_environment( h->env );
-    avs_close( h->library );
+    if( h->library )
+        avs_close( h->library );
     free( h->buffer );
     free( h );
 }
