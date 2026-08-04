@@ -5,7 +5,7 @@ inputs:
   ffmpeg-ref:
     description: FFmpeg ref to checkout
     required: false
-    default: n8.1
+    default: n9.0
   ffmpeg-cache-suffix:
     description: Cache suffix appended after the FFmpeg ref
     required: false
