@@ -16,7 +16,7 @@ inputs:
   mimalloc-ref:
     description: mimalloc ref to checkout
     required: false
-    default: v3.4.4
+    default: v3.4.5
   obuparse-ref:
     description: obuparse ref to checkout
     required: false
