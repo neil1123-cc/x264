@@ -48,7 +48,7 @@ inputs:
   lsmash-ref:
     description: L-SMASH ref to checkout
     required: false
-    default: 04e39f1fb232c332d4b04a1043c02c7c2d282d00
+    default: 4a21f2155b59d7176094db10dec7bbc274a4b9f3
   lsmash-path:
     description: L-SMASH checkout path
     required: false
