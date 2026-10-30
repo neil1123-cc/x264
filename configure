@@ -1440,7 +1440,16 @@ if [ "$audio" = "auto" ]; then
     audio="yes"
     audio_encs="raw"
     if [ "$audio_mp3" = "auto" ]; then
-        if cc_check lame/lame.h "-lmp3lame" "get_lame_version();"; then
+        LAME_LIBS="-lmp3lame"
+        if pkg_check lame; then
+            LAME_CFLAGS="$($PKGCONFIG --cflags lame)"
+            LAME_LIBS="$($PKGCONFIG --libs --static lame)"
+        fi
+        # Some LAME packages omit their mpg123 dependency from lame.pc.
+        if ! cc_check lame/lame.h "$LAME_CFLAGS $LAME_LIBS" "lame_close(lame_init());" && pkg_check libmpg123; then
+            LAME_LIBS="$LAME_LIBS $($PKGCONFIG --libs --static libmpg123)"
+        fi
+        if cc_check lame/lame.h "$LAME_CFLAGS $LAME_LIBS" "lame_close(lame_init());"; then
             audio_mp3="yes"
             audio_encs="$audio_encs, mp3"
         else
@@ -1512,7 +1521,8 @@ if [ "$audio" = "yes" ]; then
     define HAVE_AUDIO
     if [ "$audio_mp3" = "yes" ]; then
         define HAVE_LAME
-        LDFLAGSCLI="-lmp3lame $LDFLAGSCLI"
+        CFLAGS="$CFLAGS $LAME_CFLAGS"
+        LDFLAGSCLI="$LAME_LIBS $LDFLAGSCLI"
     fi
     if [ "$audio_qtaac" = "yes" ]; then
         define HAVE_QT_AAC
