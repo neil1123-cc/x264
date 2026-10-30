@@ -157,8 +157,46 @@ runs:
         ref: ${{ inputs.lsmash-ref }}
 
     - name: Setup MSYS2
+      id: setup-msys2
+      continue-on-error: true
       uses: msys2/setup-msys2@v2
       with:
+        msystem: CLANG64
+        update: true
+        install: >-
+          p7zip
+          base-devel
+          git
+          autoconf
+          automake
+          libtool
+          mingw-w64-clang-x86_64-nasm
+          mingw-w64-clang-x86_64-clang
+          mingw-w64-clang-x86_64-compiler-rt
+          mingw-w64-clang-x86_64-lld
+          mingw-w64-clang-x86_64-crt
+          mingw-w64-clang-x86_64-headers
+          mingw-w64-clang-x86_64-libc++
+          mingw-w64-clang-x86_64-libwinpthread
+          mingw-w64-clang-x86_64-make
+          mingw-w64-clang-x86_64-pkgconf
+          mingw-w64-clang-x86_64-cmake
+          mingw-w64-clang-x86_64-ninja
+          mingw-w64-clang-x86_64-llvm
+          mingw-w64-ucrt-x86_64-binutils
+          ${{ inputs.extra-msys2-packages }}
+
+    - name: Wait before retrying MSYS2
+      if: steps.setup-msys2.outcome == 'failure'
+      shell: pwsh
+      run: Start-Sleep -Seconds 30
+
+    - name: Retry MSYS2 setup
+      if: steps.setup-msys2.outcome == 'failure'
+      uses: msys2/setup-msys2@v2
+      with:
+        # A failed setup can leave its installation directory behind.
+        location: ${{ runner.temp }}/msys2-retry
         msystem: CLANG64
         update: true
         install: >-
